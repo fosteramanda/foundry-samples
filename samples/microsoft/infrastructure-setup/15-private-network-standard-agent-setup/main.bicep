@@ -1,49 +1,8 @@
 /*
 Standard Setup Network Secured Steps for main.bicep
 -----------------------------------
-1. Create project dependent resources for standard setup:
-   - Create new (or pass in resource ID of existing) Cosmos DB resource
-   - Create new (or pass in resource ID of existing) Azure Storage resource
-   - Create new (or pass in resource ID of existing) Azure AI Search resource
-   - Create new (or pass in resource ID of existing) Virtual Network resource
-   - [Optional] Create a new Key Vault resource
-   - [Optional] Create new Application Insights resource
-   - [Optional] Pass in resource ID of existing AI Foundry resource
-
-2. Create Azure AI Foundry Resource (Cognitive Services/accounts, kind=AIServices)
-
-3. Create account-level connections:
-   - Create account connection to Application Insights resource
-   - Deploy GPT-4o or other agent-compatible model
-
-4. Create Project (Cognitive Services/accounts/project)
-
-5. Create project connections:
-   - Create project connection to Azure Storage account
-   - Create project connection to Azure AI Search account
-   - Create project connection to Cosmos DB account
-
-6. Assign the project-managed identity (including for SMI) the following roles:
-   - Cosmos DB Operator at the scope of the account level for the Cosmos DB account resource
-   - Storage Account Contributor at the scope of the account level for the Storage Account resource
-
-7. Set Account capability host with empty properties section.
-
-8. Set Project capability host with properties: Cosmos DB, Azure Storage, AI Search connections
-
-9. Assign the Project Managed Identity (both for SMI and UMI) the following roles on the specified resource scopes:
-   - Azure AI Search: Search Index Data Contributor, Search Service Contributor
-   - Azure Blob Storage Container: <workspaceId>-azureml-blobstore: Storage Blob Data Contributor
-   - Azure Blob Storage Container: <workspaceId>-agents-blobstore: Storage Blob Data Owner
-   - Cosmos DB for NoSQL container: <'${projectWorkspaceId}>-thread-message-store: Cosmos DB Built-in Data Contributor
-   - Cosmos DB for NoSQL container: <'${projectWorkspaceId}>-system-thread-message-store: Cosmos DB Built-in Data Contributor
-   - Cosmos DB for NoSQL container: <'${projectWorkspaceId}>-agent-entity-store: Cosmos DB Built-in Data Contributor
-
-10. Once all resources are provisioned, assign all developers who want to create/edit agents in the project the role: Azure AI User on the project scope.
 */
-
-// Standard agent setup
-
+@description('Location for all resources.')
 @allowed([
     'australiaeast'
     'eastus'
@@ -59,7 +18,6 @@ Standard Setup Network Secured Steps for main.bicep
     'westus3'
     'westus2'
   ])
-@description('Location for all resources.')
 param location string = 'eastus2'
 
 @description('Name for your AI Services resource.')
@@ -71,11 +29,11 @@ param modelName string = 'gpt-4o'
 @description('The provider of your model')
 param modelFormat string = 'OpenAI'
 @description('The version of your model')
-param modelVersion string = '2024-05-13'
+param modelVersion string = '2024-11-20'
 @description('The sku of your model deployment')
 param modelSkuName string = 'GlobalStandard'
 @description('The tokens per minute (TPM) of your model deployment')
-param modelCapacity int = 1
+param modelCapacity int = 30
 
 // Create a short, unique suffix, that will be unique to each resource group
 param deploymentTimestamp string = utcNow('yyyyMMddHHmmss')
@@ -89,7 +47,7 @@ param firstProjectName string = 'project'
 param projectDescription string = 'A project for the AI Foundry account with network secured deployed Agent'
 
 @description('The display name of the project')
-param displayName string = 'project'
+param displayName string = 'network secured agent project'
 
 // Existing Virtual Network parameters
 @description('Virtual Network name for the Agent to create new or existing virtual network')
