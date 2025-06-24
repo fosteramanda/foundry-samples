@@ -179,7 +179,6 @@ The deployment creates an isolated network environment:
 
 - **Private DNS Zones:**
   - privatelink.blob.core.windows.net
-  - privatelink.file.core.windows.net *(Azure Files private endpoint)*
   - privatelink.cognitiveservices.azure.com
   - privatelink.documents.azure.com
   - privatelink.openai.azure.com
