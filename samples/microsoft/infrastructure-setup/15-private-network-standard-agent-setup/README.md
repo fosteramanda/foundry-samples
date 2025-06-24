@@ -10,6 +10,8 @@ languages:
 - json
 ---
 
+**Note:** Class A subnet support is only available in a limited number of regions and requires your subscription id be allowlisted. Please reach out to fosteramanda@microsoft.com if you are interested in getting access. Regions with class A support: westus, eastus us, eastus 2, and central us
+
 # Azure AI Agent Service: Standard Agent Setup with E2E Network Isolation
 
 This infrastructure-as-code (IaC) solution deploys a network-secured Azure AI agent environment with private networking and role-based access control (RBAC).
