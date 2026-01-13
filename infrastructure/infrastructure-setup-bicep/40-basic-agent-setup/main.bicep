@@ -59,7 +59,7 @@ param modelVersion string = '2025-04-14'
 param modelSkuName string = 'GlobalStandard'
 
 @description('The capacity of the model deployment in TPM.')
-param modelCapacity int = 50
+param modelCapacity int = 60
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
   name: accountName
