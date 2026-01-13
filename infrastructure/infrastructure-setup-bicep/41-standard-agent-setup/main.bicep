@@ -56,7 +56,7 @@ param modelVersion string = '2025-08-07'
 param modelSkuName string = 'GlobalStandard'
 
 @description('The tokens per minute (TPM) of your model deployment')
-param modelCapacity int = 1
+param modelCapacity int = 30
 
 // Optionally bring existing resources
 @description('The AI Search Service full ARM Resource ID. This is an optional field, and if not provided, the resource will be created.')
