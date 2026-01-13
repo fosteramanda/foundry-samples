@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "7000366004712356804"
+      "templateHash": "6129638105128383547"
     }
   },
   "parameters": {
@@ -101,7 +101,7 @@
     },
     "modelCapacity": {
       "type": "int",
-      "defaultValue": 1,
+      "defaultValue": 30,
       "metadata": {
         "description": "The tokens per minute (TPM) of your model deployment"
       }
