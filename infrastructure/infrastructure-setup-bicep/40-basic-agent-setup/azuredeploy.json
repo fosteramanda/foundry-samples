@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.39.26.7824",
-      "templateHash": "17632891943305566295"
+      "templateHash": "12994816753619886228"
     }
   },
   "parameters": {
@@ -109,6 +109,13 @@
       "metadata": {
         "description": "The capacity of the model deployment in TPM."
       }
+    },
+    "modelQuota": {
+      "type": "int",
+      "defaultValue": 100,
+      "metadata": {
+        "description": "The quota to assign to the model deployment."
+      }
     }
   },
   "variables": {
@@ -165,6 +172,7 @@
         "name": "[parameters('modelSkuName')]"
       },
       "properties": {
+        "modelQuota": "[parameters('modelQuota')]",
         "model": {
           "name": "[parameters('modelName')]",
           "format": "[parameters('modelFormat')]",
