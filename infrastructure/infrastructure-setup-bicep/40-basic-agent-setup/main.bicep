@@ -61,6 +61,9 @@ param modelSkuName string = 'GlobalStandard'
 @description('The capacity of the model deployment in TPM.')
 param modelCapacity int = 40
 
+@description('The quota to assign to the model deployment.')
+param modelQuota int = 100
+
 resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
   name: accountName
   location: location
@@ -117,6 +120,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
     name: modelSkuName
   }
   properties: {
+    modelQuota: modelQuota
     model:{
       name: modelName
       format: modelFormat
