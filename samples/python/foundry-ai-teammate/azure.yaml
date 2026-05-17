@@ -1,0 +1,8 @@
+name: foundry-a365-python
+
+hooks:
+  postprovision:
+    shell: pwsh
+    run: ./scripts/post-provision.ps1
+    interactive: true
+    continueOnError: false
