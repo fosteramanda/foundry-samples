@@ -473,11 +473,6 @@ class GenericAgentHost:
 
         @self.agent_app.activity("installationUpdate")
         async def on_installation_update(context: TurnContext, _: TurnState) -> None:
-            recipient = getattr(context.activity, "recipient", None)
-            agent_tenant_id = getattr(recipient, "tenant_id", "") if recipient else ""
-            if await self._should_block_cross_tenant_activity(context, agent_tenant_id):
-                return
-
             action = getattr(context.activity, "action", None)
             from_prop = context.activity.from_property
             logger.info(
@@ -499,12 +494,9 @@ class GenericAgentHost:
         @self.agent_app.activity("message", **handler_config)
         async def on_message(context: TurnContext, _: TurnState) -> None:
             try:
-                result = await self._validate_agent_and_setup_context(context)
-                if result is None:
-                    return
-                tenant_id, agent_id = result
-
-                if await self._should_block_cross_tenant_activity(context, tenant_id):
+                recipient = getattr(context.activity, "recipient", None)
+                agent_tenant_id = getattr(recipient, "tenant_id", "") if recipient else ""
+                if await self._should_block_cross_tenant_activity(context, agent_tenant_id):
                     return
 
                 channel_id = getattr(context.activity, "channel_id", "") or ""
@@ -514,6 +506,11 @@ class GenericAgentHost:
                         channel_id,
                     )
                     return
+
+                result = await self._validate_agent_and_setup_context(context)
+                if result is None:
+                    return
+                tenant_id, agent_id = result
 
                 from microsoft_agents_a365.observability.core.middleware.baggage_builder import (
                     BaggageBuilder,
@@ -579,13 +576,25 @@ class GenericAgentHost:
             notification_activity: AgentNotificationActivity,
         ) -> None:
             try:
+                if (
+                    not self.email_responses_enabled
+                    and notification_activity.notification_type
+                    == NotificationTypes.EMAIL_NOTIFICATION
+                ):
+                    logger.info(
+                        "Email responses disabled by config; ignoring email notification."
+                    )
+                    return
+
+                recipient = getattr(context.activity, "recipient", None)
+                agent_tenant_id = getattr(recipient, "tenant_id", "") if recipient else ""
+                if await self._should_block_cross_tenant_activity(context, agent_tenant_id):
+                    return
+
                 result = await self._validate_agent_and_setup_context(context)
                 if result is None:
                     return
                 tenant_id, agent_id = result
-
-                if await self._should_block_cross_tenant_activity(context, tenant_id):
-                    return
 
                 from microsoft_agents_a365.observability.core.middleware.baggage_builder import (
                     BaggageBuilder,
@@ -593,16 +602,6 @@ class GenericAgentHost:
 
                 with BaggageBuilder().tenant_id(tenant_id).agent_id(agent_id).build():
                     logger.info("📬 %s", notification_activity.notification_type)
-
-                    if (
-                        not self.email_responses_enabled
-                        and notification_activity.notification_type
-                        == NotificationTypes.EMAIL_NOTIFICATION
-                    ):
-                        logger.info(
-                            "Email responses disabled by config; ignoring email notification."
-                        )
-                        return
 
                     if not hasattr(
                         self.agent_instance, "handle_agent_notification_activity"
