@@ -83,6 +83,15 @@ logger = logging.getLogger(__name__)
 logger.info("📝 Logging configured at level %s (from LOG_LEVEL env)", _LOG_LEVEL_NAME)
 
 
+def _is_email_channel_id(channel_id: str) -> bool:
+    return channel_id.lower() in {"email", "agents:email"}
+
+
+def _email_responses_enabled() -> bool:
+    value = (os.getenv("ENABLE_EMAIL_RESPONSES") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def _normalize_tenant_id(value: str) -> str:
     tenant_id = value.strip()
     if not tenant_id:
@@ -165,32 +174,31 @@ def _get_agent_tenant_id_candidates_from_activity(
     return sorted(candidates)
 
 
-def _is_cross_tenant_activity_payload(activity_payload: Mapping[str, object]) -> bool:
-    sender = activity_payload.get("from")
-    sender_tenant_candidates = _get_tenant_id_candidates(sender)
-    if not sender_tenant_candidates:
+def _is_provably_internal_activity(
+    sender_tenant_candidates: list[str], agent_tenant_candidates: list[str]
+) -> bool:
+    if not sender_tenant_candidates or not agent_tenant_candidates:
         return False
-
-    agent_tenant_candidates = _get_agent_tenant_id_candidates_from_activity(activity_payload)
-    if not agent_tenant_candidates:
-        logger.warning(
-            "AP tenant guard: no agent tenant id candidates found in payload; skipping cross-tenant enforcement. senderTenantCandidates=%s",
-            ",".join(sender_tenant_candidates),
-        )
-        return False
-
-    is_same_tenant = any(
+    return any(
         sender_tenant == agent_tenant
         for sender_tenant in sender_tenant_candidates
         for agent_tenant in agent_tenant_candidates
     )
-    if is_same_tenant:
+
+
+def _should_block_activity_payload(activity_payload: Mapping[str, object]) -> bool:
+    sender = activity_payload.get("from")
+    sender_tenant_candidates = _get_tenant_id_candidates(sender)
+
+    agent_tenant_candidates = _get_agent_tenant_id_candidates_from_activity(activity_payload)
+
+    if _is_provably_internal_activity(sender_tenant_candidates, agent_tenant_candidates):
         return False
 
     sender_id = sender.get("id") if isinstance(sender, Mapping) else None
     sender_name = sender.get("name") if isinstance(sender, Mapping) else None
     logger.info(
-        "AP tenant guard: blocked out-of-tenant activity and skipped processing. activityType=%s senderId=%s senderName=%s senderTenantCandidates=%s agentTenantCandidates=%s",
+        "AP tenant guard: blocked activity because it is not provably internal. activityType=%s senderId=%s senderName=%s senderTenantCandidates=%s agentTenantCandidates=%s",
         activity_payload.get("type"),
         sender_id,
         sender_name,
@@ -308,6 +316,12 @@ class GenericAgentHost:
             logger.info("🔐 Using auth handler: %s", self.auth_handler_name)
         else:
             logger.info("🔓 No auth handler configured (AUTH_HANDLER_NAME not set)")
+        self.email_responses_enabled = _email_responses_enabled()
+        logger.info(
+            "📧 Email responses are %s (ENABLE_EMAIL_RESPONSES=%s)",
+            "enabled" if self.email_responses_enabled else "disabled",
+            os.getenv("ENABLE_EMAIL_RESPONSES", "(unset)"),
+        )
 
         self.agent_class = agent_class
         self.agent_args = agent_args
@@ -402,8 +416,6 @@ class GenericAgentHost:
     ) -> bool:
         sender = getattr(context.activity, "from_property", None)
         sender_tenant_candidates = _get_tenant_id_candidates(sender)
-        if not sender_tenant_candidates:
-            return False
 
         agent_tenant_candidates = set()
         normalized_agent_tenant_id = _normalize_tenant_id(agent_tenant_id or "")
@@ -412,28 +424,19 @@ class GenericAgentHost:
         configured_tenant_id = _normalize_tenant_id(_configured_tenant_id())
         if configured_tenant_id:
             agent_tenant_candidates.add(configured_tenant_id)
+        sorted_agent_tenant_candidates = sorted(agent_tenant_candidates)
 
-        if not agent_tenant_candidates:
-            logger.warning(
-                "AP tenant guard: no agent tenant id candidates found in context; skipping cross-tenant enforcement. senderTenantCandidates=%s",
-                ",".join(sender_tenant_candidates),
-            )
-            return False
-
-        is_same_tenant = any(
-            sender_tenant == agent_tenant
-            for sender_tenant in sender_tenant_candidates
-            for agent_tenant in agent_tenant_candidates
-        )
-        if is_same_tenant:
+        if _is_provably_internal_activity(
+            sender_tenant_candidates, sorted_agent_tenant_candidates
+        ):
             return False
 
         logger.info(
-            "AP tenant guard: blocked out-of-tenant activity and skipped processing. senderId=%s senderName=%s senderTenantCandidates=%s agentTenantCandidates=%s",
+            "AP tenant guard: blocked activity because it is not provably internal. senderId=%s senderName=%s senderTenantCandidates=%s agentTenantCandidates=%s",
             getattr(sender, "id", None),
             getattr(sender, "name", None),
             ",".join(sender_tenant_candidates),
-            ",".join(sorted(agent_tenant_candidates)),
+            ",".join(sorted_agent_tenant_candidates),
         )
         return True
 
@@ -450,6 +453,14 @@ class GenericAgentHost:
             recipient = getattr(context.activity, "recipient", None)
             agent_tenant_id = getattr(recipient, "tenant_id", "") if recipient else ""
             if await self._should_block_cross_tenant_activity(context, agent_tenant_id):
+                return
+
+            channel_id = getattr(context.activity, "channel_id", "") or ""
+            if _is_email_channel_id(channel_id) and not self.email_responses_enabled:
+                logger.info(
+                    "Email responses disabled by config; ignoring help message on channel_id=%s",
+                    channel_id,
+                )
                 return
 
             await context.send_activity(
@@ -494,6 +505,14 @@ class GenericAgentHost:
                 tenant_id, agent_id = result
 
                 if await self._should_block_cross_tenant_activity(context, tenant_id):
+                    return
+
+                channel_id = getattr(context.activity, "channel_id", "") or ""
+                if _is_email_channel_id(channel_id) and not self.email_responses_enabled:
+                    logger.info(
+                        "Email responses disabled by config; ignoring message on channel_id=%s",
+                        channel_id,
+                    )
                     return
 
                 from microsoft_agents_a365.observability.core.middleware.baggage_builder import (
@@ -574,6 +593,16 @@ class GenericAgentHost:
 
                 with BaggageBuilder().tenant_id(tenant_id).agent_id(agent_id).build():
                     logger.info("📬 %s", notification_activity.notification_type)
+
+                    if (
+                        not self.email_responses_enabled
+                        and notification_activity.notification_type
+                        == NotificationTypes.EMAIL_NOTIFICATION
+                    ):
+                        logger.info(
+                            "Email responses disabled by config; ignoring email notification."
+                        )
+                        return
 
                     if not hasattr(
                         self.agent_instance, "handle_agent_notification_activity"
@@ -664,13 +693,14 @@ class GenericAgentHost:
     ) -> None:
         async def entry_point(req: Request) -> Response:
             activity_payload: Mapping[str, object] | None = None
+            parse_error: str | None = None
             try:
                 body_bytes = await req.read()
                 body_text = ""
                 try:
                     body_text = body_bytes.decode("utf-8")
                 except UnicodeDecodeError:
-                    body_text = ""
+                    parse_error = "request body is not valid UTF-8 text"
                 body_repr = body_text if body_text else repr(body_bytes)
                 logger.info(
                     "📥 /api/messages request | method=%s | content-type=%s | size=%d bytes | body=%s",
@@ -680,16 +710,29 @@ class GenericAgentHost:
                     body_repr,
                 )
                 if body_text:
-                    parsed_payload = json.loads(body_text)
-                    if isinstance(parsed_payload, Mapping):
-                        activity_payload = parsed_payload
+                    try:
+                        parsed_payload = json.loads(body_text)
+                    except Exception as ex:
+                        parse_error = f"invalid JSON payload: {ex}"
+                    else:
+                        if isinstance(parsed_payload, Mapping):
+                            activity_payload = parsed_payload
+                        else:
+                            parse_error = "top-level JSON value is not an object"
+                elif parse_error is None:
+                    parse_error = "request body is empty"
             except Exception as ex:
                 logger.warning("Failed to log incoming request body: %s", ex)
+                parse_error = f"failed to read request body: {ex}"
 
-            if (
-                activity_payload is not None
-                and _is_cross_tenant_activity_payload(activity_payload)
-            ):
+            if activity_payload is None:
+                logger.info(
+                    "AP tenant guard: blocked activity because it is not provably internal. reason=%s",
+                    parse_error or "activity payload unavailable",
+                )
+                return Response(status=200)
+
+            if _should_block_activity_payload(activity_payload):
                 return Response(status=200)
 
             return await start_agent_process(
