@@ -21,11 +21,14 @@ Python port of the C# ``Program.cs`` + ``A365AgentApplication``. Wires up:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import socket
+from collections.abc import Mapping
 from os import environ
 from typing import Optional
+from uuid import UUID
 
 from aiohttp.web import Application, Request, Response, json_response, run_app
 from aiohttp.web_middlewares import middleware as web_middleware
@@ -78,6 +81,123 @@ observability_logger.setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 logger.info("📝 Logging configured at level %s (from LOG_LEVEL env)", _LOG_LEVEL_NAME)
+
+
+def _normalize_tenant_id(value: str) -> str:
+    tenant_id = value.strip()
+    if not tenant_id:
+        return ""
+    try:
+        return str(UUID(tenant_id))
+    except ValueError:
+        return tenant_id.lower()
+
+
+def _add_tenant_candidate(candidates: set[str], value: object) -> None:
+    if not isinstance(value, str):
+        return
+    normalized = _normalize_tenant_id(value)
+    if normalized:
+        candidates.add(normalized)
+
+
+def _add_tenant_candidate_value(candidates: set[str], value: object) -> None:
+    if isinstance(value, str):
+        _add_tenant_candidate(candidates, value)
+        return
+    if isinstance(value, Mapping):
+        _add_tenant_candidate(candidates, value.get("id"))
+
+
+def _get_tenant_id_candidates(account: object | None) -> list[str]:
+    candidates: set[str] = set()
+    if account is None:
+        return []
+
+    _add_tenant_candidate(candidates, getattr(account, "tenant_id", None))
+    _add_tenant_candidate(candidates, getattr(account, "tenantId", None))
+    _add_tenant_candidate_value(candidates, getattr(account, "tenant", None))
+
+    for attribute_name in ("properties", "additional_properties", "additionalProperties"):
+        payload = getattr(account, attribute_name, None)
+        if isinstance(payload, Mapping):
+            _add_tenant_candidate_value(candidates, payload.get("tenantId"))
+            _add_tenant_candidate_value(candidates, payload.get("tenant"))
+            _add_tenant_candidate_value(candidates, payload.get("tenant_id"))
+
+    if isinstance(account, Mapping):
+        _add_tenant_candidate_value(candidates, account.get("tenantId"))
+        _add_tenant_candidate_value(candidates, account.get("tenant"))
+        _add_tenant_candidate_value(candidates, account.get("tenant_id"))
+
+    return sorted(candidates)
+
+
+def _configured_tenant_id() -> str:
+    return (
+        os.getenv("TENANT_ID")
+        or os.getenv("CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID")
+        or ""
+    )
+
+
+def _get_agent_tenant_id_candidates_from_activity(
+    activity_payload: Mapping[str, object],
+) -> list[str]:
+    candidates: set[str] = set()
+
+    for candidate in _get_tenant_id_candidates(activity_payload.get("recipient")):
+        candidates.add(candidate)
+
+    conversation = activity_payload.get("conversation")
+    if isinstance(conversation, Mapping):
+        _add_tenant_candidate_value(candidates, conversation.get("tenantId"))
+        _add_tenant_candidate_value(candidates, conversation.get("tenant"))
+        _add_tenant_candidate_value(candidates, conversation.get("tenant_id"))
+
+    channel_data = activity_payload.get("channelData")
+    if isinstance(channel_data, Mapping):
+        _add_tenant_candidate_value(candidates, channel_data.get("tenantId"))
+        _add_tenant_candidate_value(candidates, channel_data.get("tenant"))
+        _add_tenant_candidate_value(candidates, channel_data.get("tenant_id"))
+
+    _add_tenant_candidate(candidates, _configured_tenant_id())
+    return sorted(candidates)
+
+
+def _is_cross_tenant_activity_payload(activity_payload: Mapping[str, object]) -> bool:
+    sender = activity_payload.get("from")
+    sender_tenant_candidates = _get_tenant_id_candidates(sender)
+    if not sender_tenant_candidates:
+        return False
+
+    agent_tenant_candidates = _get_agent_tenant_id_candidates_from_activity(activity_payload)
+    if not agent_tenant_candidates:
+        logger.warning(
+            "AP tenant guard: no agent tenant id candidates found in payload; skipping cross-tenant enforcement. senderTenantCandidates=%s",
+            ",".join(sender_tenant_candidates),
+        )
+        return False
+
+    is_same_tenant = any(
+        sender_tenant == agent_tenant
+        for sender_tenant in sender_tenant_candidates
+        for agent_tenant in agent_tenant_candidates
+    )
+    if is_same_tenant:
+        return False
+
+    sender_id = sender.get("id") if isinstance(sender, Mapping) else None
+    sender_name = sender.get("name") if isinstance(sender, Mapping) else None
+    logger.info(
+        "AP tenant guard: blocked out-of-tenant activity and skipped processing. activityType=%s senderId=%s senderName=%s senderTenantCandidates=%s agentTenantCandidates=%s",
+        activity_payload.get("type"),
+        sender_id,
+        sender_name,
+        ",".join(sender_tenant_candidates),
+        ",".join(agent_tenant_candidates),
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +397,46 @@ class GenericAgentHost:
         await self._setup_observability_token(context, tenant_id, agent_id)
         return tenant_id, agent_id
 
+    async def _should_block_cross_tenant_activity(
+        self, context: TurnContext, agent_tenant_id: str
+    ) -> bool:
+        sender = getattr(context.activity, "from_property", None)
+        sender_tenant_candidates = _get_tenant_id_candidates(sender)
+        if not sender_tenant_candidates:
+            return False
+
+        agent_tenant_candidates = set()
+        normalized_agent_tenant_id = _normalize_tenant_id(agent_tenant_id or "")
+        if normalized_agent_tenant_id:
+            agent_tenant_candidates.add(normalized_agent_tenant_id)
+        configured_tenant_id = _normalize_tenant_id(_configured_tenant_id())
+        if configured_tenant_id:
+            agent_tenant_candidates.add(configured_tenant_id)
+
+        if not agent_tenant_candidates:
+            logger.warning(
+                "AP tenant guard: no agent tenant id candidates found in context; skipping cross-tenant enforcement. senderTenantCandidates=%s",
+                ",".join(sender_tenant_candidates),
+            )
+            return False
+
+        is_same_tenant = any(
+            sender_tenant == agent_tenant
+            for sender_tenant in sender_tenant_candidates
+            for agent_tenant in agent_tenant_candidates
+        )
+        if is_same_tenant:
+            return False
+
+        logger.info(
+            "AP tenant guard: blocked out-of-tenant activity and skipped processing. senderId=%s senderName=%s senderTenantCandidates=%s agentTenantCandidates=%s",
+            getattr(sender, "id", None),
+            getattr(sender, "name", None),
+            ",".join(sender_tenant_candidates),
+            ",".join(sorted(agent_tenant_candidates)),
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
@@ -287,6 +447,11 @@ class GenericAgentHost:
         )
 
         async def help_handler(context: TurnContext, _: TurnState) -> None:
+            recipient = getattr(context.activity, "recipient", None)
+            agent_tenant_id = getattr(recipient, "tenant_id", "") if recipient else ""
+            if await self._should_block_cross_tenant_activity(context, agent_tenant_id):
+                return
+
             await context.send_activity(
                 f"👋 **Hi there!** I'm **{self.agent_class.__name__}**, your AI assistant.\n\n"
                 "How can I help you today?"
@@ -297,6 +462,11 @@ class GenericAgentHost:
 
         @self.agent_app.activity("installationUpdate")
         async def on_installation_update(context: TurnContext, _: TurnState) -> None:
+            recipient = getattr(context.activity, "recipient", None)
+            agent_tenant_id = getattr(recipient, "tenant_id", "") if recipient else ""
+            if await self._should_block_cross_tenant_activity(context, agent_tenant_id):
+                return
+
             action = getattr(context.activity, "action", None)
             from_prop = context.activity.from_property
             logger.info(
@@ -322,6 +492,9 @@ class GenericAgentHost:
                 if result is None:
                     return
                 tenant_id, agent_id = result
+
+                if await self._should_block_cross_tenant_activity(context, tenant_id):
+                    return
 
                 from microsoft_agents_a365.observability.core.middleware.baggage_builder import (
                     BaggageBuilder,
@@ -391,6 +564,9 @@ class GenericAgentHost:
                 if result is None:
                     return
                 tenant_id, agent_id = result
+
+                if await self._should_block_cross_tenant_activity(context, tenant_id):
+                    return
 
                 from microsoft_agents_a365.observability.core.middleware.baggage_builder import (
                     BaggageBuilder,
@@ -487,12 +663,15 @@ class GenericAgentHost:
         self, auth_configuration: AgentAuthConfiguration | None = None
     ) -> None:
         async def entry_point(req: Request) -> Response:
+            activity_payload: Mapping[str, object] | None = None
             try:
                 body_bytes = await req.read()
+                body_text = ""
                 try:
-                    body_repr = body_bytes.decode("utf-8")
+                    body_text = body_bytes.decode("utf-8")
                 except UnicodeDecodeError:
-                    body_repr = repr(body_bytes)
+                    body_text = ""
+                body_repr = body_text if body_text else repr(body_bytes)
                 logger.info(
                     "📥 /api/messages request | method=%s | content-type=%s | size=%d bytes | body=%s",
                     req.method,
@@ -500,8 +679,18 @@ class GenericAgentHost:
                     len(body_bytes),
                     body_repr,
                 )
+                if body_text:
+                    parsed_payload = json.loads(body_text)
+                    if isinstance(parsed_payload, Mapping):
+                        activity_payload = parsed_payload
             except Exception as ex:
                 logger.warning("Failed to log incoming request body: %s", ex)
+
+            if (
+                activity_payload is not None
+                and _is_cross_tenant_activity_payload(activity_payload)
+            ):
+                return Response(status=200)
 
             return await start_agent_process(
                 req, req.app["agent_app"], req.app["adapter"]
