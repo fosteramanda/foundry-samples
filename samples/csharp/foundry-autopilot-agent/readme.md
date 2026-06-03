@@ -1,4 +1,4 @@
-# 🤖 Foundry A365 Agent Example
+# 🤖 Foundry Autopilot Agent Example
 
 > A minimal example of deploying a Foundry A365 agent with Azure Developer CLI
 
@@ -13,13 +13,12 @@ Ensure you have the following installed:
 | Requirement | Description |
 |-------------|-------------|
 | [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | Infrastructure deployment tool |
-| [Python 3.11+](https://www.python.org/downloads/) | Agent runtime (built and packaged inside the Docker image) |
-| [Docker](https://www.docker.com/products/docker-desktop/) | Required for the local ACR build step (or use `az acr build` directly) |
+| [.NET 9.0 SDK](https://dotnet.microsoft.com/download) | Development framework |
 
 ### 🔐 Required Permissions
 
 - **Owner** role on the Azure subscription
-- **Azure AI User** or **Cognitive Services User** role at subscription or resource group level
+- **Foundry User** or **Cognitive Services User** role at subscription or resource group level
 - **Tenant Admin** role for organization-wide configuration
 
 ---
@@ -47,8 +46,8 @@ azd auth login
 #### Optional: Customize Your Agent
 
 Before deploying, you can customize:
-- **Agent instructions:** [agent.py](./src/hello_world_a365_agent/agent.py) (the `AGENT_PROMPT` constant on `FoundryDigitalWorkerAgent`)
-- **MCP tools:** [ToolingManifest.json](./src/hello_world_a365_agent/ToolingManifest.json) - [Learn more](https://learn.microsoft.com/en-us/microsoft-agent-365/tooling-servers-overview)
+- **Agent instructions:** [AgentInstructions.cs](./src/hello_world_a365_agent/AgentLogic/AgentInstructions.cs)
+- **MCP tools:** [ToolManifest.json](./src/hello_world_a365_agent/ToolingManifest.json) - [Learn more](https://learn.microsoft.com/en-us/microsoft-agent-365/tooling-servers-overview)
 
 #### Deploy
 
@@ -124,7 +123,7 @@ Azure Bot Service acts as a relay between M365 ecosystem interactions and the Fo
 
 ### 3️⃣ Building a Hosted Agent Docker Image
 
-Compiles the Python sample into a Docker container and registers it as a hosted agent with the Foundry project.
+Compiles the sample code into a Docker container and registers it as a hosted agent with the Foundry project.
 
 📚 [Learn more about building agents](https://github.com/microsoft/container_agents_docs?tab=readme-ov-file#14---build-agent-image)
 
