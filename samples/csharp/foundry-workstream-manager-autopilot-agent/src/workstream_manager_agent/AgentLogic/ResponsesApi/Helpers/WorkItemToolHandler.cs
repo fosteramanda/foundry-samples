@@ -3,6 +3,7 @@ namespace WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
 using WorkstreamManager.Models;
 using WorkstreamManager.Services;
 using Microsoft.Agents.Builder;
+using Microsoft.Agents.Core.Models;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -18,32 +19,33 @@ internal class WorkItemToolHandler
     private readonly string? _graphAccessToken;
     private readonly HttpClient _httpClient;
     private readonly WorkItemService? _workItemService;
+    private readonly ReactionService _reactionService;
 
-    private string? _currentActivityId;
-    private string? _currentConversationId;
+    private IActivity? _currentActivity;
 
     public WorkItemToolHandler(
         AgentMetadata agentMetadata,
         ILogger logger,
         string? graphAccessToken,
         HttpClient httpClient,
-        WorkItemService? workItemService)
+        WorkItemService? workItemService,
+        ReactionService reactionService)
     {
         _agentMetadata = agentMetadata;
         _logger = logger;
         _graphAccessToken = graphAccessToken;
         _httpClient = httpClient;
         _workItemService = workItemService;
+        _reactionService = reactionService ?? throw new ArgumentNullException(nameof(reactionService));
     }
 
     /// <summary>
-    /// Sets the current activity context so the 📌 reaction can target the correct message.
+    /// Sets the current activity so the 📌 reaction can target the correct message.
     /// Call this at the start of each turn before invoking the Responses API.
     /// </summary>
-    public void SetCurrentActivityContext(string? activityId, string? conversationId)
+    public void SetCurrentActivityContext(IActivity? activity)
     {
-        _currentActivityId = activityId;
-        _currentConversationId = conversationId;
+        _currentActivity = activity;
     }
 
     /// <summary>
@@ -327,45 +329,17 @@ internal class WorkItemToolHandler
     }
 
     /// <summary>
-    /// Sets a 📌 reaction on the current message via Graph.
+    /// Sets a 📌 reaction on the current message via ReactionService.
     /// </summary>
     private async Task TrySetPinReactionAsync()
     {
-        if (string.IsNullOrWhiteSpace(_graphAccessToken) ||
-            string.IsNullOrWhiteSpace(_currentActivityId) ||
-            string.IsNullOrWhiteSpace(_currentConversationId))
+        if (_currentActivity == null)
         {
-            _logger.LogDebug("Skipping 📌 reaction: missing Graph token or activity context.");
+            _logger.LogDebug("Skipping 📌 reaction: no current activity context.");
             return;
         }
 
-        try
-        {
-            var setReactionUrl =
-                $"https://graph.microsoft.com/v1.0/chats/{_currentConversationId}/messages/{_currentActivityId}/setReaction";
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, setReactionUrl);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _graphAccessToken);
-            request.Content = new StringContent(
-                "{\"reactionType\": \"\\uD83D\\uDCCC\"}",
-                Encoding.UTF8,
-                "application/json");
-
-            var response = await _httpClient.SendAsync(request);
-            if (response.IsSuccessStatusCode)
-            {
-                _logger.LogInformation("📌 reaction set on message {ActivityId}", _currentActivityId);
-            }
-            else
-            {
-                _logger.LogWarning("Failed to set 📌 reaction: {Status} {Reason}",
-                    response.StatusCode, await response.Content.ReadAsStringAsync());
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Error setting 📌 reaction on message {ActivityId}", _currentActivityId);
-        }
+        await _reactionService.SetReactionAsync("📌", _currentActivity);
     }
 }
 

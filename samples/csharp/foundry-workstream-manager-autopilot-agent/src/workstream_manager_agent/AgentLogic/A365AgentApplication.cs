@@ -1,17 +1,12 @@
 namespace WorkstreamManager.AgentLogic;
 
-using Azure.Core;
 using WorkstreamManager.AgentLogic.ResponsesApi;
 using WorkstreamManager.Models;
-using WorkstreamManager.Services;
 using Microsoft.Agents.Builder.App;
 using Microsoft.Agents.Core.Models;
 using AgentNotification;
 using Microsoft.Agents.A365.Notifications.Models;
 using System.Collections.Concurrent;
-using System.Net.Http.Headers;
-using System.Text;
-using System.Text.Json;
 
 /// <summary>
 /// This is main handler for incoming activities, and is linked to Agent SDK infrastructure.
@@ -22,7 +17,6 @@ public class A365AgentApplication : AgentApplication
     private readonly ResponsesApiAgentLogicServiceFactory _factory;
     private readonly IConfiguration _configuration;
     private readonly ILogger<A365AgentApplication> _logger;
-    private readonly AgentTokenHelper _agentTokenHelper;
 
     // Process-local dedupe for message activities. Foundry's hosted-agent passthrough is
     // at-least-once: on a cold-start race the upstream YARP forwarder can return 5xx and
@@ -38,12 +32,10 @@ public class A365AgentApplication : AgentApplication
         AgentApplicationOptions options,
         ResponsesApiAgentLogicServiceFactory factory,
         ILogger<A365AgentApplication> logger,
-        IConfiguration configuration,
-        AgentTokenHelper agentTokenHelper) : base(options)
+        IConfiguration configuration) : base(options)
     {
         _factory = factory ?? throw new ArgumentNullException(nameof(factory));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-        _agentTokenHelper = agentTokenHelper ?? throw new ArgumentNullException(nameof(agentTokenHelper));
         // Configure the agent to handle message activities
         ConfigureMessageHandling();
         _logger = logger;
@@ -137,129 +129,10 @@ public class A365AgentApplication : AgentApplication
                 }
             }
 
-            var apChannelId = turnContext.Activity.ChannelId?.ToString();
-            var apConversationType = turnContext.Activity.Conversation?.ConversationType;
-            var isTeamsChannelActivity = string.Equals(apChannelId, "msteams", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(apConversationType, "channel", StringComparison.OrdinalIgnoreCase);
-
-            // Graph setReaction for messages (📌 acknowledgment).
-            if (!isTeamsChannelActivity &&
-                turnContext.Activity.ChannelId == "msteams" &&
-                !string.IsNullOrEmpty(turnContext.Activity.Id))
-            {
-                try
-                {
-                    string? teamId = null;
-                    string? channelId = null;
-                    if (turnContext.Activity.ChannelData is JsonElement channelData &&
-                        channelData.ValueKind == JsonValueKind.Object)
-                    {
-                        if (channelData.TryGetProperty("team", out var teamProp) &&
-                            teamProp.ValueKind == JsonValueKind.Object)
-                        {
-                            if (teamProp.TryGetProperty("aadGroupId", out var aadGroupIdProp) &&
-                                aadGroupIdProp.ValueKind == JsonValueKind.String)
-                            {
-                                teamId = aadGroupIdProp.GetString();
-                            }
-                            else if (teamProp.TryGetProperty("id", out var teamIdProp))
-                            {
-                                teamId = teamIdProp.GetString();
-                            }
-                        }
-                        if (channelData.TryGetProperty("channel", out var channelProp) &&
-                            channelProp.ValueKind == JsonValueKind.Object &&
-                            channelProp.TryGetProperty("id", out var channelIdProp))
-                        {
-                            channelId = channelIdProp.GetString();
-                        }
-                    }
-
-                    string? setReactionUrl = null;
-                    if (!string.IsNullOrEmpty(teamId) && !string.IsNullOrEmpty(channelId))
-                    {
-                        var convId = turnContext.Activity.Conversation?.Id ?? string.Empty;
-                        var marker = ";messageid=";
-                        var idx = convId.IndexOf(marker, StringComparison.Ordinal);
-                        if (idx >= 0)
-                        {
-                            var rootMessageId = convId.Substring(idx + marker.Length);
-                            var replyId = turnContext.Activity.Id;
-                            if (!string.Equals(rootMessageId, replyId, StringComparison.Ordinal))
-                            {
-                                setReactionUrl =
-                                    $"https://graph.microsoft.com/v1.0/teams/{teamId}/channels/{channelId}/messages/{rootMessageId}/replies/{replyId}/setReaction";
-                            }
-                            else
-                            {
-                                setReactionUrl =
-                                    $"https://graph.microsoft.com/v1.0/teams/{teamId}/channels/{channelId}/messages/{rootMessageId}/setReaction";
-                            }
-                        }
-                        else
-                        {
-                            setReactionUrl =
-                                $"https://graph.microsoft.com/v1.0/teams/{teamId}/channels/{channelId}/messages/{turnContext.Activity.Id}/setReaction";
-                        }
-                    }
-                    else if (!string.IsNullOrEmpty(turnContext.Activity.Conversation?.Id))
-                    {
-                        setReactionUrl =
-                            $"https://graph.microsoft.com/v1.0/chats/{turnContext.Activity.Conversation.Id}/messages/{turnContext.Activity.Id}/setReaction";
-                    }
-
-                    if (setReactionUrl == null)
-                    {
-                        _logger.LogWarning(
-                            "Graph setReaction skipped: missing team/channel/chat IDs (channelId={ChannelId}, convId={ConversationId})",
-                            turnContext.Activity.ChannelId,
-                            turnContext.Activity.Conversation?.Id);
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "Attempting Graph setReaction. url={Url} activityId={ActivityId}",
-                            setReactionUrl,
-                            turnContext.Activity.Id);
-
-                        var agentForReaction = await GetAgentFromRecipient(turnContext.Activity);
-                        var graphCredential = new AgentTokenCredential(_agentTokenHelper, agentForReaction);
-                        var graphToken = await graphCredential.GetTokenAsync(
-                            new TokenRequestContext(new[] { "https://graph.microsoft.com/.default" }),
-                            cancellationToken);
-
-                        using var graphHttp = new HttpClient();
-                        using var graphRequest = new HttpRequestMessage(HttpMethod.Post, setReactionUrl);
-                        graphRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", graphToken.Token);
-                        graphRequest.Content = new StringContent(
-                            "{\"reactionType\": \"\\uD83D\\uDC4D\"}",
-                            Encoding.UTF8,
-                            "application/json");
-
-                        var graphResponse = await graphHttp.SendAsync(graphRequest, cancellationToken);
-                        var graphBody = await graphResponse.Content.ReadAsStringAsync(cancellationToken);
-                        if (graphResponse.IsSuccessStatusCode)
-                        {
-                            _logger.LogInformation(
-                                "Graph setReaction succeeded ({Status}) at {Url}",
-                                (int)graphResponse.StatusCode,
-                                setReactionUrl);
-                        }
-                        else
-                        {
-                            _logger.LogError(
-                                "Graph setReaction failed: {Status} {Body} at {Url}",
-                                (int)graphResponse.StatusCode,
-                                graphBody,
-                                setReactionUrl);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to send reaction via Graph setReaction");
-                }
-            }
+            // Reactions (👍 for "I'm replying", 📌 for "I logged a work item") are posted from
+            // the agent logic service after the addressed-to-agent gate decides the agent will
+            // actually reply, so messages the agent stays silent on get no reaction at all.
+            // See ReactionService + ResponsesApiAgentLogicService for the gating.
 
             // Open a Teams "typing indicator" stream for 1:1 chats so the user sees the
             // agent is working. We skip streaming for Teams group chats and channel

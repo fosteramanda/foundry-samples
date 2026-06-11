@@ -27,12 +27,18 @@ internal class TeamsActivityHelper
     }
 
     /// <summary>
-    /// Wraps the LLM response in an outbound Activity, prepending a Teams @-mention of the
-    /// original sender (the writer of the message we're responding to) when the conversation
-    /// is a Teams group chat or channel. In 1:1 personal chats the mention is omitted -
-    /// there's no ambiguity about who the agent is talking to.
+    /// Wraps the LLM response in an outbound Activity. In Teams group chats and channels we
+    /// always prepend a "reply blockquote" so the user can see which message the agent is
+    /// responding to. The @-mention of the original sender is added only when
+    /// <paramref name="includeMention"/> is true — typically when the user explicitly
+    /// @-mentioned the agent in their message (caller threads this through from
+    /// <see cref="AddressedVerdict.WasExplicitlyMentioned"/>). When the user did not
+    /// @-mention the agent (e.g. the LLM judge inferred the message was addressed to it),
+    /// we keep the reply blockquote for context but skip the mention so we don't ping the
+    /// user unnecessarily. In 1:1 personal chats and non-Teams channels the mention and
+    /// blockquote are both omitted — there's no ambiguity about who the agent is talking to.
     /// </summary>
-    internal Activity BuildResponseActivity(ITurnContext turnContext, string responseText)
+    internal Activity BuildResponseActivity(ITurnContext turnContext, string responseText, bool includeMention)
     {
         var channelId = turnContext.Activity.ChannelId?.ToString();
         var conversationType = turnContext.Activity.Conversation?.ConversationType;
@@ -43,45 +49,67 @@ internal class TeamsActivityHelper
                 || string.Equals(conversationType, "channel", StringComparison.OrdinalIgnoreCase));
 
         var sender = turnContext.Activity.From;
-        if (!isTeamsGroupOrChannel
-            || sender == null
-            || string.IsNullOrWhiteSpace(sender.Id)
-            || string.IsNullOrWhiteSpace(sender.Name))
+        if (!isTeamsGroupOrChannel)
         {
             return (Activity)MessageFactory.Text(responseText);
         }
 
-        var encodedName = System.Net.WebUtility.HtmlEncode(sender.Name);
-        var mentionText = $"<at>{encodedName}</at>";
-
-        var mention = new Mention
-        {
-            Mentioned = new ChannelAccount
-            {
-                Id = sender.Id,
-                Name = sender.Name,
-            },
-            Text = mentionText,
-        };
-
         var quoteBlock = BuildTeamsReplyBlockquote(turnContext.Activity);
-        var activityText = quoteBlock != null
-            ? $"{quoteBlock}<p>{mentionText} {responseText}</p>"
-            : $"{mentionText} {responseText}";
 
-        var activity = (Activity)MessageFactory.Text(activityText);
-        activity.Entities ??= new List<Entity>();
-        activity.Entities.Add(mention);
+        var canIncludeMention = includeMention
+            && sender != null
+            && !string.IsNullOrWhiteSpace(sender.Id)
+            && !string.IsNullOrWhiteSpace(sender.Name);
+
+        if (canIncludeMention)
+        {
+            var encodedName = System.Net.WebUtility.HtmlEncode(sender!.Name);
+            var mentionText = $"<at>{encodedName}</at>";
+
+            var mention = new Mention
+            {
+                Mentioned = new ChannelAccount
+                {
+                    Id = sender.Id,
+                    Name = sender.Name,
+                },
+                Text = mentionText,
+            };
+
+            var activityText = quoteBlock != null
+                ? $"{quoteBlock}<p>{mentionText} {responseText}</p>"
+                : $"{mentionText} {responseText}";
+
+            var activity = (Activity)MessageFactory.Text(activityText);
+            activity.Entities ??= new List<Entity>();
+            activity.Entities.Add(mention);
+
+            _logger.LogInformation(
+                "Outbound response: prepending @-mention of original sender. senderId={SenderId} senderName={SenderName} channelId={ChannelId} conversationType={ConversationType} quotedMessageId={QuotedMessageId}",
+                sender.Id,
+                sender.Name,
+                channelId,
+                conversationType,
+                quoteBlock != null ? turnContext.Activity.Id : null);
+
+            return activity;
+        }
+
+        // Group chat / channel reply WITHOUT @-mention - keeps the reply blockquote for
+        // context but doesn't ping the original sender. Used when the user addressed the
+        // agent implicitly (LLM judge YES) rather than via explicit @-mention.
+        var activityTextNoMention = quoteBlock != null
+            ? $"{quoteBlock}<p>{responseText}</p>"
+            : responseText;
 
         _logger.LogInformation(
-            "Outbound response: prepending @-mention of original sender. senderId={SenderId} senderName={SenderName} channelId={ChannelId} conversationType={ConversationType} quotedMessageId={QuotedMessageId}",
-            sender.Id,
-            sender.Name,
+            "Outbound response: reply blockquote without @-mention. channelId={ChannelId} conversationType={ConversationType} quotedMessageId={QuotedMessageId} includeMentionRequested={IncludeMentionRequested}",
             channelId,
             conversationType,
-            quoteBlock != null ? turnContext.Activity.Id : null);
+            quoteBlock != null ? turnContext.Activity.Id : null,
+            includeMention);
 
-        return activity;
+        return (Activity)MessageFactory.Text(activityTextNoMention);
     }
 
     /// <summary>

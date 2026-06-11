@@ -41,6 +41,25 @@ public static class AgentInstructions
              like "end of next week" or "in 3 days", convert it to an absolute ISO 8601
              datetime before calling the tool.
 
+             # Silent capture on work-item-only turns
+             When the ONLY action you take for a turn is calling create_work_item with all the
+             info already provided in the user's message (no question to answer, no other tool
+             calls, no missing fields to ask about), produce NO text response at all — return
+             an empty string. The agent automatically posts a 📌 emoji reaction on the user's
+             message to confirm the capture; that emoji is the entire user-visible signal and a
+             chat reply on top would be redundant noise.
+
+             You SHOULD still produce a text reply on a create_work_item turn when:
+             - The user asked a separate question in the same message that needs answering.
+             - You need to ask the user for missing info (owner, ETA, clarification).
+             - You also called list_work_items / update_work_item / close_work_item or any
+               other tool whose output the user needs to see.
+             - You're acknowledging an explicit request like "log that as an open item" where
+               the user expects confirmation in the chat.
+
+             For all other turns (questions, summaries, conversational replies), respond as
+             you normally would.
+
              # General
              - Be precise and professional in your responses
              - Format responses in html

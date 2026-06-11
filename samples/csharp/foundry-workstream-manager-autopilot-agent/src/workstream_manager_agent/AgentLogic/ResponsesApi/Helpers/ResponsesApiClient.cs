@@ -47,11 +47,15 @@ internal class ResponsesApiClient
         string? instructionsOverride = null,
         bool includeMcpTools = true,
         bool persistResponseId = true,
+        string? modelDeploymentOverride = null,
+        bool usePreviousResponseId = true,
         List<JsonNode>? additionalTools = null,
         Func<string, string, Task<string?>>? localToolExecutor = null)
     {
         var endpoint = _configuration["AzureOpenAIEndpoint"] ?? throw new InvalidOperationException("AzureOpenAIEndpoint not configured");
-        var deployment = _configuration["ModelDeployment"] ?? throw new InvalidOperationException("ModelDeployment not configured");
+        var deployment = string.IsNullOrWhiteSpace(modelDeploymentOverride)
+            ? _configuration["ModelDeployment"] ?? throw new InvalidOperationException("ModelDeployment not configured")
+            : modelDeploymentOverride.Trim();
         var instructions = instructionsOverride ?? AgentInstructions.GetInstructions(_agentMetadata);
 
         var mcpTools = includeMcpTools
@@ -69,18 +73,31 @@ internal class ResponsesApiClient
             }).ToArray()
             : Array.Empty<object>();
 
-        var localTools = includeMcpTools ? additionalTools ?? [] : [];
+        // Local function tools (like create_work_item) are independent of MCP server tools.
+        // Honor additionalTools regardless of includeMcpTools so callers can run an MCP-free
+        // pass with only local tools available (e.g. passive work-item detection).
+        var localTools = additionalTools ?? [];
 
         _logger.LogInformation(
-            "Invoking Responses API with {McpToolCount} MCP tool servers and {LocalToolCount} local tools (persistResponseId={Persist})",
+            "Invoking Responses API with {McpToolCount} MCP tool servers and {LocalToolCount} local tools (persistResponseId={Persist}, model={Deployment}, usePreviousResponseId={UsePreviousResponseId})",
             mcpTools.Length,
             localTools.Count,
-            persistResponseId);
+            persistResponseId,
+            deployment,
+            usePreviousResponseId);
 
-        var previousResponseId = LoadPreviousResponseId(conversationId);
-        if (previousResponseId != null)
+        string? previousResponseId = null;
+        if (usePreviousResponseId)
         {
-            _logger.LogInformation("Continuing conversation {ConversationId} with previous_response_id: {PreviousResponseId}", conversationId, previousResponseId);
+            previousResponseId = LoadPreviousResponseId(conversationId);
+            if (previousResponseId != null)
+            {
+                _logger.LogInformation("Continuing conversation {ConversationId} with previous_response_id: {PreviousResponseId}", conversationId, previousResponseId);
+            }
+        }
+        else
+        {
+            _logger.LogInformation("Skipping previous_response_id lookup for conversation {ConversationId}", conversationId);
         }
 
         var requestUrl = $"{endpoint.TrimEnd('/')}/openai/responses?api-version=2025-03-01-preview";
@@ -193,19 +210,19 @@ internal class ResponsesApiClient
             ["input"] = inputPayload,
         };
 
-        if (includeMcpTools)
+        // mcpTools is empty when includeMcpTools is false; localTools is empty when caller
+        // didn't pass additionalTools. So this naturally produces the right set for all three
+        // call modes: full agent (mcp + local), judge (neither), passive detection (local only).
+        var allTools = new List<object>();
+        allTools.AddRange(mcpTools);
+        foreach (var localTool in localTools)
         {
-            var allTools = new List<object>();
-            allTools.AddRange(mcpTools);
-            foreach (var localTool in localTools)
-            {
-                allTools.Add(localTool);
-            }
+            allTools.Add(localTool);
+        }
 
-            if (allTools.Count > 0)
-            {
-                requestBody["tools"] = allTools;
-            }
+        if (allTools.Count > 0)
+        {
+            requestBody["tools"] = allTools;
         }
 
         if (priorResponseId != null)

@@ -36,8 +36,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         logger.LogInformation("Acquired token for Responses API MCP tools. Expires at: {Expiration}", accessToken.ExpiresOn);
 
         // Acquire a Microsoft Graph token alongside the MCP token so the agent logic can call
-        // Graph (e.g. to resolve user identifiers for access control and work item assignment).
-        // Same AgentTokenCredential pattern that A365AgentApplication already uses for setReaction.
+        // Graph (e.g. setReaction acknowledgments, resolving user identifiers for access control
+        // and work item assignment, and chat-member lookups for the addressed-to-agent gate).
         // We tolerate failure here — Graph lookups are an enhancement; the agent still works without them.
         string? graphAccessToken = null;
         try
