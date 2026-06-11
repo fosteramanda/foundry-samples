@@ -91,6 +91,95 @@ The autopilot agent is designed to live in Teams group chats and Teams 1:1 DMs.
 
 ---
 
+## 🧰 Toolboxes with autopilot agents (preview)
+
+[Toolboxes](https://learn.microsoft.com/azure/ai-foundry/) are how Foundry projects bundle MCP tools for hosted agents: a toolbox is a project resource containing tool entries, each backed by a **project connection** that declares how Foundry authenticates to the downstream server. Agents consume the whole bundle through one MCP proxy endpoint:
+
+```
+{projectEndpoint}/toolboxes/{name}/mcp?api-version=v1
+```
+
+### Why this works for autopilot agents
+
+The toolbox proxy resolves each tool's credential server-side. For connections with `authType: UserEntraToken` (identity passthrough), the proxy forwards **the caller's Entra identity** to the downstream server. An autopilot agent calls the proxy with an **agent-user token** (acquired via the [agent user impersonation flow](https://learn.microsoft.com/en-us/entra/agent-id/agent-user-oauth-flow) — the same `AgentTokenHelper` machinery this sample already uses for Graph and WorkIQ). The downstream tools therefore act as **the digital worker itself** — not on behalf of a human, and not as an app-only service principal. This is the same capability-vs-access split as the rest of the autopilot story: the blueprint declares *what* the agent can do (ADO scopes, Calendar scopes); the agent manager grants *which* resources each instance touches (e.g. adds the agent user to the team's ADO project).
+
+### Setup (Azure DevOps MCP example)
+
+1. **Connect the tool** (Foundry portal → Build → **Tools** → *Azure DevOps MCP Server (preview)* → **Connect**):
+   - `orgName` = your ADO organization (e.g. `notarealco`) — the endpoint becomes `https://mcp.dev.azure.com/<org>`
+   - Authentication = **OAuth Identity Passthrough**, OAuth Provider = **Managed**
+   - The dialog creates the project connection for you (default name `AzureDevOpsMCPServerpreview`, category `RemoteTool`, authType `UserEntraToken`, audience `api://2a72489c-aab2-4b65-b93a-a91edccf33b8`).
+2. **Create the toolbox** (portal → Build → **Toolboxes** → new toolbox → add the connected tool), or automate it with [scripts/create-toolbox.ps1](./scripts/create-toolbox.ps1). The toolbox page shows the MCP endpoint the agent will call:
+   ```
+   https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/<name>/mcp?api-version=v1
+   ```
+3. **Point the agent at the toolbox** in appsettings: set `ToolboxName` (and `FoundryProjectEndpoint`, auto-injected as `FOUNDRY_PROJECT_ENDPOINT` in hosted containers). Two modes:
+   - **Hybrid (recommended, the default here):** keep `McpDiscoverySource: "Manifest"` — the agent keeps all its WorkIQ tools (Word, Mail, OneDrive, …) and the toolbox is *attached alongside them* with its own agent-user bearer token.
+   - **Toolbox-only:** set `McpDiscoverySource: "Toolbox"` — the toolbox proxy becomes the agent's only tool source. (Don't use this if the agent still needs the manifest's WorkIQ tools.)
+   - Optionally pin `ToolboxVersion` (e.g. `"1"`); empty tracks the latest toolbox version.
+4. **Declare capability scopes on the blueprint** (inheritable permissions) so agent-user tokens can be minted for the downstream audiences — the [agent user impersonation flow](https://learn.microsoft.com/en-us/entra/agent-id/agent-user-oauth-flow) scopes access to the delegations assigned to the agent identity. Two resources are involved for the toolbox path, both addable with the existing [add-blueprint-inheritable-scopes.ps1](./scripts/add-blueprint-inheritable-scopes.ps1):
+
+   ```powershell
+   # First, discover the appId + delegated scope names each resource exposes in your tenant
+   # (the scope is assumed to be user_impersonation below — verify before running):
+   az ad sp show --id https://ai.azure.com --query "{appId:appId, scopes:oauth2PermissionScopes[].value}"
+   az ad sp show --id 2a72489c-aab2-4b65-b93a-a91edccf33b8 --query "{name:displayName, scopes:oauth2PermissionScopes[].value}"
+
+   # Foundry data plane — without this, the agent token service can't mint the toolbox
+   # bearer at all (symptom: "Failed to acquire toolbox bearer token" warning in agent logs).
+   ./scripts/add-blueprint-inheritable-scopes.ps1 -BlueprintAppId "<blueprint-app-id>" `
+       -ResourceAppId "<ai.azure.com appId from the query above>" -Scopes "user_impersonation"
+
+   # Azure DevOps MCP server — without this, the toolbox proxy can't exchange the
+   # agent-user token toward the ADO MCP audience (symptom: auth error in the tool result).
+   ./scripts/add-blueprint-inheritable-scopes.ps1 -BlueprintAppId "<blueprint-app-id>" `
+       -ResourceAppId "2a72489c-aab2-4b65-b93a-a91edccf33b8" -Scopes "user_impersonation"
+   ```
+
+   Inheritable scopes added **after** an instance was hired may not flow to it — re-approve in MAC if prompted, and if the existing instance still can't get tokens for the new audiences, hire a fresh instance. (Test-first is reasonable: deploy without these, read the exact error, then add what it names.)
+
+### Granting access — happens AFTER the instance is hired
+
+Everything above is blueprint/project setup that happens **before** any agent instance exists. The access grant is different — it can only happen at the **end** of the chain, because the identity it targets doesn't exist until then:
+
+1. Blueprint published → approved in the Microsoft Admin Center → configured in the Teams dev portal → **hired in Teams**. Hiring is what creates the agent identity + **agent user**. Find the agent user's UPN/object ID in the Entra admin center (Agent ID view) — you'll need it for every grant below.
+2. **Foundry data-plane RBAC** — the toolbox MCP proxy enforces Azure RBAC on the project, and the agent user has none by default:
+
+   ```powershell
+   az role assignment create --assignee "<agent-user-object-id>" `
+       --role "Azure AI User" `
+       --scope "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<foundry-account>"
+   ```
+
+3. **Azure DevOps organization access** — this is an *access level* (a license), not a role. `Basic` is the right level for reading and writing work items (`Stakeholder` is too limited); its CLI name is `express`:
+
+   ```powershell
+   az extension add --name azure-devops   # once
+   az devops user add --email-id "<agent-user-upn>" --license-type express `
+       --organization https://dev.azure.com/<org>
+   ```
+
+4. **Azure DevOps project access** — org membership alone grants no project visibility. Project permissions come from security-group membership; **Contributors** is the right group for work-item read/write (use **Readers** for read-only):
+
+   ```powershell
+   $contributors = az devops security group list --project "<project>" `
+       --organization https://dev.azure.com/<org> `
+       --query "graphGroups[?displayName=='Contributors'].descriptor | [0]" -o tsv
+   az devops security group membership add --group-id $contributors `
+       --member-id "<agent-user-upn>" --organization https://dev.azure.com/<org>
+   ```
+
+   UI alternative that does steps 3+4 in one dialog: ADO **Organization settings → Users → Add users** → agent user's UPN, Access level **Basic**, *Add to projects:* your project (default group Contributors).
+5. Until these grants exist, expect the toolbox call to fail with 401/403 at the proxy (missing RBAC) or the ADO tools to return 401/"project not found" (missing org/project access) — that's the capability-vs-access split working as designed, not a bug. For repeatable onboarding, put the Azure AI User role and the ADO group rule on an Entra security group once, then just add each agent user to the group at hire time.
+
+### Preview notes
+
+- The toolbox data plane requires the `Foundry-Features: Toolboxes=V1Preview` header; the agent sends it automatically (override with `ToolboxFeaturesHeader`).
+- The bearer scope presented to the proxy defaults to `https://ai.azure.com/.default` and is configurable via `ToolboxAccessTokenScope` while toolbox auth is in preview. The agent-user token issuance path for the toolbox proxy is the main untested assumption of this experiment — if the proxy rejects the agent-user bearer, capture the response and adjust the scope (or the blueprint's delegations) accordingly.
+- In hybrid mode a toolbox token failure is non-fatal: the agent logs a warning and continues with its WorkIQ tools only.
+
+---
+
 ## 🚀 Quick Start
 
 ### Step 1: Authenticate

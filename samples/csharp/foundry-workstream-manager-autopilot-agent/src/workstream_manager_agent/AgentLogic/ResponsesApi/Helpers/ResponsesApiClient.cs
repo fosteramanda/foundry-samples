@@ -59,17 +59,31 @@ internal class ResponsesApiClient
         var instructions = instructionsOverride ?? AgentInstructions.GetInstructions(_agentMetadata);
 
         var mcpTools = includeMcpTools
-            ? _mcpServers.Select(server => (object)new
+            ? _mcpServers.Select(server =>
             {
-                type = "mcp",
-                server_label = server.McpServerName,
-                server_url = server.Url,
-                server_description = $"MCP server: {server.McpServerName}",
-                require_approval = "never",
-                headers = new Dictionary<string, string>
+                var headers = new Dictionary<string, string>
                 {
                     ["Authorization"] = $"Bearer {_accessToken}"
+                };
+                // Per-server extra headers (e.g. the Foundry toolbox proxy's
+                // "Foundry-Features" preview flag) layer on top of the bearer.
+                if (server.Headers != null)
+                {
+                    foreach (var kv in server.Headers)
+                    {
+                        headers[kv.Key] = kv.Value;
+                    }
                 }
+
+                return (object)new
+                {
+                    type = "mcp",
+                    server_label = server.McpServerName,
+                    server_url = server.Url,
+                    server_description = $"MCP server: {server.McpServerName}",
+                    require_approval = "never",
+                    headers,
+                };
             }).ToArray()
             : Array.Empty<object>();
 

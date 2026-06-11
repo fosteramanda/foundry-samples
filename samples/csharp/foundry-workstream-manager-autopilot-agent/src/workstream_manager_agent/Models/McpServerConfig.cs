@@ -27,5 +27,13 @@ public class McpServerConfig
 
     [JsonPropertyName("publisher")]
     public string Publisher { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional extra HTTP headers to send to this MCP server alongside the Authorization
+    /// bearer. Used by the Foundry toolbox MCP proxy, which requires a feature-flag header
+    /// (e.g. "Foundry-Features: Toolboxes=V1Preview") while toolboxes are in preview.
+    /// </summary>
+    [JsonPropertyName("headers")]
+    public Dictionary<string, string>? Headers { get; set; }
 }
 
