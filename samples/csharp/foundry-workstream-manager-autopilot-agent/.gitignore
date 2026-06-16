@@ -49,3 +49,9 @@ nunit-*.xml
 
 # Foundry agent debug logs captured via the dw-log-loop skill
 agent-logs-foundry-*.log
+
+# Visual Studio Code
+.vscode/
+
+# Compiled Bicep (ARM) output from `az bicep build`
+infra/main.json

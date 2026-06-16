@@ -106,6 +106,68 @@ catch {
     }
 }
 
+# -----------------------------------------------------------------------------
+# Toolbox (Azure DevOps MCP) admin consent on the blueprint SP.
+#
+# Same oauth2PermissionGrant (AllPrincipals) pattern as the prod MCP / APX grants
+# above, for the two audiences the agent-user impersonation flow mints tokens for:
+#   - ai.azure.com (Foundry data plane): mints the toolbox bearer.
+#   - Azure DevOps MCP server: the proxy exchanges the agent-user token toward ADO.
+# The ADO MCP resource app often has NO service principal in the tenant yet, so we
+# ensure one exists before granting (idempotent). Instances inherit this consent
+# via the blueprint inheritablePermissions declared further below.
+# Relevant only when the agent attaches a toolbox (appsettings ToolboxName set).
+# -----------------------------------------------------------------------------
+$toolboxAudiences = @(
+    @{ Label = "Foundry data plane (ai.azure.com)"; AppId = "18a66f5f-dbdf-4c17-9dd7-1634712a9cbe" },
+    @{ Label = "Azure DevOps MCP server";           AppId = "2a72489c-aab2-4b65-b93a-a91edccf33b8" }
+)
+
+foreach ($audience in $toolboxAudiences) {
+    $audienceSp = az ad sp show --id $audience.AppId --query id -o tsv 2>$null
+    if ([string]::IsNullOrEmpty($audienceSp)) {
+        Write-Host "Service principal for $($audience.Label) ($($audience.AppId)) not found; creating it..."
+        $audienceSp = az ad sp create --id $audience.AppId --query id -o tsv
+        if ([string]::IsNullOrEmpty($audienceSp)) {
+            throw "Failed to create service principal for $($audience.Label) ($($audience.AppId))."
+        }
+    }
+
+    try {
+        $toolboxGrant = @"
+{
+  "clientId": "$blueprintSP",
+  "consentType": "AllPrincipals",
+  "principalId": null,
+  "resourceId": "$audienceSp",
+  "scope": "user_impersonation"
+}
+"@
+        $response = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" `
+            -Method Post `
+            -Headers @{
+                "Content-Type"  = "application/json"
+                "Accept"        = "application/json"
+                "Authorization" = "Bearer $($graphToken)"
+            } `
+            -Body $toolboxGrant
+
+        Write-Host ""
+        Write-Host "$($audience.Label) oauth grant response:"
+        $response | ConvertTo-Json -Depth 5 | Write-Host
+    }
+    catch {
+        $err = $_.ErrorDetails.Message | ConvertFrom-Json
+        if ($err.error.code -eq "Request_BadRequest" -and
+            $err.error.message -like "*Permission entry already exists*") {
+            Write-Host "$($audience.Label) permission already exists  ignoring."
+        }
+        else {
+            throw
+        }
+    }
+}
+
 $graphReactionScopes = @(
     "ChatMessage.Send",
     "ChannelMessage.Send",
@@ -225,6 +287,43 @@ Write-Host "Ensuring blueprint inheritable Microsoft Graph scopes for reactions.
     -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
     -ResourceAppId $graphAppId `
     -Scopes $graphReactionScopes
+
+# -----------------------------------------------------------------------------
+# Toolbox (Azure DevOps MCP) capability scopes.
+#
+# The toolbox path authorizes via the agent-user impersonation flow, which mints
+# tokens for two downstream audiences. Unlike the prod MCP / APX / Graph resources
+# above (admin-consented via oauth2PermissionGrants), the Azure DevOps MCP resource
+# app typically has NO service principal in the tenant, so it can't be granted that
+# way. Instead we declare both audiences as inheritable scopes on the blueprint;
+# they are consented when the published digital worker is approved in the admin
+# center (same as the inheritable Graph scopes above).
+#   - ai.azure.com (Foundry data plane): without it the agent token service can't
+#     mint the toolbox bearer at all ("Failed to acquire toolbox bearer token").
+#   - Azure DevOps MCP server (api://2a72489c-...): without it the toolbox proxy
+#     can't exchange the agent-user token toward the ADO MCP audience.
+# Relevant only when the agent attaches a toolbox (appsettings ToolboxName set);
+# harmless otherwise. Access to the actual ADO org/project is a separate, post-hire
+# grant on the agent user (see readme "Granting access").
+# -----------------------------------------------------------------------------
+$foundryDataPlaneAppId = "18a66f5f-dbdf-4c17-9dd7-1634712a9cbe"  # https://ai.azure.com
+$resolvedFoundryAppId = az ad sp show --id "https://ai.azure.com" --query appId -o tsv 2>$null
+if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($resolvedFoundryAppId)) {
+    $foundryDataPlaneAppId = $resolvedFoundryAppId.Trim()
+}
+$adoMcpAppId = "2a72489c-aab2-4b65-b93a-a91edccf33b8"            # Azure DevOps MCP server (preview)
+
+Write-Host "Ensuring blueprint inheritable Foundry data-plane scope (toolbox bearer)..."
+& "$PSScriptRoot/add-blueprint-inheritable-scopes.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $foundryDataPlaneAppId `
+    -Scopes "user_impersonation"
+
+Write-Host "Ensuring blueprint inheritable Azure DevOps MCP scope (toolbox identity passthrough)..."
+& "$PSScriptRoot/add-blueprint-inheritable-scopes.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $adoMcpAppId `
+    -Scopes "user_impersonation"
 
 Write-Host "Per-agent Microsoft Graph oauth grant is intentionally not applied."
 Write-Host "This environment relies on blueprint grant + inheritablePermissions."

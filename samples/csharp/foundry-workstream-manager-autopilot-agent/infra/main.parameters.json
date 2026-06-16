@@ -19,6 +19,9 @@
     },
     "modelVersion": {
       "value": "${MODEL_VERSION}"
+    },
+    "modelCapacity": {
+      "value": "${MODEL_CAPACITY=100}"
     }
   }
 }

@@ -18,6 +18,9 @@ param publicNetworkAccess string = 'Enabled'
 param modelName string
 param modelVersion string
 
+@description('GlobalStandard capacity (1000 TPM per unit). 1 throttles tool-calling agents; 100 gives headroom.')
+param modelCapacity int = 100
+
 @description('Enable monitoring via Application Insights and Log Analytics')
 param enableMonitoring bool = true
 
@@ -124,7 +127,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   parent: account
   sku: {
     name: 'GlobalStandard'
-    capacity: 1
+    capacity: modelCapacity
   }
   properties: {
     model: {
