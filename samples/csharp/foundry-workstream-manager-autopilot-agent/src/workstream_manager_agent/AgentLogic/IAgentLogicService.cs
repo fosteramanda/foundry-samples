@@ -7,6 +7,11 @@ using Microsoft.Agents.Builder.State;
 public interface IAgentLogicService
 {
     /// <summary>
+    /// Handles email notification events
+    /// </summary>
+    Task HandleEmailNotificationAsync(ITurnContext turnContext, ITurnState turnState, AgentNotificationActivity emailEvent);
+
+    /// <summary>
     /// Handles document comment notification events (Word, Excel, PowerPoint)
     /// </summary>
     Task HandleCommentNotificationAsync(ITurnContext turnContext, ITurnState turnState, AgentNotificationActivity commentEvent);

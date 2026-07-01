@@ -345,8 +345,13 @@ internal class ResponsesApiClient
 
     private static string GetResponseIdFilePath(string conversationId)
     {
-        var safeId = Convert.ToBase64String(Encoding.UTF8.GetBytes(conversationId))
-            .Replace('/', '_').Replace('+', '-').TrimEnd('=');
+        // Hash the conversation ID so the filename is always a fixed, filesystem-safe length.
+        // Some channels (notably Word comment notifications) deliver very long conversation IDs
+        // whose base64 form blows past Linux's 255-byte NAME_MAX. The hash is deterministic, so
+        // LoadPreviousResponseId and SaveResponseId still resolve to the same file across calls
+        // in the same conversation.
+        var hashBytes = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(conversationId));
+        var safeId = Convert.ToHexString(hashBytes).ToLowerInvariant();
         return Path.Combine(GetResponseStoreDir(), $"{safeId}.responseid");
     }
 

@@ -46,21 +46,28 @@ public class A365AgentApplication : AgentApplication
     /// </summary>
     private void ConfigureMessageHandling()
     {
+        // Handle Email notifications using the AgentNotification extension. Inbound emails are
+        // delivered here by the A365 channel; HandleEmailNotificationAsync drafts a reply and
+        // sends it back via the activity protocol (no Mail MCP tool required).
+        this.OnAgenticEmailNotification(async (turnContext, turnState, agentNotificationActivity, cancellationToken) =>
+        {
+            var agent = await GetAgentFromRecipient(turnContext.Activity);
+            var agentService = await _factory.CreateAsync(agent, turnContext, UserAuthorization);
+            await agentService.HandleEmailNotificationAsync(turnContext, turnState, agentNotificationActivity);
+        });
+
         // Handle Word notifications
         this.OnAgenticWordNotification(async (turnContext, turnState, agentNotificationActivity, cancellationToken) =>
         {
             var agent = await GetAgentFromRecipient(turnContext.Activity);
             var agentService = await _factory.CreateAsync(agent, turnContext, UserAuthorization);
 
-            if (agent.IsMessagingEnabled)
-            {
-                // Use the specific comment notification handler for Word documents
-                await agentService.HandleCommentNotificationAsync(turnContext, turnState, agentNotificationActivity);
-            }
-            else
-            {
-                await agentService.NewActivityReceived(turnContext, turnState, cancellationToken);
-            }
+            // A Word notification is always a document-comment event, so route it to the
+            // dedicated comment handler. That handler retrieves the document + its comments via
+            // the Word / OneDrive-SharePoint MCP tools and replies to the comment. The
+            // IsMessagingEnabled flag gates Teams-style chat messaging (and is currently always
+            // false), so it must not decide whether a Word comment gets handled.
+            await agentService.HandleCommentNotificationAsync(turnContext, turnState, agentNotificationActivity);
         });
 
         // Handle Excel notifications
