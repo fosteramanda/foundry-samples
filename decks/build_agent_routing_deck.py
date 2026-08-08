@@ -32,6 +32,8 @@ TEAL_TINT = RGBColor(0xE8, 0xF4, 0xF1)
 AMBER = RGBColor(0xB8, 0x6E, 0x00)      # identity / governance
 AMBER_TINT = RGBColor(0xFD, 0xF4, 0xE3)
 
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
 FONT = "Segoe UI"
 DECK_TITLE = "The Future of Human-Agent Interaction"
 
@@ -103,19 +105,20 @@ def arrow(slide, x1, y1, x2, y2, color=MUTED, width=1.5, dashed=False):
     conn.line.color.rgb = color
     conn.line.width = Pt(width)
     line_el = conn.line._get_or_add_ln()
-    tail = line_el.makeelement(
-        "{http://schemas.openxmlformats.org/drawingml/2006/main}tailEnd", {}
-    )
+    # a:ln child order per DrawingML schema: fill, prstDash, ..., headEnd, tailEnd
+    if dashed:
+        dash = line_el.makeelement(f"{{{_A_NS}}}prstDash", {})
+        dash.set("val", "dash")
+        fill = line_el.find(f"{{{_A_NS}}}solidFill")
+        if fill is None:
+            line_el.insert(0, dash)
+        else:
+            fill.addnext(dash)
+    tail = line_el.makeelement(f"{{{_A_NS}}}tailEnd", {})
     tail.set("type", "triangle")
     tail.set("w", "med")
     tail.set("len", "med")
     line_el.append(tail)
-    if dashed:
-        dash = line_el.makeelement(
-            "{http://schemas.openxmlformats.org/drawingml/2006/main}prstDash", {}
-        )
-        dash.set("val", "dash")
-        line_el.insert(0, dash)
     return conn
 
 
@@ -348,8 +351,9 @@ def slide4(prs):
               align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE, spacing=4)
 
     span = pilot.width - Inches(1.2)
+    steps = max(len(surface_shapes) - 1, 1)
     for i, shape in enumerate(surface_shapes):
-        target_x = pilot.left + Inches(0.6) + Emu(int(span * i / (len(surface_shapes) - 1)))
+        target_x = pilot.left + Inches(0.6) + Emu(int(span * i / steps))
         arrow(slide, *center_bottom(shape), target_x, pilot.top, MUTED, 1.25, dashed=True)
 
     stage_label(slide, MARGIN, Inches(4.98), Inches(6.0), "Delegates a job-to-be-done", BLUE)
