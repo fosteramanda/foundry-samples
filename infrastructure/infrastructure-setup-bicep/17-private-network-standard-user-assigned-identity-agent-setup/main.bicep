@@ -117,6 +117,14 @@ param existingDnsZones object = {
   'privatelink.azurecr.io': ''
 }
 
+@description('Object mapping Azure Monitor private DNS zone names to the resource group of an existing zone, or empty string to create it. Use to bring your own centralized Private DNS Zones (e.g. an Azure Landing Zone connectivity subscription) for agent tracing.')
+param existingMonitorDnsZones object = {
+  'privatelink.monitor.azure.com': ''
+  'privatelink.oms.opinsights.azure.com': ''
+  'privatelink.ods.opinsights.azure.com': ''
+  'privatelink.agentsvc.azure-automation.net': ''
+}
+
 @description('Zone Names for Validation of existing Private Dns Zones')
 param dnsZoneNames array = [
   'privatelink.services.ai.azure.com'
@@ -320,6 +328,37 @@ module acr 'modules-network-secured/container-registry.bicep' = if (enableContai
   ]
 }
 
+// Application Insights for hosted-agent tracing (this template ships none). Creates a
+// workspace-based Application Insights and connects it to the account so the agent exports traces.
+module applicationInsights 'modules-network-secured/application-insights.bicep' = {
+  name: 'app-insights-${uniqueSuffix}-deployment'
+  params: {
+    location: location
+    suffix: uniqueSuffix
+    aiAccountName: aiAccount.outputs.accountName
+    disablePublicIngestion: true
+  }
+}
+
+// Private trace ingestion path (Azure Monitor Private Link Scope) so an in-VNet agent's traces
+// reach Application Insights over the private link rather than the (disabled) public endpoint.
+module monitorPrivateLink 'modules-network-secured/monitor-private-link-scope.bicep' = {
+  name: 'monitor-pls-${uniqueSuffix}-deployment'
+  params: {
+    location: location
+    suffix: uniqueSuffix
+    appInsightsId: applicationInsights.outputs.appInsightsId
+    logAnalyticsId: applicationInsights.outputs.logAnalyticsId
+    vnetId: vnet.outputs.virtualNetworkId
+    peSubnetId: vnet.outputs.peSubnetId
+    existingDnsZones: existingMonitorDnsZones
+    dnsZonesSubscriptionId: resolvedDnsZonesSubscriptionId
+  }
+  dependsOn: [
+    privateEndpointAndDNS
+  ]
+}
+
 /*
   Creates a new project (sub-resource of the AI Services account)
 */
@@ -457,4 +496,13 @@ dependsOn: [
   addProjectCapabilityHost
   storageContainersRoleAssignment
   ]
+}
+
+// Grant the agent's user-assigned identity read access on the tracing Application Insights (for evaluation)
+module applicationInsightsRoleAssignment 'modules-network-secured/application-insights-role-assignment.bicep' = {
+  name: 'app-insights-ra-${uniqueSuffix}-deployment'
+  params: {
+    appInsightsName: applicationInsights.outputs.appInsightsName
+    projectPrincipalId: identity.outputs.uaiPrincipalId
+  }
 }

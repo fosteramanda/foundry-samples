@@ -12,7 +12,7 @@ The agent uses `FoundryChatClient` from the Agent Framework to create a Response
 
 `AzureAISearchContextProvider` runs a search against the configured Azure AI Search index **before each model invocation** and injects the top results into the model context. The agent then composes a grounded answer and cites the source document.
 
-See [main.py](main.py) for the full implementation.
+See [main.py](src/agent-framework-agent-azure-search-rag-responses/main.py) for the full implementation.
 
 ### Agent Hosting
 
@@ -20,7 +20,7 @@ The agent is hosted using the [Agent Framework](https://github.com/microsoft/age
 
 ## Prerequisites
 
-- An Azure AI Foundry project with a deployed model (e.g., `gpt-4.1-mini`)
+- An Azure AI Foundry project with a deployed model (e.g., `gpt-5.4-mini`)
 - An Azure AI Search service ([create one](https://learn.microsoft.com/azure/search/search-create-service-portal))
 - **A pre-provisioned search index** with the schema and content described below
 - Azure CLI logged in (`az login`)
@@ -38,7 +38,7 @@ The sample assumes the search index already exists and contains documents the ag
 
 ### Option A: Python script (recommended)
 
-[`provision_index.py`](provision_index.py) creates the index (if it doesn't already exist) and seeds it with the three Contoso Outdoors documents using `DefaultAzureCredential`. Your identity needs the following roles on the **Azure AI Search service** scope:
+[`provision_index.py`](src/agent-framework-agent-azure-search-rag-responses/provision_index.py) creates the index (if it doesn't already exist) and seeds it with the three Contoso Outdoors documents using `DefaultAzureCredential`. Your identity needs the following roles on the **Azure AI Search service** scope:
 
 - **Search Service Contributor** — to create the index
 - **Search Index Data Contributor** — to upload documents
@@ -125,7 +125,7 @@ You can also point the sample at any existing index that exposes a retrievable t
 1. **Azure Developer CLI (`azd`)** — [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
 2. Install the AI agent extension:
    ```bash
-   azd ext install azure.ai.agents
+   azd ext install microsoft.foundry
    ```
 3. Authenticate:
    ```bash
@@ -139,7 +139,7 @@ No cloning required. Create a new folder and initialize from the manifest:
 ```bash
 mkdir my-search-rag-agent && cd my-search-rag-agent
 
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/11-azure-search-rag/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/11-azure-search-rag/azure.yaml
 ```
 
 Follow the prompts to configure your Foundry project and model deployment. If you don't have an existing Foundry project, `azd ai agent init` will guide you through creating one.
@@ -204,23 +204,32 @@ azd ai agent invoke "What is your return policy?"
 
 ### Prerequisites
 
-1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.azure-ai-foundry)** extension installed.
-2. Sign in to Azure in VS Code.
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
 
-### Create the project
+### Set up the Python virtual environment
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Create Hosted Agent**.
-2. Select this sample from the gallery. The extension scaffolds the project into a new workspace and generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically.
-3. Complete the **Foundry Project Setup** to pick the subscription and Foundry project (or create a new one).
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
 
 ### Run and debug the agent
 
-Press **F5** to start the agent in debug mode. The agent host will start on `http://localhost:8088`.
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
 
-### Test with Agent Inspector
+### Or run manually, then open the Inspector
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Open Agent Inspector**.
-2. The Inspector connects to the running agent. Send messages to chat and view streamed responses.
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ### Deploy to Foundry
 

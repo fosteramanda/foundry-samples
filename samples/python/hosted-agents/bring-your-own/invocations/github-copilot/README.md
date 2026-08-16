@@ -21,7 +21,7 @@ This agent supports two LLM backends. Configure one of the following:
 |----------|----------|-------------|
 | `GITHUB_TOKEN` | For Copilot model | GitHub fine-grained PAT with **Copilot Requests → Read-only** permission |
 | `FOUNDRY_PROJECT_ENDPOINT` | For Foundry model | Azure AI Foundry project endpoint URL. Auto-injected when hosted — only needed locally |
-| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | For Foundry model | Model deployment name (e.g. `gpt-4o`) |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | For Foundry model | Model deployment name (e.g. `gpt-5.4-mini`) |
 | `FOUNDRY_AGENT_SESSION_ID` | No | Session ID for persistence/resume. If unset, a UUID is generated |
 
 **How the agent selects its LLM backend:**
@@ -29,33 +29,54 @@ This agent supports two LLM backends. Configure one of the following:
 - If only `GITHUB_TOKEN` is set → uses the **GitHub Copilot model** (quickest way to get started)
 - If both are set → the **Foundry model takes precedence**
 
-## Running Locally
+> When deployed with `azd`, `azure.yaml` declares `AZURE_AI_MODEL_DEPLOYMENT_NAME` by default (the BYOK Foundry model). To use the GitHub Copilot model instead, comment out `AZURE_AI_MODEL_DEPLOYMENT_NAME` and uncomment `GITHUB_TOKEN` in `azure.yaml`.
+
+## Prerequisites
+
+- **Python 3.10+**
+- An Azure AI Foundry project with a deployed model — for the default BYOK path (`FOUNDRY_PROJECT_ENDPOINT` is auto-injected when hosted; set it locally)
+- *(GitHub Copilot model only)* A GitHub fine-grained PAT (`github_pat_` prefix)
+
+  Create one at [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new) with **Account permissions → Copilot Requests → Read-only**.
+
+  > **Note:** Classic tokens (`ghp_`) are not supported. Use a fine-grained PAT (`github_pat_`), OAuth token (`gho_`), or GitHub App user token (`ghu_`).
+
+## Option 1: Azure Developer CLI (`azd`)
 
 ### Prerequisites
 
-- Python 3.10+
-- A GitHub fine-grained PAT (`github_pat_` prefix)
+1. **Azure Developer CLI (`azd`)** — [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
+2. Install the Foundry extension:
 
-Create one at [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new) with **Account permissions → Copilot Requests → Read-only**.
+   ```bash
+   azd ext install microsoft.foundry
+   ```
 
-> **Note:** Classic tokens (`ghp_`) are not supported. Use a fine-grained PAT (`github_pat_`), OAuth token (`gho_`), or GitHub App user token (`ghu_`).
+3. Authenticate:
 
-### Using `azd` (Recommended)
+   ```bash
+   azd auth login
+   ```
 
-Create a local `.env` file from the sample template and set `GITHUB_TOKEN`:
+### Configure the model backend
+
+By default this sample uses a **BYOK Foundry model**. Copy the env template and set your project endpoint:
 
 ```bash
 cp .env.example .env  # skip if .env already exists
-# Edit .env and set GITHUB_TOKEN=github_pat_...
+# Edit .env: set FOUNDRY_PROJECT_ENDPOINT to your project
+# (AZURE_AI_MODEL_DEPLOYMENT_NAME defaults to gpt-5.4-mini)
 ```
 
-The sample loads `.env` automatically when running locally. If you plan to deploy with `azd`, also add the token to your azd environment so it can be injected into the hosted agent:
+The sample loads `.env` automatically when running locally. Sign in so it can authenticate to the Foundry model via Managed Identity:
 
 ```bash
-azd env set GITHUB_TOKEN="github_pat_..."
+az login
 ```
 
-Next, start the agent locally with the `run` command:
+> **Prefer the GitHub Copilot model?** In `.env` comment out the Foundry vars and uncomment `GITHUB_TOKEN` (a fine-grained PAT with "Copilot Requests → Read-only"). To deploy that way, flip the same vars in `azure.yaml`.
+
+### Run the agent locally
 
 ```bash
 azd ai agent run
@@ -63,30 +84,7 @@ azd ai agent run
 
 The agent starts on `http://localhost:8088/`.
 
-### Using the Foundry Toolkit VS Code Extension
-
-The [Foundry Toolkit VS Code extension](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?view=foundry&pivots=vscode) has a built-in sample gallery. You can open this sample directly from the extension without cloning the repository, it scaffolds the project into a new workspace, generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically, and configures a one-click **F5** debug experience.
-
-Chat with a running agent using the **Agent Inspector**:
-
-1. Start the agent locally first using **Using `azd`** or **Without `azd`** above. The agent listens on `http://localhost:8088/`.
-2. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Open Agent Inspector**.
-3. The Inspector auto-connects to the running agent. Send messages to chat with the agent and watch the streamed responses.
-
-### Without `azd`
-
-```bash
-pip install -r requirements.txt
-cp .env.example .env  # skip if .env already exists
-# Edit .env and set GITHUB_TOKEN=github_pat_...
-python main.py
-```
-
-The agent starts on `http://localhost:8088/`.
-
-## Invoke with azd
-
-### Local
+### Invoke the local agent
 
 **Bash:**
 ```bash
@@ -98,7 +96,7 @@ azd ai agent invoke --local '{"input": "What can you help me with?"}'
 azd ai agent invoke --local '{\"input\": \"What can you help me with?\"}'
 ```
 
-### Test with curl
+Or invoke directly with curl:
 
 ```bash
 # First message
@@ -112,33 +110,9 @@ curl -N -X POST http://localhost:8088/invocations \
   -d '{"input": "Give me a code example"}'
 ```
 
-### SSE Event Format
+### Deploy to Foundry
 
-Each Copilot SDK event is streamed via `event.to_dict()`:
-
-```
-data: {"type": "assistant.message_delta", "data": {"delta_content": "Python is"}}\n\n
-data: {"type": "assistant.message_delta", "data": {"delta_content": " a programming"}}\n\n
-...
-event: done
-data: {"invocation_id": "...", "session_id": "..."}
-```
-
-## Using Your Own Foundry Model
-
-To use your own Azure AI Foundry model instead of the Copilot model, set the Foundry variables (no `GITHUB_TOKEN` needed):
-
-```bash
-FOUNDRY_PROJECT_ENDPOINT=https://<account>.services.ai.azure.com/api/projects/<project> \
-AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-4o \
-python main.py
-```
-
-Authentication uses Managed Identity via `DefaultAzureCredential`. When deployed as a hosted agent, `FOUNDRY_PROJECT_ENDPOINT` is auto-injected by the platform — you only need to set `AZURE_AI_MODEL_DEPLOYMENT_NAME` in `agent.yaml`.
-
-## Deploying the Agent to Microsoft Foundry
-
-Once you've tested locally, deploy to Microsoft Foundry:
+Once tested locally, deploy to Microsoft Foundry:
 
 ```bash
 # Provision Azure resources (skip if already done during local setup)
@@ -148,7 +122,9 @@ azd provision
 azd deploy
 ```
 
-After deploying, invoke the agent running in Foundry:
+For the full deployment guide, see [Azure AI Foundry hosted agents](https://aka.ms/azdaiagent/docs).
+
+### Invoke the deployed agent
 
 **Bash:**
 ```bash
@@ -166,9 +142,38 @@ To stream logs from the running agent:
 azd ai agent monitor
 ```
 
-For the full deployment guide, see [Azure AI Foundry hosted agents](https://aka.ms/azdaiagent/docs).
+## Option 2: VS Code (Foundry Toolkit)
 
-### Deploying with the Foundry Toolkit VS Code Extension
+### Prerequisites
+
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+
+### Set up the Python virtual environment
+
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
+
+### Run and debug the agent
+
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
+
+### Or run manually, then open the Inspector
+
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
+
+### Deploy to Foundry
 
 1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Deploy Hosted Agent**. The extension opens a tab-based **Deploy Hosted Agent** wizard and reads `agent.yaml` to auto-populate what it can.
 2. If prompted, complete **Foundry Project Setup** to pick the subscription and Foundry project (or create a new one) to deploy to.
@@ -182,6 +187,30 @@ For the full deployment guide, see [Azure AI Foundry hosted agents](https://aka.
    - Pick a **CPU and Memory** size.
    - Click **Deploy**. Fields are validated inline, and the extension handles the build/upload, agent version creation, and RBAC role assignment.
 5. After deployment, invoke the agent in the Agent Playground and stream live logs from the **Logs** tab.
+
+## SSE Event Format
+
+Each Copilot SDK event is streamed via `event.to_dict()`:
+
+```
+data: {"type": "assistant.message_delta", "data": {"delta_content": "Python is"}}\n\n
+data: {"type": "assistant.message_delta", "data": {"delta_content": " a programming"}}\n\n
+...
+event: done
+data: {"invocation_id": "...", "session_id": "..."}
+```
+
+## Using Your Own Foundry Model
+
+To use your own Azure AI Foundry model instead of the Copilot model, set the Foundry variables (no `GITHUB_TOKEN` needed):
+
+```bash
+FOUNDRY_PROJECT_ENDPOINT=https://<account>.services.ai.azure.com/api/projects/<project> \
+AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-5.4-mini \
+python main.py
+```
+
+Authentication uses Managed Identity via `DefaultAzureCredential`. When deployed as a hosted agent, `FOUNDRY_PROJECT_ENDPOINT` is auto-injected by the platform, so in `azure.yaml` you only need `AZURE_AI_MODEL_DEPLOYMENT_NAME` (declared by default).
 
 ## Adding Skills
 
@@ -213,7 +242,7 @@ Instructions for Copilot when this skill is active.
 
 ### Images built on Apple Silicon or other ARM64 machines do not work on our service
 
-We **recommend deploying with `azd deploy`**, which uses ACR remote build and always produces images with the correct architecture.
+**Deploy with `azd deploy`**, which uses ACR remote build and always produces images with the correct architecture.
 
 If you choose to **build locally**, and your machine is **not `linux/amd64`** (for example, an Apple Silicon Mac), the image will **not be compatible with our service**, causing runtime failures.
 

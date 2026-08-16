@@ -10,7 +10,6 @@ This directory contains samples that demonstrate how to use [LangGraph](https://
 | --- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | [Chat](responses/01-langgraph-chat/)                                  | A minimal LangGraph agent with two local tools (`get_current_time`, `calculator`), demonstrating multi-turn conversation via `previous_response_id`.                                     |
 | 2   | [LangGraph Toolbox](responses/02-langgraph-toolbox/)                  | A LangGraph agent wired to a Foundry Toolbox that exposes `web_search` plus a connection-backed GitHub Copilot MCP tool, with OAuth consent surfacing.                                   |
-| 4   | [MCP](responses/04-mcp/)                                              | A LangGraph agent that loads tools from a remote MCP server (default: GitHub Copilot MCP) via `langchain_mcp_adapters.client.MultiServerMCPClient`.                                      |
 | 5   | [Workflows](responses/05-workflows/)                                  | A custom `StateGraph` chaining three specialized LLM nodes — slogan writer, legal reviewer, formatter — each seeing only the previous agent's output.                                    |
 | 6   | [Files](responses/06-files/)                                          | A LangGraph agent with local filesystem tools and a Foundry-Toolbox `code_interpreter`, demonstrating session-uploaded file handling.                                                    |
 | 7   | [Human-in-the-Loop](responses/07-human-in-the-loop/)                  | A LangGraph `StateGraph` that drafts a proposal and pauses for human review via `langgraph.types.interrupt`, serialized as `mcp_approval_request` + `function_call` output items.        |
@@ -21,6 +20,12 @@ This directory contains samples that demonstrate how to use [LangGraph](https://
 | #   | Sample                                          | Description                                                                                                                                          |
 | --- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | [Chat](invocations/01-langgraph-chat/)          | A minimal LangGraph agent with two local tools, demonstrating session state via `agent_session_id` (URL param / `x-agent-session-id` response header) backed by a LangGraph checkpointer. |
+
+### Agent-to-Agent (A2A)
+
+| Sample                  | Description                                                                                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [A2A delegation](a2a/)  | Two LangGraph Responses agents — a `concierge` that **delegates** math questions over A2A to a `math-expert` that publishes an incoming A2A endpoint + agent card. Wired with a `RemoteA2A` connection and an `a2a_preview` Toolbox loaded over MCP. |
 
 ## Running the Agent Host Locally
 
@@ -42,7 +47,7 @@ This directory contains samples that demonstrate how to use [LangGraph](https://
 mkdir hosted-langgraph-agent && cd hosted-langgraph-agent
 
 # Initialize from the manifest (replace with the sample you want to try)
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/langgraph/responses/01-langgraph-chat/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/langgraph/responses/01-langgraph-chat/azure.yaml
 ```
 
 Follow the instructions from `azd ai agent init` to complete the agent initialization. If you don't have an existing Foundry project and a model deployment, `azd ai agent init` will guide you through creating them.
@@ -146,9 +151,10 @@ cd foundry-samples/samples/python/hosted-agents/langgraph
    source .venv/bin/activate
    ```
 
-2. Install dependencies:
+2. Ensure `pip` is version 26.1 or newer (check with `pip --version`); older versions fail to resolve the samples' dependencies. Upgrade if needed, then install:
 
    ```bash
+   python -m pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
@@ -192,7 +198,7 @@ Once you've tested locally, deploy to Microsoft Foundry.
 
 If you already have a Foundry project and the necessary Azure resources provisioned, you can skip the setup steps and proceed directly to deploying the agent.
 
-After running `azd ai agent init -m <agent.manifest.yaml>` and following the prompts to configure your agent, you will have a project ready for deployment.
+After running `azd ai agent init -m <azure.yaml>` and following the prompts to configure your agent, you will have a project ready for deployment.
 
 ### Setting Up a New Foundry Project
 

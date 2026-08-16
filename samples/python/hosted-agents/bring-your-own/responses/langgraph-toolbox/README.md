@@ -20,16 +20,15 @@ serves responses over the Foundry Responses Protocol.
 3. Incoming requests are handled by `ResponsesAgentServerHost` on port `8088`.
 4. The agent is initialized **lazily** (once, on the first request) and reused for all
    subsequent turns — the MCP client is kept alive to prevent session garbage-collection.
-5. When the toolbox requires OAuth consent (e.g. a GitHub connection that hasn't been
-   authorized yet), the MCP server returns error code `-32006`. The agent detects this,
-   logs the consent URL, and surfaces it to the caller via a fallback tool instead of
-   crashing.
+5. If a toolbox tool requires OAuth consent, the MCP server returns error code `-32006`.
+   The agent detects this, logs the consent URL, and surfaces it to the caller via a
+   fallback tool instead of crashing.
 
 ## Prerequisites
 
 - Python 3.12+
-- A Microsoft Foundry project with a toolbox already created — see
-  [`../sample_toolboxes_crud.py`](../sample_toolboxes_crud.py) to create one
+- A Microsoft Foundry project with a toolbox created from the bundled
+  [`toolbox.yaml`](src/toolbox-langgraph/toolbox.yaml) — see [Create the toolbox with `azd ai`](#4-create-the-toolbox-with-azd-ai)
 - Azure CLI installed and logged in:
 
   ```bash
@@ -42,7 +41,7 @@ serves responses over the Foundry Responses Protocol.
 ```bash
 # 1. Copy and fill in the environment file
 cp .env.example .env  # skip if .env already exists
-# Edit .env — set FOUNDRY_PROJECT_ENDPOINT, MODEL_DEPLOYMENT_NAME,
+# Edit .env — set FOUNDRY_PROJECT_ENDPOINT, AZURE_AI_MODEL_DEPLOYMENT_NAME,
 #              and TOOLBOX_ENDPOINT at minimum
 
 # 2. Install dependencies
@@ -61,7 +60,7 @@ curl -X POST http://localhost:8088/responses \
 ```powershell
 # 1. Copy and fill in the environment file
 Copy-Item .env.example .env  # skip if .env already exists
-# Edit .env — set FOUNDRY_PROJECT_ENDPOINT, MODEL_DEPLOYMENT_NAME,
+# Edit .env — set FOUNDRY_PROJECT_ENDPOINT, AZURE_AI_MODEL_DEPLOYMENT_NAME,
 #              and TOOLBOX_ENDPOINT at minimum
 
 # 2. Install dependencies
@@ -75,6 +74,40 @@ Invoke-RestMethod -Method POST http://localhost:8088/responses `
   -ContentType "application/json" `
   -Body '{"input": "What tools do you have?"}'
 ```
+
+<details>
+<summary><h3>Using the Foundry Toolkit VS Code Extension</h3></summary>
+
+**Prerequisites**
+
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+
+**Set up the Python virtual environment**
+
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
+
+**Run and debug the agent**
+
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
+
+**Or run manually, then open the Inspector**
+
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
+
+</details>
 
 ## Deploy as a Hosted Agent
 
@@ -94,16 +127,22 @@ winget install microsoft.azd
 
 See the [full installation docs](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) for other options.
 
-#### 2. Install the AI Agents azd extension
+#### 2. Install the unified Foundry CLI extension bundle
 
 ```bash
-azd extension install azure.ai.agents
+# If you previously installed individual extensions, uninstall them first:
+#   azd ext uninstall azure.ai.agents
+#   azd ext uninstall azure.ai.toolboxes
+
+# Install the unified bundle (provides azd ai agent, connection, inspector,
+# project, routine, skill, and toolbox). Requires azd 1.25 or later.
+azd ext install microsoft.foundry
 ```
 
 To upgrade the extension later:
 
 ```bash
-azd extension upgrade azure.ai.agents
+azd ext upgrade microsoft.foundry
 ```
 
 #### 3. Log in to Azure
@@ -112,7 +151,36 @@ azd extension upgrade azure.ai.agents
 azd auth login
 ```
 
-#### 4. Fix git CRLF setting (Windows only)
+#### 4. Create the toolbox with `azd ai`
+
+> [!TIP]
+> If you use GitHub Copilot for Azure to scaffold a hosted agent that consumes this toolbox, the following skill references describe the same endpoint contract (env var, headers, MCP protocol, citation patterns, and troubleshooting) that the agent must implement:
+>
+> - [Toolbox reference](https://github.com/microsoft/GitHub-Copilot-for-Azure/blob/main/plugin/skills/microsoft-foundry/foundry-agent/create/references/toolbox-reference.md) — endpoint format, MCP protocol, OAuth consent handling, citation patterns, and troubleshooting.
+> - [Use toolbox in a hosted agent](https://github.com/microsoft/GitHub-Copilot-for-Azure/blob/main/plugin/skills/microsoft-foundry/foundry-agent/create/references/use-toolbox-in-hosted-agent.md) — endpoint resolution, env-var contract, payload shape, code integration patterns, and tracing.
+
+This sample exposes the toolbox tools to a LangGraph ReAct loop. `azure.yaml`
+provisions `toolbox-langgraph-tools`, containing `web_search` plus the public
+Microsoft Learn MCP server, when you deploy the sample. For local development
+against an existing project, you can instead create the same toolbox from the
+bundled [`toolbox.yaml`](src/toolbox-langgraph/toolbox.yaml):
+
+```bash
+azd ai toolbox create my-toolbox --from-file ./toolbox.yaml
+```
+
+The first version becomes the default automatically. Manage with `azd ai toolbox list`, `azd ai toolbox show my-toolbox`, `azd ai toolbox version list my-toolbox`, and `azd ai toolbox delete my-toolbox --force`.
+
+To stage incremental changes safely, use `azd ai toolbox connection add/remove` and `azd ai toolbox skill add/list/remove` &mdash; each creates a new toolbox version that carries forward existing connections and skills but **doesn't** change the default. Promote a version with `azd ai toolbox publish my-toolbox <version>` when you're ready to make it active.
+
+`azd ai toolbox create` prints the toolbox's versioned MCP endpoint. For local
+runs, either set `TOOLBOX_ENDPOINT` to that endpoint or set `TOOLBOX_NAME` to
+the created toolbox name.
+
+> [!NOTE]
+> To attach tools that need credentials (MCP servers with API keys or OAuth, Azure AI Search, Bing Custom Search, and more), create a project connection with `azd ai connection create` and reference it from `toolbox.yaml` by `project_connection_id`.
+
+#### 5. Fix git CRLF setting (Windows only)
 
 ```bash
 git config --global core.autocrlf false
@@ -124,15 +192,15 @@ git config --global core.autocrlf false
 > It tells the command where to find your agent definition and source files.
 >
 > `-m` can point to either:
-> - **A specific `agent.manifest.yaml` file** — init copies all files from the same directory as the manifest
-> - **A folder containing `agent.manifest.yaml`** — init copies all files from that folder
+> - **A specific `azure.yaml` file** — init copies all files from the same directory as the manifest
+> - **A folder containing `azure.yaml`** — init copies all files from that folder
 
 ```bash
 # 1. Create a new directory and initialize the agent project
 mkdir my-langgraph-agent && cd my-langgraph-agent
 PROJECT_ID="/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>"
 azd ai agent init \
-  -m /path/to/samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox/agent.manifest.yaml \
+  -m /path/to/samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox/azure.yaml \
   --project-id $PROJECT_ID \
   --no-prompt \
   -e my-env
@@ -156,7 +224,7 @@ After `azd ai agent init`, perform these steps before `azd up` will work:
 |---|--------|-----|
 | 1 | `azd env set enableHostedAgentVNext "true"` | Without this, container health probes fail |
 | 2 | Edit `src/<agent>/agent.yaml`: replace all `${{VAR}}` with `${VAR}` | Init scaffolds broken double-brace syntax that is NOT resolved at deploy time |
-| 3 | Verify `agent.yaml` uses **flat format** (`kind: hosted` at root) | The nested `template:` format silently fails during deploy |
+| 3 | Verify `azure.yaml` uses **flat format** (`kind: hosted` at root) | The nested `template:` format silently fails during deploy |
 | 4 | `azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "<deployment-name>"` | Must match the deployment `name` in `azure.yaml`; platform injection is unreliable without this (container crashes on startup) |
 | 5 | Verify `main.py` checks `FOUNDRY_PROJECT_ENDPOINT` first | Platform injects this var, NOT `AZURE_AI_PROJECT_ENDPOINT` |
 | 6 | **If using existing project with AppInsights already connected:** `azd env set ENABLE_MONITORING "false"` | Provision fails with duplicate App Insights connection error |
@@ -205,11 +273,11 @@ my-project/
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `FOUNDRY_PROJECT_ENDPOINT` | **Yes** | Project endpoint URL — platform-injected at runtime |
-| `MODEL_DEPLOYMENT_NAME` | **Yes** | Model deployment name (e.g. `gpt-4.1`) |
-| `TOOLBOX_ENDPOINT` | **Yes** | Full toolbox MCP endpoint URL including toolbox name and api-version |
-| `FOUNDRY_AGENT_TOOLBOX_FEATURES` | No | Feature-flag header value — platform-injected (default: `Toolboxes=V1Preview`) |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | **Yes** | Model deployment name (e.g. `gpt-4.1`) |
+| `TOOLBOX_ENDPOINT` | No | Full toolbox MCP endpoint URL. Takes precedence when set. |
+| `TOOLBOX_NAME` | **Yes, unless `TOOLBOX_ENDPOINT` is set** | Toolbox name. The deployed sample uses the provisioned `toolbox-langgraph-tools`. |
 
-`TOOLBOX_ENDPOINT` is the full pre-constructed MCP URL. Two forms are supported:
+Set `TOOLBOX_ENDPOINT` to the full MCP URL. Two forms are supported:
 ```
 # Latest version:
 https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/<name>/mcp?api-version=v1
@@ -235,14 +303,45 @@ This sample uses the **Responses Protocol** (`azure-ai-agentserver-responses`):
 
 ## Troubleshooting
 
+### Azure OpenAI Permission Denied (401)
+
+If you see an error like:
+
+```
+Error calling Azure OpenAI: Error code: 401 - {'error': {'code': 'PermissionDenied', 'message': 'The principal <principal-id> lacks the required data action Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action to perform POST /openai/deployments/{deployment-id}/chat/completions operation.'}}
+```
+
+This sample uses its own LangChain (`ChatOpenAI`) client to call the project's Chat Completions endpoint directly, so the agent's managed identity needs the **Foundry User** role on the project — an ["Agent access beyond defaults"](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agent-permissions#agent-access-beyond-defaults) case:
+
+- **Foundry User**
+
+Use the Azure CLI to assign it:
+
+```bash
+# Set your variables
+SUBSCRIPTION_ID="<your-subscription-id>"
+RESOURCE_GROUP="<your-resource-group>"
+ACCOUNT_NAME="<your-ai-foundry-account-name>"
+PROJECT_NAME="<your-ai-foundry-project-name>"
+PRINCIPAL_ID="<principal-id-from-error-message>"
+
+# Assign "Foundry User" role
+az role assignment create \
+  --assignee "$PRINCIPAL_ID" \
+  --role "Foundry User" \
+  --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.CognitiveServices/accounts/$ACCOUNT_NAME/projects/$PROJECT_NAME"
+```
+
+> **Note:** It may take a few minutes for role assignments to propagate. Retry the request after waiting.
+
 ### Agent starts but returns no tools
 
-Check that `TOOLBOX_ENDPOINT` is set and the toolbox exists. The URL must include
-`?api-version=v1`.
+Check that `TOOLBOX_NAME` identifies a toolbox in the configured project, or
+that `TOOLBOX_ENDPOINT` is set to a valid URL containing `?api-version=v1`.
 
 ### OAuth consent required
 
-If a toolbox connection requires OAuth (e.g. GitHub), the agent logs:
+If a toolbox connection requires OAuth, the agent logs:
 ```
 OAuth consent required. Open the following URL in a browser to authorize...
 ```
@@ -305,7 +404,7 @@ kind: hosted          # MUST be at root level
 name: toolbox-langgraph-agent
 protocols:
   - protocol: responses
-    version: 1.0.0
+    version: 2.0.0
 environment_variables:
   - name: AZURE_OPENAI_ENDPOINT
     value: ${AZURE_OPENAI_ENDPOINT}     # Single-brace syntax
@@ -343,4 +442,3 @@ This project welcomes contributions and suggestions.
 ## Trademarks
 
 This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general). Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship. Any use of third-party trademarks or logos are subject to those third-party's policies.
-

@@ -52,12 +52,12 @@ This means the agent works identically with or without optimization — no featu
 
 ### Environment Variables
 
-See [`.env.example`](.env.example) for the full list.
+See [`.env.example`](src/optimization-hello-world-python-responses/.env.example) for the full list.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `FOUNDRY_PROJECT_ENDPOINT` | Yes | Foundry project endpoint. Auto-injected in hosted containers. |
-| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Yes | Model deployment name (e.g., `gpt-4.1-mini`). |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Yes | Model deployment name (e.g., `gpt-5.4-mini`). |
 | `OPTIMIZATION_LOCAL_DIR` | Yes | Path to agent config directory (default: `.agent_configs`). |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Recommended | Enables telemetry. Auto-injected in hosted containers. |
 
@@ -66,10 +66,10 @@ See [`.env.example`](.env.example) for the full list.
 ### Initialize the agent project
 
 ```bash
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/responses/optimization-hello-world/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/responses/optimization-hello-world/azure.yaml
 ```
 
-The interactive flow prompts for your Azure subscription, region, and model deployment settings. This generates `azure.yaml`, infrastructure-as-code files, and configures the environment.
+The interactive flow prompts for your Azure subscription, region, and model deployment settings. This adopts the sample's `azure.yaml` as your project manifest and configures the environment.
 
 ### Provision and deploy
 
@@ -87,12 +87,40 @@ azd deploy
 azd ai agent invoke "Hello! What can you help me with?"
 ```
 
-## Option 2: Foundry Toolkit VS Code Extension
+## Option 2: VS Code (Foundry Toolkit)
 
-1. Clone this repo and open this sample folder in VS Code.
-2. Start locally: `azd ai agent run`
-3. Open Command Palette → **Foundry Toolkit: Open Agent Inspector** to chat with the agent.
-4. When ready: **Foundry Toolkit: Deploy Hosted Agent**.
+### Prerequisites
+
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+
+### Set up the Python virtual environment
+
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
+
+### Run and debug the agent
+
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
+
+### Or run manually, then open the Inspector
+
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
+
+### Deploy to Foundry
+
+Run **Foundry Toolkit: Deploy Hosted Agent** and follow the wizard.
 
 ## Running Optimization
 
@@ -103,6 +131,11 @@ This sample ships with `eval.yaml` and `eval.jsonl` — everything needed to opt
 ```bash
 azd ai agent optimize
 ```
+
+The interactive flow prompts you to select:
+
+- **Eval model** — the model deployment used to score evaluation results (e.g., `gpt-5.4-mini`).
+- **Optimization model** — the model deployment used to generate improved candidates (e.g., `gpt-5.4`).
 
 ### Monitor progress
 
@@ -127,8 +160,8 @@ azd ai agent invoke "Hello! What can you help me with?"
 | File | Purpose |
 |------|---------|
 | `main.py` | Agent entry point — Responses handler + optimization config loading |
-| `agent.yaml` | Hosted agent deployment config (protocols, resources, env vars) |
-| `agent.manifest.yaml` | Template manifest for `azd ai agent init` |
+| `azure.yaml` | Hosted agent deployment config (protocols, resources, env vars) |
+| `azure.yaml` | Template manifest for `azd ai agent init` |
 | `Dockerfile` | Container image build |
 | `requirements.txt` | Python dependencies (includes optimization wheel) |
 | `eval.yaml` | Agent optimizer configuration (dataset, evaluators, models) |

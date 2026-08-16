@@ -17,7 +17,7 @@ This sample uses a small in-memory hotel catalog and keyword-based intent handli
 
 ## How it works
 
-The agent in [main.py](main.py) uses the [Azure AI AgentServer Invocations SDK](https://pypi.org/project/azure-ai-agentserver-invocations/) to host an invocations endpoint.
+The agent in [main.py](src/hotel-booking-python-invocations-voicelive/main.py) uses the [Azure AI AgentServer Invocations SDK](https://pypi.org/project/azure-ai-agentserver-invocations/) to host an invocations endpoint.
 
 At runtime it handles two input paths:
 
@@ -30,13 +30,78 @@ Depending on session state, the agent emits:
 - Custom typed UI events (`ui.hotel_cards`, `ui.hotel_detail`, `ui.action_buttons`, `ui.booking_confirmed`, `ui.booking_update`)
 - Final `done`
 
+### Voice Live compatibility
+
+For **Invocations** protocol agents, to make the agent work with Voice Live, the agent needs:
+
+- The agent can process voice live transcription input: `{"type": "input_audio.transcription", "input": "example voice input"}`
+- The agent should output the text to be read as the following SSE, Voice Live will generate audio for the the `delta` text in the `output_audio_transcription.delta` event:
+  ```
+  data: {"type": "output_audio_transcription.delta", "delta": "The weather "}
+  data: {"type": "output_audio_transcription.delta", "delta": "in Seattle "}
+  data: {"type": "output_audio_transcription.delta", "delta": "is 52°F "}
+  data: {"type": "output_audio_transcription.delta", "delta": "and partly cloudy."}
+  data: {"type": "output_audio_transcription.done", "text": "The weather in Seattle is 52°F and partly cloudy."}
+  data: {"type": "done"}
+  ```
+- The agent manifest must declare `voiceLiveCompatible: "true"` in the metadata section to indicate compatibility with Voice Live.
+
+### Custom structured input and passthrough events
+
+#### Invoke input
+
+In addition to speech-triggered invocations, clients can also send custom structured data to your agent by including an `invoke_input` field in `response.create` messages. Voice Live passes this JSON verbatim to your container.
+
+For example, if the client sends:
+
+```json
+{
+  "type": "response.create",
+  "response": {
+    "invoke_input": {
+      "type": "button.click",
+      "action": "confirm_booking"
+    }
+  }
+}
+```
+
+Your container receives a POST to `/invocations` with body:
+
+```json
+{
+  "type": "button.click",
+  "action": "confirm_booking"
+}
+```
+
+#### Passthrough event
+
+Your agent can send any custom event type in the SSE stream. Voice Live forwards these to the client as `response.invocation.delta` messages.
+
+For example, if your agent emits:
+
+```json
+data: {"type": "ui.flight_card", "flight": "AA 1234", "price": "$850"}
+```
+
+The client receives:
+
+```json
+{"type": "response.invocation.delta", "delta": {"type": "ui.flight_card", "flight": "AA 1234", "price": "$850"}}
+```
+
+This allows you to send structured data or UI cards to the client alongside speech responses.
+
+
+
 ## Running the agent locally
 
 ### Prerequisites
 
 Before running this sample, ensure you have:
 
-1. **Azure Developer CLI (`azd`)** (recommended)
+1. **Azure Developer CLI (`azd`)**
 	 - [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) and the AI agent extension: `azd ext install azure.ai.agents`
 	 - Authenticated: `azd auth login`
 2. **Python 3.10 or later**
@@ -46,7 +111,7 @@ Before running this sample, ensure you have:
 
 This sample can run without extra environment variables.
 
-See [`.env.example`](.env.example). `FOUNDRY_PROJECT_ENDPOINT` is optional and only needed in scenarios where your workflow expects it.
+See [`.env.example`](src/hotel-booking-python-invocations-voicelive/.env.example). `FOUNDRY_PROJECT_ENDPOINT` is optional and only needed in scenarios where your workflow expects it.
 
 ### Install dependencies
 
@@ -76,14 +141,14 @@ curl -sS -N -X POST "http://localhost:8088/invocations" \
 
 Use the same `agent_session_id` across turns to keep conversation and booking state.
 
-## Using `azd` (recommended)
+## Using `azd`
 
 No cloning required. Create a new folder, initialize from the manifest, then provision and run:
 
 ```bash
 mkdir hotel-booking-agent && cd hotel-booking-agent
 
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/voicelive/hotel-booking-invocations-voicelive/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/voicelive/hotel-booking-invocations-voicelive/azure.yaml
 
 azd provision
 azd ai agent run
@@ -115,6 +180,10 @@ azd ai agent monitor
 ```
 
 For full deployment guidance, see [Azure AI Foundry hosted agents](https://aka.ms/azdaiagent/docs).
+
+### Sample client
+
+We also provide a sample web UI client in the [../client/hotel-booking-sample-client](../client/hotel-booking-sample-client) folder. It demonstrates how to connect to the agent and do interaction with voice and custom events.
 
 ## Notes for production use
 

@@ -15,17 +15,17 @@ param isolationMode string = 'AllowOnlyApprovedOutbound'
 @description('Name for your AI Services resource.')
 param aiServices string = 'aiservices'
 
-// // Model deployment parameters
-// @description('The name of the model you want to deploy')
-// param modelName string = 'gpt-4o'
-// @description('The provider of your model')
-// param modelFormat string = 'OpenAI'
-// @description('The version of your model')
-// param modelVersion string = '2024-11-20'
-// @description('The sku of your model deployment')
-// param modelSkuName string = 'GlobalStandard'
-// @description('The tokens per minute (TPM) of your model deployment')
-// param modelCapacity int = 30
+// Model deployment parameters
+@description('The name of the model you want to deploy')
+param modelName string = 'gpt-4.1'
+@description('The provider of your model')
+param modelFormat string = 'OpenAI'
+@description('The version of your model')
+param modelVersion string = '2025-04-14'
+@description('The sku of your model deployment')
+param modelSkuName string = 'GlobalStandard'
+@description('The tokens per minute (TPM) of your model deployment')
+param modelCapacity int = 30
 
 // Create a short, unique suffix, that will be unique to each resource group
 // Deterministic suffix for idempotent re-deploys (same RG = same names)
@@ -67,6 +67,12 @@ param azureCosmosDBAccountResourceId string = ''
 @description('The API Management Service full ARM Resource ID. This is an optional field for existing API Management services.')
 param apiManagementResourceId string = ''
 
+@description('Enable Azure Container Registry with Private Endpoint. When true, creates an ACR (Premium SKU) with a PE in the private endpoints subnet and a managed network outbound rule.')
+param enableContainerRegistry bool = true
+
+@description('Optional developer IP CIDR to allowlist for ACR push access (e.g., 203.0.113.0/26 or 10.0.0.0/16). When empty, public access remains disabled.')
+param developerIpCidr string = ''
+
 //New Param for resource group of Private DNS zones
 //@description('Optional: Resource group containing existing private DNS zones. If specified, DNS zones will not be created.')
 //param existingDnsZonesResourceGroup string = ''
@@ -79,7 +85,8 @@ param existingDnsZones object = {
   'privatelink.search.windows.net': ''           
   'privatelink.blob.core.windows.net': ''                            
   'privatelink.documents.azure.com': ''
-  'privatelink.azure-api.net': ''                       
+  'privatelink.azure-api.net': ''
+  'privatelink.azurecr.io': ''                       
 }
 
 @description('Zone Names for Validation of existing Private Dns Zones')
@@ -91,6 +98,7 @@ param dnsZoneNames array = [
   'privatelink.blob.core.windows.net'
   'privatelink.documents.azure.com'
   'privatelink.azure-api.net'
+  'privatelink.azurecr.io'
 ]
 
 
@@ -98,6 +106,7 @@ var projectName = toLower('${firstProjectName}${uniqueSuffix}')
 var cosmosDBName = toLower('${aiServices}${uniqueSuffix}cosmosdb')
 var aiSearchName = toLower('${aiServices}${uniqueSuffix}search')
 var azureStorageName = toLower('${aiServices}${uniqueSuffix}storage')
+var acrName = toLower('acr${uniqueSuffix}')
 
 // Check if existing resources have been passed in
 var storagePassedIn = azureStorageAccountResourceId != ''
@@ -151,11 +160,11 @@ module aiAccount 'modules-network-secured/ai-account-identity.bicep' = {
     // workspace organization
     accountName: accountName
     location: location
-    // modelName: modelName
-    // modelFormat: modelFormat
-    // modelVersion: modelVersion
-    // modelSkuName: modelSkuName
-    // modelCapacity: modelCapacity
+    modelName: modelName
+    modelFormat: modelFormat
+    modelVersion: modelVersion
+    modelSkuName: modelSkuName
+    modelCapacity: modelCapacity
   }
 }
 /*
@@ -244,6 +253,58 @@ module networkApproverRoleSearch 'modules-network-secured/network-connection-app
   }
 }
 
+// Contributor role on the ACR for managed PE connection approval
+// The "Network Connection Approver" role does not include Microsoft.ContainerRegistry actions,
+// so the AI account identity needs Contributor on the ACR to approve the managed VNet outbound PE connection
+var contributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
+
+resource acrForRoleAssignment 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = if (enableContainerRegistry) {
+  name: acrName
+}
+
+resource acrContributorRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableContainerRegistry) {
+  name: guid(acrName, accountName, contributorRoleId)
+  scope: acrForRoleAssignment
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleId)
+    principalId: aiAccount.outputs.accountPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    acr
+  ]
+}
+
+// Azure Monitor Private Link Scope (AMPLS) for Application Insights telemetry
+// This enables hosted agents to export traces/telemetry to App Insights via private network
+module ampls 'modules-network-secured/azure-monitor-private-link.bicep' = {
+  name: 'ampls-${uniqueSuffix}-deployment'
+  params: {
+    location: location
+    suffix: uniqueSuffix
+    vnetName: vnet.outputs.virtualNetworkName
+    vnetResourceGroupName: vnet.outputs.virtualNetworkResourceGroup
+    vnetSubscriptionId: vnet.outputs.virtualNetworkSubscriptionId
+    peSubnetName: vnet.outputs.peSubnetName
+  }
+}
+
+// Optional: Azure Container Registry with Private Endpoint
+// Creates an ACR accessible only via private endpoint (not publicly accessible)
+// Also adds a managed network outbound rule so hosted agents can pull images
+module acr 'modules-network-secured/container-registry.bicep' = if (enableContainerRegistry) {
+  name: 'acr-${uniqueSuffix}-deployment'
+  params: {
+    acrName: acrName
+    location: location
+    peSubnetId: vnet.outputs.peSubnetId
+    vnetId: vnet.outputs.virtualNetworkId
+    suffix: uniqueSuffix
+    existingDnsZoneResourceGroup: existingDnsZones['privatelink.azurecr.io']
+    developerIpCidr: developerIpCidr
+  }
+}
+
 // Configure Managed Network for AI Services Account
 // This module sets up the managed virtual network and outbound PE rules to allow
 // secure communication from hosted agents to customer resources (Storage, AI Search, Cosmos DB)
@@ -255,12 +316,16 @@ module managedNetwork 'modules-network-secured/managed-network.bicep' = {
     storageAccountResourceId: storage.id
     cosmosDBResourceId: cosmosDB.id
     aiSearchResourceId: aiSearch.id
+    amplsResourceId: ampls.outputs.amplsResourceId
+    acrResourceId: enableContainerRegistry ? acr.outputs.acrId : ''
   }
   dependsOn: [
     aiDependencies // Ensure dependent resources (Storage, CosmosDB, Search) are fully created
     networkApproverRoleStorage
     networkApproverRoleCosmos
     networkApproverRoleSearch
+    acrContributorRoleAssignment
+    ampls // Ensure AMPLS is created before adding the outbound rule
   ]
 }
 
@@ -324,6 +389,12 @@ module aiProject 'modules-network-secured/ai-project-identity.bicep' = {
     azureStorageName: aiDependencies.outputs.azureStorageName
     azureStorageSubscriptionId: aiDependencies.outputs.azureStorageSubscriptionId
     azureStorageResourceGroupName: aiDependencies.outputs.azureStorageResourceGroupName
+
+    // Application Insights for telemetry
+    appInsightsName: ampls.outputs.appInsightsName
+    appInsightsConnectionString: ampls.outputs.appInsightsConnectionString
+    appInsightsResourceId: ampls.outputs.appInsightsResourceId
+
     // dependent resources
     accountName: aiAccount.outputs.accountName
   }
@@ -436,5 +507,22 @@ module cosmosContainerRoleAssignments 'modules-network-secured/cosmos-container-
 dependsOn: [
   addProjectCapabilityHost
   storageContainersRoleAssignment
+  ]
+}
+
+// ---- AcrPull Role Assignment ----
+// Grants the project managed identity pull access to the ACR (assigned after project is created)
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d' // AcrPull built-in role
+
+resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableContainerRegistry) {
+  name: guid(acrForRoleAssignment.id, acrPullRoleId, resourceGroup().id)
+  scope: acrForRoleAssignment
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: aiProject.outputs.projectPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    acr
   ]
 }

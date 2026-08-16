@@ -12,7 +12,7 @@ When you deploy a hosted agent to Foundry, the platform provisions a dedicated M
 
 ### Tools
 
-The tools are plain Python functions decorated with `@tool` and registered with the agent in [main.py](main.py). Each tool builds its client with `DefaultAzureCredential()` so the same code works locally (your developer identity) and in Foundry (the per-agent identity).
+The tools are plain Python functions decorated with `@tool` and registered with the agent in [main.py](src/agent-framework-agent-downstream-azure-responses/main.py). Each tool builds its client with `DefaultAzureCredential()` so the same code works locally (your developer identity) and in Foundry (the per-agent identity).
 
 | Service       | Tools                                                  | SDK                  |
 | ------------- | ------------------------------------------------------ | -------------------- |
@@ -176,11 +176,38 @@ curl -X POST http://localhost:8088/responses -H "Content-Type: application/json"
 (Invoke-WebRequest -Uri http://localhost:8088/responses -Method POST -ContentType "application/json" -Body '{"input": "Read the blob hello.txt and tell me what it contains."}').Content
 ```
 
-### Test in Agent Inspector
+### Test in VS Code (Foundry Toolkit)
 
-Once the agent is running locally, open **Agent Inspector** in VS Code (Command Palette: **Foundry Toolkit: Open Agent Inspector**) to interactively send messages and view responses.
+**Prerequisites**
 
-Type the following message in Inspector:
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+
+**Set up the Python virtual environment**
+
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
+
+**Run and debug the agent**
+
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
+
+**Or run manually, then open the Inspector**
+
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**.
+
+Type the following in the Inspector:
 
 ```
 Read the blob hello.txt and tell me what it contains.
@@ -188,7 +215,7 @@ Read the blob hello.txt and tell me what it contains.
 
 ## Deploying the Agent to Foundry
 
-[agent.yaml](agent.yaml) declares the same four environment variables and binds each value to an `${...}` placeholder that `azd` resolves from the **azd environment** at deploy time (your shell's `export` / `$env:` values are not propagated to the deployed agent). Set them once with `azd env set` before deploying:
+[azure.yaml](azure.yaml) declares the same four environment variables and binds each value to an `${...}` placeholder that `azd` resolves from the **azd environment** at deploy time (your shell's `export` / `$env:` values are not propagated to the deployed agent). Set them once with `azd env set` before deploying:
 
 ```powershell
 azd env set AZURE_STORAGE_ACCOUNT_NAME "<storage-account-name>"

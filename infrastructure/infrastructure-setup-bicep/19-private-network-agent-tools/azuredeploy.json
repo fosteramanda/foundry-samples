@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.44.1.10279",
-      "templateHash": "8682967860099869832"
+      "version": "0.46.1.21595",
+      "templateHash": "16377292818078007488"
     }
   },
   "parameters": {
@@ -276,6 +276,30 @@
         "description": "Map of private DNS zone FQDNs to an object `{ subscriptionId, resourceGroup }` describing where the zone lives. Empty `resourceGroup` means \"create the zone in this deployment's resource group\". A non-empty `resourceGroup` references an existing zone in that RG; empty `subscriptionId` defaults to the current subscription, otherwise the zone is referenced cross-subscription. Note: when referencing an existing zone, the VNet link to that zone is NOT managed by this template — the caller must ensure the zone is already linked to the target VNet."
       }
     },
+    "existingMonitorDnsZones": {
+      "type": "object",
+      "defaultValue": {
+        "privatelink.monitor.azure.com": {
+          "subscriptionId": "",
+          "resourceGroup": ""
+        },
+        "privatelink.oms.opinsights.azure.com": {
+          "subscriptionId": "",
+          "resourceGroup": ""
+        },
+        "privatelink.ods.opinsights.azure.com": {
+          "subscriptionId": "",
+          "resourceGroup": ""
+        },
+        "privatelink.agentsvc.azure-automation.net": {
+          "subscriptionId": "",
+          "resourceGroup": ""
+        }
+      },
+      "metadata": {
+        "description": "Object mapping Azure Monitor private DNS zone names to an existing zone subscription/resource group, or empty strings to create it. Use to bring your own centralized Private DNS Zones (e.g. an Azure Landing Zone) for agent tracing."
+      }
+    },
     "projectCapHost": {
       "type": "string",
       "defaultValue": "caphostproj",
@@ -383,8 +407,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "4129256220206315078"
+              "version": "0.46.1.21595",
+              "templateHash": "8778062172441000069"
             }
           },
           "parameters": {
@@ -538,8 +562,8 @@
                   "metadata": {
                     "_generator": {
                       "name": "bicep",
-                      "version": "0.44.1.10279",
-                      "templateHash": "3937207574817375598"
+                      "version": "0.46.1.21595",
+                      "templateHash": "5740904783628925308"
                     }
                   },
                   "parameters": {
@@ -763,8 +787,8 @@
                   "metadata": {
                     "_generator": {
                       "name": "bicep",
-                      "version": "0.44.1.10279",
-                      "templateHash": "7954541854501949460"
+                      "version": "0.46.1.21595",
+                      "templateHash": "89368550263150916"
                     }
                   },
                   "parameters": {
@@ -891,8 +915,8 @@
                           "metadata": {
                             "_generator": {
                               "name": "bicep",
-                              "version": "0.44.1.10279",
-                              "templateHash": "3555831451184574880"
+                              "version": "0.46.1.21595",
+                              "templateHash": "13696981787602340244"
                             }
                           },
                           "parameters": {
@@ -986,8 +1010,8 @@
                           "metadata": {
                             "_generator": {
                               "name": "bicep",
-                              "version": "0.44.1.10279",
-                              "templateHash": "3555831451184574880"
+                              "version": "0.46.1.21595",
+                              "templateHash": "13696981787602340244"
                             }
                           },
                           "parameters": {
@@ -1091,8 +1115,8 @@
                           "metadata": {
                             "_generator": {
                               "name": "bicep",
-                              "version": "0.44.1.10279",
-                              "templateHash": "3555831451184574880"
+                              "version": "0.46.1.21595",
+                              "templateHash": "13696981787602340244"
                             }
                           },
                           "parameters": {
@@ -1291,8 +1315,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "8297556890969361359"
+              "version": "0.46.1.21595",
+              "templateHash": "18222548206673757538"
             }
           },
           "parameters": {
@@ -1349,7 +1373,7 @@
                 },
                 "publicNetworkAccess": "Disabled",
                 "networkInjections": "[if(equals(parameters('networkInjection'), 'true'), createArray(createObject('scenario', 'agent', 'subnetArmId', parameters('agentSubnetId'), 'useMicrosoftManagedNetwork', false())), null())]",
-                "disableLocalAuth": false
+                "disableLocalAuth": true
               }
             },
             {
@@ -1443,8 +1467,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "1694214023787228679"
+              "version": "0.46.1.21595",
+              "templateHash": "14589767067885169384"
             }
           },
           "parameters": {
@@ -1723,8 +1747,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "11341165364231087441"
+              "version": "0.46.1.21595",
+              "templateHash": "11131703009969860798"
             }
           },
           "parameters": {
@@ -2026,9 +2050,9 @@
               },
               "dependsOn": [
                 "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-private-endpoint', parameters('aiAccountName')))]",
-                "[resourceId('Microsoft.Resources/deployments', format('dns-{0}-{1}', replace(variables('dnsZoneEntries')[indexOf(variables('dnsZoneKeys'), variables('openAiDnsZoneName'))].key, '.', '-'), parameters('suffix')))]",
                 "[resourceId('Microsoft.Resources/deployments', format('dns-{0}-{1}', replace(variables('dnsZoneEntries')[indexOf(variables('dnsZoneKeys'), variables('aiServicesDnsZoneName'))].key, '.', '-'), parameters('suffix')))]",
-                "[resourceId('Microsoft.Resources/deployments', format('dns-{0}-{1}', replace(variables('dnsZoneEntries')[indexOf(variables('dnsZoneKeys'), variables('cognitiveServicesDnsZoneName'))].key, '.', '-'), parameters('suffix')))]"
+                "[resourceId('Microsoft.Resources/deployments', format('dns-{0}-{1}', replace(variables('dnsZoneEntries')[indexOf(variables('dnsZoneKeys'), variables('cognitiveServicesDnsZoneName'))].key, '.', '-'), parameters('suffix')))]",
+                "[resourceId('Microsoft.Resources/deployments', format('dns-{0}-{1}', replace(variables('dnsZoneEntries')[indexOf(variables('dnsZoneKeys'), variables('openAiDnsZoneName'))].key, '.', '-'), parameters('suffix')))]"
               ]
             },
             {
@@ -2145,8 +2169,8 @@
                   "metadata": {
                     "_generator": {
                       "name": "bicep",
-                      "version": "0.44.1.10279",
-                      "templateHash": "10882085353688836777"
+                      "version": "0.46.1.21595",
+                      "templateHash": "12996376546052343128"
                     }
                   },
                   "parameters": {
@@ -2268,9 +2292,7 @@
           "suffix": {
             "value": "[variables('uniqueSuffix')]"
           },
-          "existingDnsZoneResourceGroup": {
-            "value": "[parameters('existingDnsZones')['privatelink.azurecr.io'].resourceGroup]"
-          },
+          "existingDnsZoneResourceGroup": "[if(empty(parameters('existingDnsZones')['privatelink.azurecr.io'].resourceGroup), createObject('value', resourceGroup().name), createObject('value', parameters('existingDnsZones')['privatelink.azurecr.io'].resourceGroup))]",
           "dnsZonesSubscriptionId": "[if(empty(parameters('existingDnsZones')['privatelink.azurecr.io'].subscriptionId), createObject('value', subscription().subscriptionId), createObject('value', parameters('existingDnsZones')['privatelink.azurecr.io'].subscriptionId))]",
           "developerIpCidr": {
             "value": "[parameters('developerIpCidr')]"
@@ -2285,8 +2307,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "4699943037135843809"
+              "version": "0.46.1.21595",
+              "templateHash": "10443719127646863764"
             }
           },
           "parameters": {
@@ -2488,6 +2510,430 @@
     {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
+      "name": "[format('app-insights-{0}-deployment', variables('uniqueSuffix'))]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "suffix": {
+            "value": "[variables('uniqueSuffix')]"
+          },
+          "aiAccountName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', format('{0}-{1}-deployment', variables('accountName'), variables('uniqueSuffix'))), '2025-04-01').outputs.accountName.value]"
+          },
+          "disablePublicIngestion": {
+            "value": true
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "8385153912833651935"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for the tracing resources."
+              }
+            },
+            "suffix": {
+              "type": "string",
+              "metadata": {
+                "description": "Suffix for unique resource names (the template uniqueSuffix)."
+              }
+            },
+            "aiAccountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the Foundry (AI Services) account to connect Application Insights to."
+              }
+            },
+            "disablePublicIngestion": {
+              "type": "bool",
+              "defaultValue": true,
+              "metadata": {
+                "description": "When true, disable public ingestion (reach Application Insights privately via AMPLS). Set false for public templates."
+              }
+            },
+            "logAnalyticsName": {
+              "type": "string",
+              "defaultValue": "[format('law-tracing-{0}', parameters('suffix'))]",
+              "metadata": {
+                "description": "Name of the Log Analytics workspace to create."
+              }
+            },
+            "appInsightsName": {
+              "type": "string",
+              "defaultValue": "[format('appi-tracing-{0}', parameters('suffix'))]",
+              "metadata": {
+                "description": "Name of the Application Insights component to create."
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2023-09-01",
+              "name": "[parameters('logAnalyticsName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "sku": {
+                  "name": "PerGB2018"
+                },
+                "retentionInDays": 30
+              }
+            },
+            {
+              "type": "Microsoft.Insights/components",
+              "apiVersion": "2020-02-02",
+              "name": "[parameters('appInsightsName')]",
+              "location": "[parameters('location')]",
+              "kind": "web",
+              "properties": {
+                "Application_Type": "web",
+                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsName'))]",
+                "publicNetworkAccessForIngestion": "[if(parameters('disablePublicIngestion'), 'Disabled', 'Enabled')]",
+                "publicNetworkAccessForQuery": "Enabled"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.CognitiveServices/accounts/connections",
+              "apiVersion": "2025-04-01-preview",
+              "name": "[format('{0}/{1}', parameters('aiAccountName'), format('{0}-appinsights', parameters('aiAccountName')))]",
+              "properties": {
+                "category": "AppInsights",
+                "target": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]",
+                "authType": "ApiKey",
+                "isSharedToAll": true,
+                "credentials": {
+                  "key": "[reference(resourceId('Microsoft.Insights/components', parameters('appInsightsName')), '2020-02-02').ConnectionString]"
+                },
+                "metadata": {
+                  "ApiType": "Azure",
+                  "ResourceId": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "appInsightsId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Application Insights component."
+              },
+              "value": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]"
+            },
+            "appInsightsAppId": {
+              "type": "string",
+              "metadata": {
+                "description": "Application ID of the Application Insights component (for trace queries)."
+              },
+              "value": "[reference(resourceId('Microsoft.Insights/components', parameters('appInsightsName')), '2020-02-02').AppId]"
+            },
+            "logAnalyticsId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Log Analytics workspace backing Application Insights."
+              },
+              "value": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsName'))]"
+            },
+            "appInsightsName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the Application Insights component."
+              },
+              "value": "[parameters('appInsightsName')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', format('{0}-{1}-deployment', variables('accountName'), variables('uniqueSuffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('monitor-pls-{0}-deployment', variables('uniqueSuffix'))]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "suffix": {
+            "value": "[variables('uniqueSuffix')]"
+          },
+          "appInsightsId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', format('app-insights-{0}-deployment', variables('uniqueSuffix'))), '2025-04-01').outputs.appInsightsId.value]"
+          },
+          "logAnalyticsId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', format('app-insights-{0}-deployment', variables('uniqueSuffix'))), '2025-04-01').outputs.logAnalyticsId.value]"
+          },
+          "vnetId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', format('vnet-{0}-{1}-deployment', variables('trimVnetName'), variables('uniqueSuffix'))), '2025-04-01').outputs.virtualNetworkId.value]"
+          },
+          "peSubnetId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', format('vnet-{0}-{1}-deployment', variables('trimVnetName'), variables('uniqueSuffix'))), '2025-04-01').outputs.peSubnetId.value]"
+          },
+          "existingDnsZones": {
+            "value": "[parameters('existingMonitorDnsZones')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "4518826802202651572"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for the private endpoint."
+              }
+            },
+            "suffix": {
+              "type": "string",
+              "metadata": {
+                "description": "Suffix for unique resource names (the template uniqueSuffix)."
+              }
+            },
+            "appInsightsId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Application Insights component to scope into the AMPLS."
+              }
+            },
+            "logAnalyticsId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Log Analytics workspace to scope into the AMPLS."
+              }
+            },
+            "vnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Virtual Network."
+              }
+            },
+            "peSubnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Private Endpoint subnet."
+              }
+            },
+            "existingDnsZones": {
+              "type": "object",
+              "defaultValue": {
+                "privatelink.monitor.azure.com": {
+                  "subscriptionId": "",
+                  "resourceGroup": ""
+                },
+                "privatelink.oms.opinsights.azure.com": {
+                  "subscriptionId": "",
+                  "resourceGroup": ""
+                },
+                "privatelink.ods.opinsights.azure.com": {
+                  "subscriptionId": "",
+                  "resourceGroup": ""
+                },
+                "privatelink.agentsvc.azure-automation.net": {
+                  "subscriptionId": "",
+                  "resourceGroup": ""
+                }
+              },
+              "metadata": {
+                "description": "Map of Azure Monitor private DNS zone name to an existing zone subscription/resource group. Empty strings for a zone mean the module creates and links it in this resource group."
+              }
+            }
+          },
+          "variables": {
+            "copy": [
+              {
+                "name": "existingDnsZoneResourceGroups",
+                "count": "[length(variables('monitorDnsZoneNames'))]",
+                "input": "[parameters('existingDnsZones')[variables('monitorDnsZoneNames')[copyIndex('existingDnsZoneResourceGroups')]].resourceGroup]"
+              },
+              {
+                "name": "existingDnsZoneSubscriptionIds",
+                "count": "[length(variables('monitorDnsZoneNames'))]",
+                "input": "[if(empty(parameters('existingDnsZones')[variables('monitorDnsZoneNames')[copyIndex('existingDnsZoneSubscriptionIds')]].subscriptionId), subscription().subscriptionId, parameters('existingDnsZones')[variables('monitorDnsZoneNames')[copyIndex('existingDnsZoneSubscriptionIds')]].subscriptionId)]"
+              },
+              {
+                "name": "monitorDnsZoneIds",
+                "count": "[length(variables('monitorDnsZoneNames'))]",
+                "input": "[if(empty(variables('existingDnsZoneResourceGroups')[copyIndex('monitorDnsZoneIds')]), resourceId('Microsoft.Network/privateDnsZones', variables('monitorDnsZoneNames')[copyIndex('monitorDnsZoneIds')]), extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', variables('existingDnsZoneSubscriptionIds')[copyIndex('monitorDnsZoneIds')], variables('existingDnsZoneResourceGroups')[copyIndex('monitorDnsZoneIds')]), 'Microsoft.Network/privateDnsZones', variables('monitorDnsZoneNames')[copyIndex('monitorDnsZoneIds')]))]"
+              }
+            ],
+            "monitorDnsZoneNames": [
+              "privatelink.monitor.azure.com",
+              "privatelink.oms.opinsights.azure.com",
+              "privatelink.ods.opinsights.azure.com",
+              "privatelink.agentsvc.azure-automation.net"
+            ]
+          },
+          "resources": [
+            {
+              "type": "microsoft.insights/privateLinkScopes",
+              "apiVersion": "2021-07-01-preview",
+              "name": "[format('ampls-tracing-{0}', parameters('suffix'))]",
+              "location": "global",
+              "properties": {
+                "accessModeSettings": {
+                  "ingestionAccessMode": "PrivateOnly",
+                  "queryAccessMode": "Open"
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Insights/privateLinkScopes/scopedResources",
+              "apiVersion": "2021-07-01-preview",
+              "name": "[format('{0}/{1}', format('ampls-tracing-{0}', parameters('suffix')), 'appinsights-scoped')]",
+              "properties": {
+                "linkedResourceId": "[parameters('appInsightsId')]"
+              },
+              "dependsOn": [
+                "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-tracing-{0}', parameters('suffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/privateLinkScopes/scopedResources",
+              "apiVersion": "2021-07-01-preview",
+              "name": "[format('{0}/{1}', format('ampls-tracing-{0}', parameters('suffix')), 'law-scoped')]",
+              "properties": {
+                "linkedResourceId": "[parameters('logAnalyticsId')]"
+              },
+              "dependsOn": [
+                "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-tracing-{0}', parameters('suffix')))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "monitorDnsZones",
+                "count": "[length(variables('monitorDnsZoneNames'))]"
+              },
+              "condition": "[empty(variables('existingDnsZoneResourceGroups')[copyIndex()])]",
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2020-06-01",
+              "name": "[variables('monitorDnsZoneNames')[copyIndex()]]",
+              "location": "global"
+            },
+            {
+              "copy": {
+                "name": "monitorDnsZoneLinks",
+                "count": "[length(variables('monitorDnsZoneNames'))]"
+              },
+              "condition": "[empty(variables('existingDnsZoneResourceGroups')[copyIndex()])]",
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', variables('monitorDnsZoneNames')[copyIndex()], format('{0}-link', replace(variables('monitorDnsZoneNames')[copyIndex()], '.', '-')))]",
+              "location": "global",
+              "properties": {
+                "virtualNetwork": {
+                  "id": "[parameters('vnetId')]"
+                },
+                "registrationEnabled": false
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', variables('monitorDnsZoneNames')[copyIndex()])]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2024-05-01",
+              "name": "[format('ampls-tracing-{0}-pe', parameters('suffix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "subnet": {
+                  "id": "[parameters('peSubnetId')]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "ampls-connection",
+                    "properties": {
+                      "privateLinkServiceId": "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-tracing-{0}', parameters('suffix')))]",
+                      "groupIds": [
+                        "azuremonitor"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-tracing-{0}', parameters('suffix')))]",
+                "[resourceId('Microsoft.Insights/privateLinkScopes/scopedResources', format('ampls-tracing-{0}', parameters('suffix')), 'appinsights-scoped')]",
+                "[resourceId('Microsoft.Insights/privateLinkScopes/scopedResources', format('ampls-tracing-{0}', parameters('suffix')), 'law-scoped')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', format('ampls-tracing-{0}-pe', parameters('suffix')), 'ampls-dns')]",
+              "properties": {
+                "copy": [
+                  {
+                    "name": "privateDnsZoneConfigs",
+                    "count": "[length(variables('monitorDnsZoneNames'))]",
+                    "input": {
+                      "name": "[replace(variables('monitorDnsZoneNames')[copyIndex('privateDnsZoneConfigs')], '.', '-')]",
+                      "properties": {
+                        "privateDnsZoneId": "[variables('monitorDnsZoneIds')[copyIndex('privateDnsZoneConfigs')]]"
+                      }
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateEndpoints', format('ampls-tracing-{0}-pe', parameters('suffix')))]",
+                "monitorDnsZoneLinks"
+              ]
+            }
+          ],
+          "outputs": {
+            "amplsId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Azure Monitor Private Link Scope."
+              },
+              "value": "[resourceId('microsoft.insights/privateLinkScopes', format('ampls-tracing-{0}', parameters('suffix')))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', format('app-insights-{0}-deployment', variables('uniqueSuffix')))]",
+        "[resourceId('Microsoft.Resources/deployments', format('{0}-private-endpoint', variables('uniqueSuffix')))]",
+        "[resourceId('Microsoft.Resources/deployments', format('vnet-{0}-{1}-deployment', variables('trimVnetName'), variables('uniqueSuffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
       "name": "[format('{0}-{1}-deployment', variables('projectName'), variables('uniqueSuffix'))]",
       "properties": {
         "expressionEvaluationOptions": {
@@ -2544,8 +2990,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "6117256850627512682"
+              "version": "0.46.1.21595",
+              "templateHash": "2875191987890125630"
             }
           },
           "parameters": {
@@ -2719,8 +3165,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "3421890076151369374"
+              "version": "0.46.1.21595",
+              "templateHash": "14386080014614015364"
             }
           },
           "parameters": {
@@ -2774,8 +3220,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "5322883668661759738"
+              "version": "0.46.1.21595",
+              "templateHash": "3024430085288518946"
             }
           },
           "parameters": {
@@ -2832,8 +3278,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "15360680621305170360"
+              "version": "0.46.1.21595",
+              "templateHash": "17158751265063663151"
             }
           },
           "parameters": {
@@ -2896,8 +3342,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "6103261316579938375"
+              "version": "0.46.1.21595",
+              "templateHash": "115729599041300130"
             }
           },
           "parameters": {
@@ -2981,8 +3427,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "10353446425348386407"
+              "version": "0.46.1.21595",
+              "templateHash": "6933633632905105141"
             }
           },
           "parameters": {
@@ -3074,8 +3520,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "8509907656517137061"
+              "version": "0.46.1.21595",
+              "templateHash": "17986987793198279116"
             }
           },
           "parameters": {
@@ -3106,7 +3552,7 @@
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
               "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageName'))]",
-              "name": "[guid(resourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'), resourceId('Microsoft.Storage/storageAccounts', parameters('storageName')))]",
+              "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageName')), parameters('aiProjectPrincipalId'), resourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'), parameters('workspaceId'))]",
               "properties": {
                 "principalId": "[parameters('aiProjectPrincipalId')]",
                 "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')]",
@@ -3154,8 +3600,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "15057086489726002053"
+              "version": "0.46.1.21595",
+              "templateHash": "15597084618934552303"
             }
           },
           "parameters": {
@@ -3199,6 +3645,81 @@
         "[resourceId('Microsoft.Resources/deployments', format('{0}-{1}-deployment', variables('projectName'), variables('uniqueSuffix')))]",
         "[resourceId('Microsoft.Resources/deployments', format('format-project-workspace-id-{0}-deployment', variables('uniqueSuffix')))]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', variables('azureStorageSubscriptionId'), variables('azureStorageResourceGroupName')), 'Microsoft.Resources/deployments', format('storage-containers-ra-{0}-deployment', variables('uniqueSuffix')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('app-insights-ra-{0}-deployment', variables('uniqueSuffix'))]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "appInsightsName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', format('app-insights-{0}-deployment', variables('uniqueSuffix'))), '2025-04-01').outputs.appInsightsName.value]"
+          },
+          "projectPrincipalId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', format('{0}-{1}-deployment', variables('projectName'), variables('uniqueSuffix'))), '2025-04-01').outputs.projectPrincipalId.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "14561591763704079343"
+            }
+          },
+          "parameters": {
+            "appInsightsName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the Application Insights component to grant access on."
+              }
+            },
+            "projectPrincipalId": {
+              "type": "string",
+              "metadata": {
+                "description": "Principal (object) ID of the project managed identity."
+              }
+            },
+            "roleDefinitionGuids": {
+              "type": "array",
+              "defaultValue": [
+                "73c42c96-874c-492b-b04d-ab87d138a893",
+                "dbc9c667-e97f-4491-aee6-90b9cf960190"
+              ],
+              "metadata": {
+                "description": "Built-in role definition GUIDs to assign. Defaults to Log Analytics Reader + Privileged Monitoring Data Reader (the latter is required to query GenAI content)."
+              }
+            }
+          },
+          "resources": [
+            {
+              "copy": {
+                "name": "appInsightsRoleAssignments",
+                "count": "[length(parameters('roleDefinitionGuids'))]"
+              },
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Insights/components', parameters('appInsightsName'))]",
+              "name": "[guid(parameters('projectPrincipalId'), parameters('roleDefinitionGuids')[copyIndex()], resourceId('Microsoft.Insights/components', parameters('appInsightsName')))]",
+              "properties": {
+                "principalId": "[parameters('projectPrincipalId')]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', parameters('roleDefinitionGuids')[copyIndex()])]",
+                "principalType": "ServicePrincipal"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', format('{0}-{1}-deployment', variables('projectName'), variables('uniqueSuffix')))]",
+        "[resourceId('Microsoft.Resources/deployments', format('app-insights-{0}-deployment', variables('uniqueSuffix')))]"
       ]
     }
   ]

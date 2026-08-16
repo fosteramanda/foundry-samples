@@ -19,7 +19,7 @@ Pick the tool that matches your workflow — both deploy the same sample image t
 
 ```bash
 mkdir my-agent && cd my-agent
-azd ai agent init -m ../agent-framework/responses/01-basic/agent.manifest.yaml
+azd ai agent init -m ../agent-framework/responses/01-basic/azure.yaml
 azd up
 ```
 
@@ -57,7 +57,7 @@ Hosted agents support two protocols. Pick the one that matches your scenario.
 | Protocol bridge (GitHub Copilot, proprietary systems)             | **Invocations**              | The caller has its own protocol that doesn't map to `/responses`.                                                                 |
 | Inter-service orchestration (Durable Functions, Logic Apps)       | **Invocations**              | The caller sends structured task payloads, not chat messages.                                                                     |
 
-> **Still not sure?** Start with **Responses**. You can always add an Invocations endpoint later — a hosted agent can support both protocols simultaneously by listing both in `agent.yaml`.
+> **Still not sure?** Start with **Responses**. You can always add an Invocations endpoint later — a hosted agent can support both protocols simultaneously by listing both in `azure.yaml`.
 
 > **Other protocols:** Hosted agents can also expose the **Activity** protocol (for Teams and M365 integration) and the **A2A** protocol (for agent-to-agent delegation).
 
@@ -73,7 +73,7 @@ Hosted agents support two protocols. Pick the one that matches your scenario.
 | **Streaming**                 | Framework-managed `ResponseEventStream` with lifecycle events (`created`, `in_progress`, `delta`, `completed`) | Raw SSE — you format and write events directly                                 |
 | **Background / long-running** | Built-in (`background: true` + platform-managed polling)                                                       | Manual task tracking and custom polling endpoints                              |
 | **Server SDK**                | `azure-ai-agentserver-responses`                                                                               | `azure-ai-agentserver-invocations`                                             |
-| **agent.yaml**                | `protocol: responses`, `version: v0.1.0`                                                                       | `protocol: invocations`, `version: v0.0.1`                                     |
+| **azure.yaml**                | `protocol: responses`, `version: v0.1.0`                                                                       | `protocol: invocations`, `version: v0.0.1`                                     |
 
 </details>
 
@@ -108,19 +108,24 @@ The platform manages conversation history, streaming lifecycle, and background e
 
 #### Learning path
 
+> **Recommended: reach for a [Foundry Toolbox](./agent-framework/responses/04-foundry-toolbox/) when you add tools.** A toolbox packages web search, code interpreter, MCP servers, OpenAPI tools, and more behind a single managed MCP endpoint, with centralized auth and versioning — so you define tools once and share them across agents instead of wiring each tool into every agent. The local-tools sample below is still fully supported; use it for self-contained logic you own.
+
 **New to hosted agents?** Start here and work through in order:
 
 1. **[Basic agent & Multi-Turn Sessions](./agent-framework/responses/01-basic/)** — Deploy your first agent, have a conversation with it.
 2. **[Tools](./agent-framework/responses/02-tools/)** — Add local tools to your agent.
-3. **[MCP Tools](./agent-framework/responses/03-mcp/)** — Connect your agent to a remote MCP server to access tools, retrieval, and more.
-4. **[Foundry Toolbox](./agent-framework/responses/04-foundry-toolbox/)** — Wire your agent to a Foundry Toolbox for managed tool access.
-5. **[Workflows](./agent-framework/responses/05-workflows/)** — Compose multiple agents into sequential pipelines.
-6. **[Files](./agent-framework/responses/06-files/)** — Agent capable of manipulating files uploaded to the session.
-7. **[Skills](./agent-framework/responses/07-skills/)** — Add native file-based skills to your agent and generate a colorful PDF travel guide.
-8. **[Observability](./agent-framework/responses/08-observability/)** — Add logging, metrics, and distributed tracing to your agent and visualize them in Foundry.
-9. **[Declarative Workflows](./agent-framework/responses/09-declarative-customer-support/)** — A multi-turn customer-support triage workflow defined entirely in YAML and hosted as an agent, demonstrating declarative workflow authoring with `InvokeAzureAgent` calls to specialist Foundry-hosted agents and conversation-aware routing.
-10. **[Downstream Azure services](./agent-framework/responses/09-downstream-azure/)** — Call Azure Blob Storage and Service Bus from the agent using its per-agent Microsoft Entra identity (no connection strings).
-11. **[A2A Delegation](./agent-framework/a2a/01-delegation/)** — Two-agent walkthrough: a hosted Responses **caller** delegates to a hosted Responses **executor** that is exposed as an A2A endpoint via Foundry's incoming A2A feature, wired together through a Foundry Toolbox `a2a_preview` tool over a `RemoteA2A` connection.
+3. **[Foundry Toolbox](./agent-framework/responses/04-foundry-toolbox/)** — Wire your agent to a Foundry Toolbox for managed tool access.
+4. **[Workflows](./agent-framework/responses/05-workflows/)** — Compose multiple agents into sequential pipelines.
+5. **[Files](./agent-framework/responses/06-files/)** — Agent capable of manipulating files uploaded to the session.
+6. **[Skills](./agent-framework/responses/07-skills/)** — Add native file-based skills to your agent and generate a colorful PDF travel guide.
+7. **[Observability](./agent-framework/responses/08-observability/)** — Add logging, metrics, and distributed tracing to your agent and visualize them in Foundry.
+8. **[Declarative Workflows](./agent-framework/responses/09-declarative-customer-support/)** — A multi-turn customer-support triage workflow defined entirely in YAML and hosted as an agent, demonstrating declarative workflow authoring with `InvokeAzureAgent` calls to specialist Foundry-hosted agents and conversation-aware routing.
+9. **[Downstream Azure services](./agent-framework/responses/09-downstream-azure/)** — Call Azure Blob Storage and Service Bus from the agent using its per-agent Microsoft Entra identity (no connection strings).
+10. **[A2A Delegation](./agent-framework/a2a/01-delegation/)** — Two-agent walkthrough: a hosted Responses **caller** delegates to a hosted Responses **executor** that is exposed as an A2A endpoint via Foundry's incoming A2A feature, wired together through a Foundry Toolbox `a2a_preview` tool over a `RemoteA2A` connection.
+11. **[Content safety guardrail](./agent-framework/responses/16-content-safety-guardrail/)** — Attach a Responsible AI content safety guardrail to a hosted agent so the platform screens prompts and responses against your safety policy.
+12. **[Harness Research](./agent-framework/responses/19-harness-research/)** — Build a long-running research assistant with plans, todos, web search, compaction, and autonomous execute-mode loops.
+13. **[Harness Data Processing](./agent-framework/responses/20-harness-data-processing/)** — Analyze bundled data with file tools and complete protected writes through structured approvals.
+14. **[Harness scaling capabilities](./agent-framework/responses/21-harness-scaling-capabilities/)** — Combine file skills, a confined shell, CodeAct, and concurrent background research in one multi-turn personal-finance harness agent.
 
 ### Invocations protocol
 
@@ -146,7 +151,6 @@ See [`langgraph/README.md`](langgraph/) for the full list and the local-run guid
 | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | **[Chat](langgraph/responses/01-langgraph-chat/)**                      | Minimal LangGraph agent with two local tools (`get_current_time`, `calculator`); multi-turn via `previous_response_id`.                |
 | **[LangGraph Toolbox](langgraph/responses/02-langgraph-toolbox/)**      | LangGraph agent wired to a Foundry Toolbox (`web_search` + connection-backed GitHub Copilot MCP) via `AzureAIProjectToolbox`.          |
-| **[MCP](langgraph/responses/04-mcp/)**                                  | LangGraph agent that loads tools from a remote MCP server (default: GitHub Copilot MCP) via `langchain_mcp_adapters`.                  |
 | **[Workflows](langgraph/responses/05-workflows/)**                      | Custom `StateGraph` chaining three specialized LLM nodes — slogan writer, legal reviewer, formatter — each seeing only the prior agent's output. |
 | **[Files](langgraph/responses/06-files/)**                              | LangGraph agent with local filesystem tools and a Foundry-Toolbox `code_interpreter` for session-uploaded files.                       |
 | **[Human-in-the-Loop](langgraph/responses/07-human-in-the-loop/)**      | `StateGraph` that drafts a proposal and pauses for approval via `langgraph.types.interrupt`, serialized as `mcp_approval_request` + `function_call`. |
@@ -157,6 +161,12 @@ See [`langgraph/README.md`](langgraph/) for the full list and the local-run guid
 | Sample                                                | What it shows                                                                                                                              |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | **[Chat](langgraph/invocations/01-langgraph-chat/)**  | Minimal LangGraph agent with local tools; session state via `agent_session_id` (URL param / `x-agent-session-id` header) backed by a LangGraph checkpointer. |
+
+### Agent-to-Agent (A2A)
+
+| Sample                              | What it shows                                                                                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[A2A Delegation](langgraph/a2a/)** | Two LangGraph Responses agents — a `concierge` that delegates math questions over A2A to a `math-expert` that publishes an incoming A2A endpoint + agent card, wired through a `RemoteA2A` connection and an `a2a_preview` Toolbox loaded over MCP. |
 
 ---
 
@@ -171,8 +181,10 @@ Already built an agent with CrewAI or your own code? The protocol SDKs (`azure-a
 | Sample                                                             | What it shows                                                                                                                |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | **[Hello World](bring-your-own/responses/hello-world/)**           | Minimal agent — calls a Foundry model via the Responses API and returns the reply. The simplest possible BYO starting point. |
+| **[uv + pyproject](bring-your-own/responses/uv-pyproject/)**       | Existing-code initialization and remote code deployment with `pyproject.toml`, `uv.lock`, and system TLS certificates.      |
 | **[LangGraph Chat](bring-your-own/responses/langgraph-chat/)**     | LangGraph conversational agent hosted on Foundry with multi-turn history via the Responses protocol.                         |
 | **[Notetaking Agent](bring-your-own/responses/notetaking-agent/)** | Agent that takes and retrieves notes using a custom tool.                                                                    |
+| **[Session Multiplexing](bring-your-own/responses/session-multiplexing/)** | Demonstrates multiple callers sharing one `agent_session_id` while `previous_response_id` history stays scoped by platform user context. |
 | **[Toolbox](bring-your-own/responses/toolbox/)**                   | BYO agent wired to a Foundry Toolbox MCP endpoint for tool access.                                                           |
 | **[Background Agent](bring-your-own/responses/background-agent/)** | Long-running background processing with async execution.                                                                     |
 | **[Env Vars Agent](bring-your-own/responses/env-vars-agent/)**     | Reads env vars injected by Foundry's connection-templated secret resolver. Covers ApiKey + CustomKeys connections and a kind-aware safety policy (whole value for `metadata`/`target`, fingerprint only for `credentials`). |
@@ -191,14 +203,20 @@ Already built an agent with CrewAI or your own code? The protocol SDKs (`azure-a
 | **[Human-in-the-Loop](bring-your-own/invocations/human-in-the-loop/)** | Long-running agent that pauses for human approval before continuing.                                        |
 | **[Event Grid Trigger](bring-your-own/invocations/event-grid-trigger/)** | Event-driven agent: Azure Storage → Event Grid → hosted agent (direct delivery, authenticated by the system topic's system-assigned managed identity); agent summarizes the new blob and writes the summary to a sibling Storage container. |
 
+## Python dependencies
+
+Each new or dependency-updated Python Hosted Agent runtime commits a fully resolved `requirements.txt` as its portable consumer artifact. Consumers can install it with standard pip, while sample authors remain free to use pip-tools, uv, Poetry, PDM, Pipenv, or another resolver to generate the file.
+
+See the [Python Hosted Agent dependency policy](DEPENDENCY_POLICY.md) for pinning rules, authoring-tool examples, validation commands, ratchet behavior, and exceptions.
+
 ## Deploy any sample
 
 Every sample deploys the same way and supports two equivalent paths. Pick the one that matches your workflow.
 
 | | **Azure Developer CLI (`azd`)** | **Foundry Toolkit VS Code Extension** |
 | --- | --- | --- |
-| **Install** | [Install `azd`](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) + `azd ext install azure.ai.agents` | Install the Foundry Toolkit VS Code extension |
-| **Open the sample** | `azd ai agent init -m <agent.manifest.yaml>` — generates Bicep, `azure.yaml`, `agent.yaml`, env config | Clone the repo and open the sample folder in VS Code |
+| **Install** | [Install `azd`](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) + `azd ext install microsoft.foundry` | Install the Foundry Toolkit VS Code extension |
+| **Open the sample** | `azd ai agent init -m <azure.yaml>` — adopts the sample's `azure.yaml` and sets up env config | Clone the repo and open the sample folder in VS Code |
 | **Run locally** | `azd ai agent run` (or `python main.py`) | Same as `azd`/manual, then open **Foundry Toolkit: Open Agent Inspector** to chat with the running agent |
 | **Provision Azure resources** | `azd provision` (creates Foundry project, model deployment, ACR, App Insights if needed) | Guided dialog in **Foundry Toolkit: Deploy Hosted Agent** — reuses existing project or provisions a new one |
 | **Deploy to Foundry** | `azd deploy` (or `azd up` to provision + deploy) | **Foundry Toolkit: Deploy Hosted Agent** — builds image in ACR, registers the agent version, assigns RBAC |
@@ -210,7 +228,7 @@ Every sample deploys the same way and supports two equivalent paths. Pick the on
 mkdir my-agent && cd my-agent
 
 # Scaffold from the sample manifest — azd generates all the deployment files
-azd ai agent init -m ../agent-framework/responses/01-basic/agent.manifest.yaml
+azd ai agent init -m ../agent-framework/responses/01-basic/azure.yaml
 
 # Build, push, and deploy
 azd up

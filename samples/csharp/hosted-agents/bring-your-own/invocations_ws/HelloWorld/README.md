@@ -49,12 +49,12 @@ shuttle audio bytes and control events.
 
 | File | Purpose |
 |------|---------|
-| [Program.cs](Program.cs) | The whole agent — `VoiceLiveHandler` opens a Voice Live session and runs two pumps. |
-| [HelloWorld.csproj](HelloWorld.csproj) | .NET 10 web project; references the Invocations + Voice Live + Identity SDKs. |
-| [agent.yaml](agent.yaml) | Hosted-agent runtime config (`invocations_ws`, 1 CPU / 2 Gi). |
-| [agent.manifest.yaml](agent.manifest.yaml) | `azd ai agent init` manifest. |
-| [Dockerfile](Dockerfile) | `mcr.microsoft.com/dotnet/sdk:10.0-alpine` build → `aspnet:10.0-alpine` runtime. |
-| [.env.example](.env.example) | Required Voice Live env vars. |
+| [Program.cs](src/hello-world-dotnet-invocations-ws/Program.cs) | The whole agent — `VoiceLiveHandler` opens a Voice Live session and runs two pumps. |
+| [HelloWorld.csproj](src/hello-world-dotnet-invocations-ws/HelloWorld.csproj) | .NET 10 web project; references the Invocations + Voice Live + Identity SDKs. |
+| [azure.yaml](azure.yaml) | Hosted-agent runtime config (`invocations_ws`, 1 CPU / 2 Gi). |
+| [azure.yaml](azure.yaml) | `azd ai agent init` manifest. |
+| [Dockerfile](src/hello-world-dotnet-invocations-ws/Dockerfile) | `mcr.microsoft.com/dotnet/sdk:10.0-alpine` build → `aspnet:10.0-alpine` runtime. |
+| [.env.example](src/hello-world-dotnet-invocations-ws/.env.example) | Required Voice Live env vars. |
 | [chat_client/index.html](chat_client/index.html) | Standalone browser client (mic + transcript) for local dev. |
 | [chat_client/Proxy](chat_client/Proxy/Program.cs) | ASP.NET Core proxy that serves `index.html` and injects an `Authorization: Bearer` header onto the upstream WebSocket — used to talk to a deployed Foundry agent from the browser. |
 | [E2ELocal](E2ELocal/Program.cs) | Headless console test that sends a text turn and asserts audio + events come back. |
@@ -65,7 +65,7 @@ shuttle audio bytes and control events.
    - Verify your version: `dotnet --version`
    - Download from [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)
 2. **Azure Developer CLI (`azd`)** (recommended for deploy)
-   - [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) and the AI agent extension: `azd ext install azure.ai.agents`
+   - [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) and the Foundry extension: `azd ext install microsoft.foundry`
    - Authenticated: `azd auth login`
 3. **Azure CLI** — installed and authenticated: `az login`.
 4. An **Azure AI Services / Voice Live** resource with access to a realtime model (for example `gpt-realtime-1.5`).
@@ -75,7 +75,7 @@ shuttle audio bytes and control events.
 
 ## Environment variables
 
-See [`.env.example`](.env.example) for the full list.
+See [`.env.example`](src/hello-world-dotnet-invocations-ws/.env.example) for the full list.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -158,7 +158,7 @@ the [Azure Developer CLI](https://learn.microsoft.com/en-us/azure/foundry/agents
 mkdir hello-world-voicelive && cd hello-world-voicelive
 
 azd ai agent init \
-  -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/bring-your-own/invocations_ws/HelloWorld/agent.manifest.yaml
+  -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/bring-your-own/invocations_ws/HelloWorld/azure.yaml
 
 # Pin the Voice Live model + voice for the deployed container.
 azd env set AZURE_VOICELIVE_MODEL "gpt-realtime-1.5"
@@ -205,10 +205,8 @@ data-plane** WebSocket URL (the proxy and `E2ELocal` build this for
 you from `--foundry` + `--agent`):
 
 ```
-wss://<account>.services.ai.azure.com/api/projects/agents/endpoint/protocols/invocations_ws
+wss://<account>.services.ai.azure.com/api/projects/<project>/agents/<agent>/endpoint/protocols/invocations_ws
     ?api-version=v1
-    &project_name=<project>
-    &agent_name=<agent>
     &agent_session_id=<unique-session-id>
 ```
 
@@ -217,10 +215,10 @@ Where the segments come from:
 | Part | Value |
 |------|-------|
 | `<account>` | AI Services account host — the same host as your Foundry project endpoint (`https://<account>.services.ai.azure.com/api/projects/<project>`). |
-| `/api/projects/agents/endpoint/protocols/invocations_ws` | Fixed data-plane route — `agents` and `endpoint` are literal path segments, not your agent name. The actual agent is picked via the `agent_name` query parameter. |
+| `/api/projects/<project>/agents/<agent>/endpoint/protocols/invocations_ws` | Data-plane route; project and agent are URL-encoded path segments. |
 | `api-version=v1` | Foundry data-plane API version. |
-| `project_name=<project>` | The last segment of your project endpoint path. |
-| `agent_name=<agent>` | Matches the agent `name` in [`agent.manifest.yaml`](agent.manifest.yaml) — `hello-world-dotnet-invocations-ws`. |
+| `<project>` | The last segment of your project endpoint path. |
+| `<agent>` | Matches the agent `name` in [`azure.yaml`](azure.yaml) — `hello-world-dotnet-invocations-ws`. |
 | `agent_session_id=<unique-session-id>` | A caller-generated string that identifies the conversation. Reuse the same id to resume; use a fresh one (e.g. a GUID) to start a new session. |
 
 Every request must also include `Authorization: Bearer <Entra token>`

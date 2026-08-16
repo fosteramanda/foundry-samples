@@ -10,7 +10,7 @@ languages:
 - json
 ---
 
-# Microsoft Foundry: Basic Agent Setup with E2E Network Isolation (without Tools behind VNET)
+# Microsoft Foundry: Basic Agent Setup with E2E Network Isolation
 
 > **NEW**
 > For support on deploying the right network isolation template, check out the [GitHub Copilot for Azure skill for private networking](https://github.com/microsoft/GitHub-Copilot-for-Azure/blob/main/plugin/skills/microsoft-foundry/resource/private-network/private-network.md) set-up!
@@ -40,6 +40,7 @@ This template combines:
 | **AI Foundry Project** | Project with system-assigned managed identity |
 | **Capability Host** | Basic agent capability host (platform-managed storage) |
 | **Model Deployment** | gpt-4.1 (configurable) |
+| **Azure Container Registry** *(optional)* | Premium SKU ACR with private endpoint, DNS zone (`privatelink.azurecr.io`), and AcrPull role for the project identity |
 
 
 [![Deploy To Azure](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/deploytoazure.svg?sanitize=true)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fazure-ai-foundry%2Ffoundry-samples%2Frefs%2Fheads%2Fmain%2Finfrastructure%2Finfrastructure-setup-bicep%2F11-private-network-basic-vnet%2Fmain.json)
@@ -166,6 +167,8 @@ Before deleting an **Account** resource, it is essential to first delete the ass
 | `dnsZonesSubscriptionId` | Subscription ID for existing DNS zones | `''` (current sub) | No |
 | `existingDnsZones` | Map of DNS zone names to resource groups | All empty (creates new) | No |
 | `projectCapHost` | Name of the project capability host | `caphostproj` | No |
+| `enableContainerRegistry` | When `true`, creates an Azure Container Registry (Premium SKU) with a private endpoint in the PE subnet, a `privatelink.azurecr.io` DNS zone, and an AcrPull role assignment for the project managed identity. | `true` | No |
+| `developerIpCidr` | Developer IP CIDR to allowlist for ACR push access (e.g., `203.0.113.0/26`). When set, enables public network access with a deny-all default + an IP allowlist rule so developers can push images. When empty, public access remains fully disabled. | `''` | No |
 
 #### BYO Virtual Network Details
 
@@ -336,6 +339,19 @@ az group delete --name <your-resource-group> --yes --no-wait
   - Format: From `modelFormat` parameter
   - Version: From `modelVersion` parameter
 
+Azure Monitor (Application Insights & Log Analytics)
+- Log Analytics Workspace: Microsoft.OperationalInsights/workspaces
+  - SKU: PerGB2018
+  - Retention: 30 days
+- Application Insights: Microsoft.Insights/components
+  - Kind: web
+  - Linked to Log Analytics workspace
+  - Public ingestion disabled (reached privately via AMPLS)
+- Azure Monitor Private Link Scope (AMPLS): microsoft.insights/privateLinkScopes
+  - Access mode: PrivateOnly ingestion, Open query
+  - Scoped resources: Application Insights + Log Analytics
+  - Enables hosted agents to export telemetry via private network
+
 ### Network Security Design
 
 This implementation utilizes a BYO VNet (Bring Your Own Virtual Network) approach with subnet delegation. Within your virtual network, two subnets are created: one delegated for agent workloads and one for private endpoints.
@@ -357,6 +373,7 @@ A private endpoint ensures secure, internal-only connectivity to the AI Services
 | Private Link Resource Type | Sub Resource | Private DNS Zone Name | Public DNS Zone Forwarders |
 |----------------------------|--------------|------------------------|-----------------------------|
 | **Microsoft Foundry** | account | `privatelink.cognitiveservices.azure.com`<br>`privatelink.openai.azure.com`<br>`privatelink.services.ai.azure.com` | `cognitiveservices.azure.com`<br>`openai.azure.com`<br>`services.ai.azure.com` |
+| **Azure Monitor (AMPLS)** | azuremonitor | `privatelink.monitor.azure.com`<br>`privatelink.oms.opinsights.azure.com`<br>`privatelink.ods.opinsights.azure.com`<br>`privatelink.agentsvc.azure-automation.net` | `monitor.azure.com`<br>`oms.opinsights.azure.com`<br>`ods.opinsights.azure.com`<br>`agentsvc.azure-automation.net` |
 
 ### Authentication & Authorization
 
@@ -377,6 +394,8 @@ A private endpoint ensures secure, internal-only connectivity to the AI Services
 modules-network-secured/
 ├── ai-account-identity.bicep                   # AI Services account with network injection
 ├── add-project-capability-host.bicep            # Basic capability host (no BYO connections)
+├── application-insights.bicep                   # Workspace-based Application Insights for agent tracing
+├── monitor-private-link-scope.bicep             # Azure Monitor Private Link Scope (AMPLS) for private telemetry ingestion
 ├── network-agent-vnet.bicep                     # VNet router (new or existing)
 ├── vnet.bicep                                   # New VNet creation
 ├── existing-vnet.bicep                          # Existing VNet integration

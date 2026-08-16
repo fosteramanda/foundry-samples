@@ -2,9 +2,11 @@
 
 An [Agent Framework](https://github.com/microsoft/agent-framework) agent with **locally-defined Python tools** hosted on Microsoft Foundry using the **Responses protocol**. This sample shows how to define custom tools with the `@tool` decorator and register them with the agent so the model can call them during a conversation. A `get_weather` function is included as an example tool.
 
+> **When to use local tools vs. a toolbox:** Local `@tool` functions are the right choice for self-contained logic you own and run in-process. For tools you want to share across agents — web search, code interpreter, MCP servers, OpenAPI, and more — package them behind a [Foundry Toolbox](../04-foundry-toolbox/) instead, which adds a single managed MCP endpoint with centralized authentication and versioning. See the [Foundry Toolbox sample](../04-foundry-toolbox/) and the [toolbox documentation](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/toolbox).
+
 ## How it works
 
-The agent uses `FoundryChatClient` from the Agent Framework and is served via `ResponsesHostServer`. Custom tools are defined with the `@tool` decorator — the model sees each function's signature and docstring and decides when to call them. See [main.py](main.py) for the implementation.
+The agent uses `FoundryChatClient` from the Agent Framework and is served via `ResponsesHostServer`. Custom tools are defined with the `@tool` decorator — the model sees each function's signature and docstring and decides when to call them. See [main.py](src/agent-framework-agent-with-local-tools-responses/main.py) for the implementation.
 
 ## Option 1: Azure Developer CLI (`azd`)
 
@@ -13,7 +15,7 @@ The agent uses `FoundryChatClient` from the Agent Framework and is served via `R
 1. **Azure Developer CLI (`azd`)** — [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
 2. Install the AI agent extension:
    ```bash
-   azd ext install azure.ai.agents
+   azd ext install microsoft.foundry
    ```
 3. Authenticate:
    ```bash
@@ -27,7 +29,7 @@ No cloning required. Create a new folder and initialize from the manifest:
 ```bash
 mkdir my-tools-agent && cd my-tools-agent
 
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/02-tools/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/02-tools/azure.yaml
 ```
 
 Follow the prompts to configure your Foundry project and model deployment. If you don't have an existing Foundry project, `azd ai agent init` will guide you through creating one.
@@ -76,23 +78,32 @@ azd ai agent invoke "What is the weather in Seattle?"
 
 ### Prerequisites
 
-1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.azure-ai-foundry)** extension installed.
-2. Sign in to Azure in VS Code.
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
 
-### Create the project
+### Set up the Python virtual environment
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Create Hosted Agent**.
-2. Select this sample from the gallery. The extension scaffolds the project into a new workspace and generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically.
-3. Complete the **Foundry Project Setup** to pick the subscription and Foundry project (or create a new one).
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
 
 ### Run and debug the agent
 
-Press **F5** to start the agent in debug mode. The agent host will start on `http://localhost:8088`.
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
 
-### Test with Agent Inspector
+### Or run manually, then open the Inspector
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Open Agent Inspector**.
-2. The Inspector connects to the running agent. Send messages to chat and view streamed responses.
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ### Deploy to Foundry
 
@@ -108,5 +119,4 @@ Press **F5** to start the agent in debug mode. The agent host will start on `htt
 - [Tool catalog](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/tool-catalog) — browse available tools to extend your agent (Bing Search, Azure AI Search, file search, code interpreter, and more)
 - [Manage hosted agents](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/manage-hosted-agent) — monitor and manage deployed agents
 - [Basic agent](../01-basic/) — minimal agent with no tools
-- [Connect to MCP servers](../03-mcp/) — sample using remote MCP tool providers
 - [Use Foundry Toolbox](../04-foundry-toolbox/) — sample with Azure Foundry Toolbox integration

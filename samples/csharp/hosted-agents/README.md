@@ -19,7 +19,7 @@ Pick the tool that matches your workflow — both deploy the same sample image t
 
 ```bash
 mkdir my-agent && cd my-agent
-azd ai agent init -m ../agent-framework/hello-world/agent.manifest.yaml
+azd ai agent init -m ../agent-framework/hello-world/azure.yaml
 azd up
 ```
 
@@ -57,7 +57,7 @@ Hosted agents support two protocols. Pick the one that matches your scenario.
 | Protocol bridge (GitHub Copilot, proprietary systems) | **Invocations** | The caller has its own protocol that doesn't map to `/responses`. |
 | Inter-service orchestration (Durable Functions, Logic Apps) | **Invocations** | The caller sends structured task payloads, not chat messages. |
 
-> **Still not sure?** Start with **Responses**. You can always add an Invocations endpoint later — a hosted agent can support both protocols simultaneously by listing both in `agent.yaml`.
+> **Still not sure?** Start with **Responses**. You can always add an Invocations endpoint later — a hosted agent can support both protocols simultaneously by listing both in `azure.yaml`.
 
 > **Other protocols:** Hosted agents can also expose the **Activity** protocol (for Teams and M365 integration) and the **A2A** protocol (for agent-to-agent delegation).
 
@@ -73,7 +73,7 @@ Hosted agents support two protocols. Pick the one that matches your scenario.
 | **Streaming** | Framework-managed `ResponseEventStream` with lifecycle events (`created`, `in_progress`, `delta`, `completed`) | Raw SSE — you format and write events directly |
 | **Background / long-running** | Built-in (`background: true` + platform-managed polling) | Manual task tracking and custom polling endpoints |
 | **Server SDK** | `azure-ai-agentserver-responses` | `azure-ai-agentserver-invocations` |
-| **agent.yaml** | `protocol: responses`, `version: v0.1.0` | `protocol: invocations`, `version: v0.0.1` |
+| **azure.yaml** | `protocol: responses`, `version: v0.1.0` | `protocol: invocations`, `version: v0.0.1` |
 
 </details>
 
@@ -176,7 +176,7 @@ Already built an agent with your own .NET code? The protocol SDKs (`Azure.AI.Age
 
 **Which approach?** Use the protocol SDKs (`Azure.AI.AgentServer.Responses` / `Azure.AI.AgentServer.Invocations`) — they work with any framework and keep you aligned with the platform contract. The **Core adapter** (`Azure.AI.AgentServer.Core`) is available when you need lower-level control without protocol abstractions. The Custom HTTP sample exists as a reference for what the contract looks like under the hood with no SDK at all.
 
-**What's different from Agent Framework samples:** BYO samples handle their own session state and tool wiring. The protocol SDKs give you the HTTP plumbing, but the tradeoff vs. full Agent Framework is that you manage orchestration, tools, and memory in your own code. The Dockerfile, agent.yaml, and `azd up` deployment are the same.
+**What's different from Agent Framework samples:** BYO samples handle their own session state and tool wiring. The protocol SDKs give you the HTTP plumbing, but the tradeoff vs. full Agent Framework is that you manage orchestration, tools, and memory in your own code. The Dockerfile, azure.yaml, and `azd up` deployment are the same.
 
 ---
 
@@ -200,8 +200,8 @@ Every sample deploys the same way and supports two equivalent paths. Pick the on
 
 | | **Azure Developer CLI (`azd`)** | **Foundry Toolkit VS Code Extension** |
 | --- | --- | --- |
-| **Install** | [Install `azd`](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) + `azd ext install azure.ai.agents` | Install the Foundry Toolkit VS Code extension |
-| **Open the sample** | `azd ai agent init -m <agent.manifest.yaml>` — generates Bicep, `azure.yaml`, `agent.yaml`, env config | Clone the repo and open the sample folder in VS Code |
+| **Install** | [Install `azd`](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) + `azd ext install microsoft.foundry` | Install the Foundry Toolkit VS Code extension |
+| **Open the sample** | `azd ai agent init -m <azure.yaml>` — adopts the sample's `azure.yaml` and sets up env config | Clone the repo and open the sample folder in VS Code |
 | **Run locally** | `azd ai agent run` (or `dotnet run`) | Same as `azd`/manual, then open **Foundry Toolkit: Open Agent Inspector** to chat with the running agent |
 | **Provision Azure resources** | `azd provision` (creates Foundry project, model deployment, ACR, App Insights if needed) | Guided dialog in **Foundry Toolkit: Deploy Hosted Agent** — reuses existing project or provisions a new one |
 | **Deploy to Foundry** | `azd deploy` (or `azd up` to provision + deploy) | **Foundry Toolkit: Deploy Hosted Agent** — builds image in ACR, registers the agent version, assigns RBAC |
@@ -212,8 +212,8 @@ Every sample deploys the same way and supports two equivalent paths. Pick the on
 ```bash
 mkdir my-agent && cd my-agent
 
-# Scaffold from the sample manifest — azd generates all the deployment files
-azd ai agent init -m ../agent-framework/hello-world/agent.manifest.yaml
+# Scaffold from the sample's azure.yaml — azd adopts it as your project manifest
+azd ai agent init -m ../agent-framework/hello-world/azure.yaml
 
 # Build, push, and deploy
 azd up
@@ -222,7 +222,8 @@ azd up
 azd down
 ```
 
-### Using the Foundry Toolkit VS Code Extension
+<details>
+<summary><h3>Using the Foundry Toolkit VS Code Extension</h3></summary>
 
 The [Foundry Toolkit VS Code extension](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?view=foundry&pivots=vscode) has a built-in sample gallery. You can open any sample directly from the extension without cloning this repository, it scaffolds the project into a new workspace, generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically, and configures a one-click **F5** debug experience.
 
@@ -238,6 +239,8 @@ Or, if you've already cloned this repository:
 
    The extension builds the container image in ACR (or uploads the ZIP), creates the agent version, and assigns required RBAC roles automatically.
 
+</details>
+
 ### Other ways to invoke your agent
 
 | Method | When to use |
@@ -249,7 +252,7 @@ Or, if you've already cloned this repository:
 ## Repo structure
 
 ```
-samples/dotnet/hosted-agents/
+samples/csharp/hosted-agents/
 ├── agent-framework/
 │   ├── hello-world/                   ← Start here (Agent Framework)
 │   ├── simple-agent/
@@ -288,28 +291,28 @@ The LangGraph samples are Python-only because LangGraph is a Python-native frame
 ```
 <sample-name>/
 ├── README.md               # What it does, prerequisites, deploy, invoke, clean up
-├── Program.cs              # Agent entry point (with OpenTelemetry + App Insights init)
-├── <ProjectName>.csproj    # Project file with NuGet dependencies
-├── Dockerfile              # Container definition (port 8088, .NET 10 multi-stage build)
-├── .dockerignore
-├── agent.manifest.yaml     # Agent definition — name, protocols, environment variables
-└── agent.yaml              # Deployed agent config — protocol, resources
+├── azure.yaml              # Unified manifest — project, model, and agent (name, protocols, resources, env vars)
+└── src/
+    └── <agent-name>/
+        ├── Program.cs              # Agent entry point (with OpenTelemetry + App Insights init)
+        ├── <ProjectName>.csproj    # Project file with NuGet dependencies
+        ├── Dockerfile              # Container definition (port 8088, .NET 10 multi-stage build)
+        └── .dockerignore
 ```
 
-Python samples follow the same layout with `main.py`, `requirements.txt`, and a Python-based Dockerfile.
+Python samples follow the same layout with `main.py`, `requirements.txt`, and a Python-based Dockerfile under `src/<agent-name>/`.
 
-> Samples do not include `azure.yaml`. The `azd ai agent init -m ./<sample-name>/agent.manifest.yaml` command (run from the sample's parent directory, not from the sample directory itself) generates the project configuration automatically from the agent manifest.
+> Each sample ships a unified `azure.yaml`. Run `azd ai agent init -m ./<sample-name>/azure.yaml` from the sample's parent directory (not from inside the sample directory itself); azd adopts the `azure.yaml` as your project manifest and sets up your azd environment automatically.
 
 > [!IMPORTANT]
-> Run `azd ai agent init` from a directory **outside** the sample folder — either a new empty directory, or one level up from the sample. Do **not** run it from inside the sample directory itself. Because the sample folder already contains `agent.manifest.yaml`, initializing in place fails with:
+> Run `azd ai agent init` from a directory **outside** the sample folder — either a new empty directory, or one level up from the sample. Do **not** run it from inside the sample directory itself. Because the sample folder already contains `azure.yaml`, initializing in place fails with:
 >
 > ```
-> ERROR: downloading agent.yaml: cannot copy agent files: target '...' is inside the
-> manifest directory '...'. Move the manifest to a separate directory containing only the
-> agent files.
+> ERROR: a project azure.yaml already exists in '.', so the sample's unified
+> azure.yaml cannot be adopted there
 > ```
 >
-> Use a fresh, empty directory with the remote manifest URL (e.g. `azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/hello-world/agent.manifest.yaml`), or run from the sample's parent directory with `azd ai agent init -m ./<sample-name>/agent.manifest.yaml`.
+> Use a fresh, empty directory with the remote manifest URL (e.g. `azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/hello-world/azure.yaml`), or run from the sample's parent directory with `azd ai agent init -m ./<sample-name>/azure.yaml`.
 
 ## Prerequisites
 

@@ -136,6 +136,7 @@ Note: If not provided, the following resources will be created automatically for
 - Azure Cosmos DB for NoSQL  
 - Azure AI Search
 - Azure Storage
+- Azure Container Registry (Premium SKU) with private endpoint *(when `enableContainerRegistry=true`)*
 
 **Private APIM Integration (Optional):** This template supports connecting an **existing Azure API Management service** behind a private endpoint. APIM is not created by this template — you must provide the ARM Resource ID of an existing APIM instance via the `apiManagementResourceId` parameter. When provided, a private endpoint and DNS zone for APIM (`privatelink.azure-api.net`) are created within your VNet.
 
@@ -164,6 +165,8 @@ Note: If not provided, the following resources will be created automatically for
 | `apiManagementResourceId` | ARM Resource ID of existing API Management service | `''` (no APIM) | No |
 | `dnsZonesSubscriptionId` | Subscription ID for existing DNS zones | `''` (current sub) | No |
 | `existingDnsZones` | Map of DNS zone names to resource groups | All empty (creates new) | No |
+| `enableContainerRegistry` | When `true`, creates an Azure Container Registry (Premium SKU) with a private endpoint in the PE subnet, a `privatelink.azurecr.io` DNS zone, and an AcrPull role assignment for the project managed identity. | `true` | No |
+| `developerIpCidr` | Developer IP CIDR to allowlist for ACR push access (e.g., `203.0.113.0/26`). When set, enables public network access with a deny-all default + an IP allowlist rule so developers can push images. When empty, public access remains fully disabled. | `''` | No |
 
 #### BYO Resource Details
 
@@ -406,6 +409,19 @@ Azure API Management (Optional — BYO)
   - Private endpoint within the VNet for secure API access
   - No public internet exposure when configured behind private endpoint
 
+Azure Monitor (Application Insights & Log Analytics)
+- Log Analytics Workspace: Microsoft.OperationalInsights/workspaces
+  - SKU: PerGB2018
+  - Retention: 30 days
+- Application Insights: Microsoft.Insights/components
+  - Kind: web
+  - Linked to Log Analytics workspace
+  - Public ingestion disabled (reached privately via AMPLS)
+- Azure Monitor Private Link Scope (AMPLS): microsoft.insights/privateLinkScopes
+  - Access mode: PrivateOnly ingestion, Open query
+  - Scoped resources: Application Insights + Log Analytics
+  - Enables hosted agents to export telemetry via private network
+
 ### Network Security Design
 This implementation utilizes a BYO VNet (Bring Your Own Virtual Network) approach, also known as custom VNet support with subnet delegation. Within your existing virtual network, one delegated subnet will be created.
 
@@ -426,6 +442,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 - Azure Storage
 - Azure Cosmos DB
 - Azure API Management (if provided)
+- Azure Monitor Private Link Scope (AMPLS) — enables telemetry export from hosted agents
 
 **Private DNS Zones**
 | Private Link Resource Type | Sub Resource | Private DNS Zone Name | Public DNS Zone Forwarders |
@@ -435,6 +452,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 | **Azure Cosmos DB**        | Sql          | `privatelink.documents.azure.com` | `documents.azure.com` |
 | **Azure Storage**          | blob         | `privatelink.blob.core.windows.net` | `blob.core.windows.net` |
 | **Azure API Management** (Optional) | Gateway     | `privatelink.azure-api.net` | `azure-api.net` |
+| **Azure Monitor (AMPLS)**  | azuremonitor | `privatelink.monitor.azure.com`<br>`privatelink.oms.opinsights.azure.com`<br>`privatelink.ods.opinsights.azure.com`<br>`privatelink.agentsvc.azure-automation.net` | `monitor.azure.com`<br>`oms.opinsights.azure.com`<br>`ods.opinsights.azure.com`<br>`agentsvc.azure-automation.net` |
 
 ### Authentication & Authorization
 
@@ -466,6 +484,10 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
       - Cosmos DB for NoSQL container: `<${projectWorkspaceId}>-agent-entity-store`
 
 
+  - **Azure Monitor (Application Insights)**
+    - Log Analytics Reader (`73c42c96-874c-492b-b04d-ab87d138a893`) — read the agent trace/telemetry data
+    - Privileged Monitoring Data Reader (`dbc9c667-e97f-4491-aee6-90b9cf960190`) — required to read GenAI prompt/response content
+
 ---
 
 ## Module Structure
@@ -476,12 +498,15 @@ modules-network-secured/
 ├── ai-account-identity.bicep                       # Microsoft Foundry deployment and configuration
 ├── ai-project-identity.bicep                       # Foundry project deployment and connection configuration           
 ├── ai-search-role-assignments.bicep                # AI Search RBAC configuration
+├── application-insights.bicep                      # Workspace-based Application Insights for agent tracing
+├── application-insights-role-assignment.bicep     # Application Insights RBAC (project MI trace/GenAI read access)
 ├── azure-storage-account-role-assignments.bicep    # Storage Account RBAC configuration  
 ├── blob-storage-container-role-assignments.bicep   # Blob Storage Container RBAC configuration
 ├── cosmos-container-role-assignments.bicep         # CosmosDB container Account RBAC configuration
 ├── cosmosdb-account-role-assignment.bicep          # CosmosDB Account RBAC configuration
 ├── existing-vnet.bicep                             # Bring your existing virtual network to template deployment
 ├── format-project-workspace-id.bicep               # Formatting the project workspace ID
+├── monitor-private-link-scope.bicep                # Azure Monitor Private Link Scope (AMPLS) for private telemetry ingestion
 ├── network-agent-vnet.bicep                        # Logic for routing virtual network set-up if existing virtual network is selected
 ├── private-endpoint-and-dns.bicep                  # Creating virtual networks and DNS zones. 
 ├── standard-dependent-resources.bicep              # Deploying CosmosDB, Storage, and Search

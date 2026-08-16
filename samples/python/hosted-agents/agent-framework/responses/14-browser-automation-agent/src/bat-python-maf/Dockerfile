@@ -1,0 +1,41 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . user_agent/
+WORKDIR /app/user_agent
+
+RUN pip install --no-cache-dir -r requirements.txt \
+    && npm install -g @playwright/cli@latest \
+    && playwright-cli install --skills
+
+EXPOSE 8088
+
+# Precompile Python bytecode at build time so cold starts don't pay for it.
+# These base images ship almost none of the standard library precompiled
+# (~2% of stdlib .py files, on both Debian-slim and Azure Linux), so without
+# this every new container recompiles hundreds of stdlib modules on first
+# import. Dependencies are best-effort (`|| true`) so a stray unparsable file
+# vendored by a third-party package can't fail the build; application code is
+# compiled strictly so a syntax error surfaces at build time rather than at
+# container start.
+# PYTHONDONTWRITEBYTECODE is cleared for these commands only: it blocks
+# bytecode *writes*, not *reads*, so images that set it still benefit.
+RUN PYTHONDONTWRITEBYTECODE= python -m compileall -q $(python -c "import sysconfig as s; print(s.get_paths()['stdlib'], s.get_paths()['purelib'])") || true; \
+    PYTHONDONTWRITEBYTECODE= python -m compileall -q .
+
+CMD ["python", "main.py"]

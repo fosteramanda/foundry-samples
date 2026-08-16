@@ -8,7 +8,7 @@ An [Agent Framework](https://github.com/microsoft/agent-framework) agent that us
 
 The agent uses `FoundryChatClient` from the Agent Framework to create a Responses client from the project endpoint and model deployment. The agent supports both streaming (SSE events) and non-streaming (JSON) response modes.
 
-See [main.py](main.py) for the full implementation.
+See [main.py](src/agent-framework-agent-files-responses/main.py) for the full implementation.
 
 ### Agent Hosting
 
@@ -32,7 +32,7 @@ This agent uses four tools:
 1. **Azure Developer CLI (`azd`)** — [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
 2. Install the AI agent extension:
    ```bash
-   azd ext install azure.ai.agents
+   azd ext install microsoft.foundry
    ```
 3. Authenticate:
    ```bash
@@ -46,7 +46,7 @@ No cloning required. Create a new folder and initialize from the manifest:
 ```bash
 mkdir my-files-agent && cd my-files-agent
 
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/06-files/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/06-files/azure.yaml
 ```
 
 Follow the prompts to configure your Foundry project and model deployment. If you don't have an existing Foundry project, `azd ai agent init` will guide you through creating one.
@@ -67,7 +67,7 @@ azd ai agent run
 
 The agent host will start on `http://localhost:8088`.
 
-> This sample requires a Foundry Toolbox. The `TOOLBOX_NAME` environment variable is configured in `agent.manifest.yaml` and will be prompted during `azd ai agent init`.
+> This sample requires a Foundry Toolbox. The `TOOLBOX_NAME` environment variable is configured in `azure.yaml` and will be prompted during `azd ai agent init`.
 
 ### Invoke the local agent
 
@@ -105,27 +105,47 @@ azd ai agent invoke --new-session "Hi!"
 
 ### Prerequisites
 
-1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.azure-ai-foundry)** extension installed.
-2. Sign in to Azure in VS Code.
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+3. A Foundry Toolbox must exist in the selected Foundry project. By default, the sample uses a toolbox named `agent-tools` with `code_interpreter` and `web_search` tools.
 
-### Create the project
+### Set up the Python virtual environment
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Create Hosted Agent**.
-2. Select this sample from the gallery. The extension scaffolds the project into a new workspace and generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically.
-3. Complete the **Foundry Project Setup** to pick the subscription and Foundry project (or create a new one).
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
+
+### Configure the toolbox
+
+Foundry Toolkit creates `src/agent-framework-agent-files-responses/.env` from `.env.example`. The default configuration is:
+
+```dotenv
+TOOLBOX_NAME="agent-tools"
+```
+
+If your toolbox has a different name, update `TOOLBOX_NAME` in that generated `.env` file before running or deploying the agent. The sample loads this file for local debugging, and Foundry Toolkit resolves the `${TOOLBOX_NAME}` placeholder in `azure.yaml` from the same file when deploying.
 
 ### Run and debug the agent
 
-Press **F5** to start the agent in debug mode. The agent host will start on `http://localhost:8088`.
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
 
-### Test with Agent Inspector
+### Or run manually, then open the Inspector
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Open Agent Inspector**.
-2. The Inspector connects to the running agent. Send messages to chat and view streamed responses.
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ### Deploy to Foundry
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Deploy Hosted Agent**. The extension opens a **Deploy Hosted Agent** wizard and reads `agent.yaml` to auto-populate settings.
+1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Deploy Hosted Agent**. The extension opens a **Deploy Hosted Agent** wizard and reads `azure.yaml` to auto-populate settings.
 2. If prompted, complete **Foundry Project Setup** to select subscription and project.
 3. On the **Basics** tab, choose deployment method (**Code** or **Container**) and confirm the agent name.
 4. On **Review + Deploy**, confirm runtime details, pick **CPU and Memory** size, and click **Deploy**.
@@ -176,15 +196,15 @@ azd ai agent invoke "Find the quarterly report under the home directory and tell
 
 Similar to using the `azd` CLI, you must invoke the agent first to create a session:
 
-![alt text](./resources/start-a-session.png)
+![alt text](src/agent-framework-agent-files-responses/resources/start-a-session.png)
 
 Once the session is created, you can grab the session ID and use `azd ai agent files upload --session-id <session-id>` to upload files to that specific hosted agent session.
 
-![alt text](./resources/session-started.png)
+![alt text](src/agent-framework-agent-files-responses/resources/session-started.png)
 
 Or you can upload files directly through the Foundry portal by navigating to Files tab in the agent playground:
 
-![alt text](./resources/file-upload-portal.png)
+![alt text](src/agent-framework-agent-files-responses/resources/file-upload-portal.png)
 
 ## Next steps
 

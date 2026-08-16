@@ -20,19 +20,21 @@ There is a simple sample available available at agent-framework/responses/14-bro
 
 ```
 browser-automation/
-├── main.py              # Responses handler, session management, agentic tool loop
-├── toolbox.py           # MCP client for Foundry Toolbox (browser session lifecycle)
-├── browser.py           # playwright-cli subprocess wrapper (BrowserSession class)
-├── skills.py            # Skill markdown loader
-├── constants.py         # System prompt, tool definitions, config constants
-├── skills/
-│   ├── form-filler.md   # Form-filling workflow with date picker handling
-│   └── web-scraper.md   # Data extraction with pagination support
-├── agent.yaml           # Hosted agent deployment config
-├── agent.manifest.yaml  # Agent init manifest for azd tooling
-├── Dockerfile           # Container build
-├── requirements.txt     # Python dependencies
-└── README.md
+├── README.md
+├── azure.yaml               # Unified manifest — project, model, and agent (name, protocols, resources, env vars)
+└── src/
+    └── browser-automation-python-byo-sample-foundry/
+        ├── main.py            # Responses handler, session management, agentic tool loop
+        ├── requirements.txt   # Python dependencies
+        ├── Dockerfile         # Container build
+        ├── skills/
+        │   ├── form-filler.md # Form-filling workflow with date picker handling
+        │   └── web-scraper.md # Data extraction with pagination support
+        └── utils/
+            ├── browser.py     # playwright-cli subprocess wrapper (BrowserSession class)
+            ├── toolbox.py     # MCP client for Foundry Toolbox (browser session lifecycle)
+            ├── skills.py      # Skill markdown loader
+            └── constants.py   # System prompt, tool definitions, config constants
 ```
 
 ## How It Works
@@ -64,9 +66,10 @@ User → Responses Protocol → Handler (main.py)
 ## Prerequisites
 
 - An Azure AI Foundry project with a deployed chat model (e.g., `gpt-4.1`).
-- A Foundry Toolbox with the `browser_automation_preview ` tool configured (backed by an Azure Playwright workspace).
 - Azure CLI installed and authenticated (`az login`).
 - Python 3.12+ for local development.
+
+> **Note:** You do not need a pre-existing Azure Playwright workspace or manual RBAC assignment. The deployment hooks create the workspace and assign roles automatically during `azd provision` and `azd deploy`. See [Deployment hooks](#deployment-hooks) below.
 
 ## Configuration
 
@@ -106,9 +109,36 @@ curl -sS -X POST http://localhost:8088/responses \
     -d '{"input": "Go to https://example.com and tell me the page title"}' | jq .
 ```
 
-### Test in Agent Inspector
+### Test in VS Code (Foundry Toolkit)
 
-Open **Agent Inspector** in VS Code (Command Palette → **Foundry Toolkit: Open Agent Inspector**) to interactively send messages.
+**Prerequisites**
+
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+
+**Set up the Python virtual environment**
+
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
+
+**Run and debug the agent**
+
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
+
+**Or run manually, then open the Inspector**
+
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ## Deploying to Foundry
 
@@ -117,29 +147,94 @@ Open **Agent Inspector** in VS Code (Command Palette → **Foundry Toolkit: Open
 # from this sample folder) so azd scaffolds the project alongside the
 # sample rather than inside it.
 cd ..
-azd ai agent init -m ./browser-automation/agent.manifest.yaml
+azd ai agent init -m ./browser-automation/azure.yaml
 
-# Set Playwright workspace connection values
-azd env set PLAYWRIGHT_SERVICE_URL "wss://<region>.api.playwright.microsoft.com/playwrightworkspaces/<workspace-id>/browsers"
-azd env set PLAYWRIGHT_SERVICE_RESOURCE_ID "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.LoadTestService/playwrightWorkspaces/<workspace-name>"
-azd env set PLAYWRIGHT_SERVICE_ACCESS_TOKEN "<playwright-workspace-access-token>"
+# On Linux/macOS: make hook scripts executable (azd ai agent init does not preserve file permissions)
+chmod +x hooks/*.sh
 
-# Deploy
+# Provision — the postprovision hook handles Playwright connection + toolbox setup
+azd provision
+
+# Deploy — the postdeploy hook assigns RBAC roles
 azd deploy
 ```
 
+> [!NOTE]
+> This sample is supported in container deployments only. The container image installs Playwright CLI, which this browser automation sample needs at runtime.
+
 > [!IMPORTANT]
-> Run `azd ai agent init` from a directory **outside** the sample folder — either a new empty directory, or one level up from this sample as shown above. Do **not** run it from inside the sample directory itself. Because the sample folder already contains `agent.manifest.yaml`, initializing in place fails with:
+> Run `azd ai agent init` from a directory **outside** the sample folder — either a new empty directory, or one level up from this sample as shown above. Do **not** run it from inside the sample directory itself. Because the sample folder already contains `azure.yaml`, initializing in place fails with:
 >
 > ```
-> ERROR: downloading agent.yaml: cannot copy agent files: target '...' is inside the
-> manifest directory '...'. Move the manifest to a separate directory containing only the
-> agent files.
+> ERROR: a project azure.yaml already exists in '.', so the sample's unified
+> azure.yaml cannot be adopted there
 > ```
 >
 > The `cd ..` step above (or using a fresh, empty directory with the remote manifest URL) avoids this.
 
-`PLAYWRIGHT_SERVICE_ACCESS_TOKEN` is used as a secret parameter for the Playwright workspace project connection.
+## Deployment hooks
+
+This sample uses `azd` hooks to automate Playwright workspace setup:
+
+### `postprovision` — Connection & Toolbox setup
+
+After `azd provision` completes, the `postprovision` hook runs interactively and:
+
+1. **Prompts for a Playwright workspace** — provide an existing ARM resource ID, or leave empty to create a new one.
+2. **Selects a region** (for new workspaces) — dynamically fetches available regions from the Azure RP.
+3. **Selects an authentication type:**
+   - **Project Managed Identity** (recommended) — the Foundry project's MSI authenticates to the workspace.
+   - **Agent Identity** — the hosted agent's identity authenticates.
+   - **API Key** (existing workspaces only, interactive mode only) — uses an access token you provide. Not supported in CI/non-interactive flows because the token must be entered interactively.
+4. **Deploys a Bicep template** that creates the workspace (if new) and the Playwright project connection.
+5. **Creates the `browser-automation-tools` toolbox** via the Foundry data-plane API and sets it as the default version.
+
+### `postdeploy` — RBAC role assignment
+
+After `azd deploy` completes, the `postdeploy` hook:
+
+1. Determines the correct principal ID based on the configured auth type:
+   - **Project Managed Identity** → project's system-assigned identity
+   - **Agent Identity** → the deployed agent's instance identity
+2. Assigns the **Playwright Workspace Contributor** role on the Playwright workspace.
+3. Retries up to 3 times with a graceful warning if the assignment fails (e.g., due to Entra propagation delays).
+
+> **Note:** API Key authentication does not require a role assignment.
+
+#### Non-interactive / CI usage
+
+For CI pipelines or `azd provision --no-prompt`, pre-set the required values so the hooks skip interactive prompts:
+
+```bash
+# Use an existing Playwright workspace
+azd env set PLAYWRIGHT_SERVICE_RESOURCE_ID "/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.LoadTestService/playwrightWorkspaces/{name}"
+azd env set PLAYWRIGHT_AUTH_TYPE "ProjectManagedIdentity"   # or AgenticIdentityToken
+
+# Or create a new workspace (omit PLAYWRIGHT_SERVICE_RESOURCE_ID)
+azd env set PLAYWRIGHT_REGION "eastus"
+azd env set PLAYWRIGHT_AUTH_TYPE "ProjectManagedIdentity"
+```
+
+> **⚠️ Warning:** If neither `PLAYWRIGHT_SERVICE_RESOURCE_ID` nor `PLAYWRIGHT_REGION` is set:
+> - **PowerShell (Windows):** prompts time out after 60 seconds and default to creating a new workspace in **eastus**.
+> - **sh (Linux/macOS):** prompts will **wait indefinitely** for input, blocking the pipeline.
+>
+> Always pre-set at least one of these variables in CI to avoid surprises or hanging builds.
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `PLAYWRIGHT_SERVICE_RESOURCE_ID` | No | ARM resource ID of an existing workspace. Omit to create a new one. |
+| `PLAYWRIGHT_REGION` | When creating new | Region for the new workspace (e.g., `eastus`). Defaults to `eastus` if not set. |
+| `PLAYWRIGHT_AUTH_TYPE` | No | `ProjectManagedIdentity` (default) or `AgenticIdentityToken`. `ApiKey` is interactive-only. |
+
+### Option 1: Let hooks provision everything (recommended)
+
+Use this path for a fully automated setup. Just run:
+
+```bash
+azd provision   # Hook prompts for Playwright details, creates connection + toolbox
+azd deploy      # Hook assigns RBAC to the identity
+```
 
 ## Tools Available to the Model
 
@@ -242,4 +337,4 @@ The model loads skills on demand via the `load_skill` tool when it needs guided 
 - Edit `constants.py` to modify the system prompt or tool definitions.
 - Add new skills as `.md` files in `skills/`.
 - Modify `browser.py` to add/restrict allowed playwright-cli commands.
-- Adjust `agent.yaml` resources (`cpu`, `memory`) for heavier workloads.
+- Adjust `azure.yaml` resources (`cpu`, `memory`) for heavier workloads.

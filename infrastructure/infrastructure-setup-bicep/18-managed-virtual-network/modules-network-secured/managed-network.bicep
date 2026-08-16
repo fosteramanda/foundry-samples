@@ -17,6 +17,12 @@ param cosmosDBResourceId string
 @description('Resource ID of the AI Search Service for outbound PE rule')
 param aiSearchResourceId string
 
+@description('Resource ID of the Azure Monitor Private Link Scope for telemetry')
+param amplsResourceId string
+
+@description('Resource ID of the Azure Container Registry for outbound PE rule. When empty, no ACR outbound rule is created.')
+param acrResourceId string = ''
+
 // Reference the existing AI Services account in the same resource group
 resource aiAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
   name: accountName
@@ -98,6 +104,62 @@ resource aiSearchOutboundRule 'Microsoft.CognitiveServices/accounts/managedNetwo
     category: 'UserDefined'
   }
   dependsOn: [cosmosDBOutboundRule]
+}
+
+// Outbound PE rule for Azure Monitor Private Link Scope (AMPLS)
+// This allows the hosted agent to export telemetry to Application Insights privately
+#disable-next-line BCP081
+resource amplsOutboundRule 'Microsoft.CognitiveServices/accounts/managedNetworks/outboundRules@2025-10-01-preview' = {
+  parent: managedNetwork
+  name: 'ampls-monitor-rule'
+  properties: {
+    type: 'PrivateEndpoint'
+    destination: {
+      serviceResourceId: amplsResourceId
+      subresourceTarget: 'azuremonitor'
+    }
+    category: 'UserDefined'
+  }
+  dependsOn: [aiSearchOutboundRule]
+}
+
+// Outbound PE rule for Azure Container Registry
+// This allows the hosted agent to pull container images from the private ACR
+#disable-next-line BCP081
+resource acrOutboundRule 'Microsoft.CognitiveServices/accounts/managedNetworks/outboundRules@2025-10-01-preview' = if (!empty(acrResourceId)) {
+  parent: managedNetwork
+  name: 'acr-registry-rule'
+  properties: {
+    type: 'PrivateEndpoint'
+    destination: {
+      serviceResourceId: acrResourceId
+      subresourceTarget: 'registry'
+    }
+    category: 'UserDefined'
+  }
+  dependsOn: [amplsOutboundRule]
+}
+
+// Outbound service-tag rule for the Agent365 (A365) observability/tracing endpoint
+// agent365.svc.cloud.microsoft sits behind Azure Front Door, so allow egress to the
+// AzureFrontDoor.Frontend service tag on TCP 443. This lets the hosted agent export
+// traces to the A365 tracing endpoint. A service-tag rule does not require the
+// managed-network firewall SKU (unlike an FQDN rule).
+#disable-next-line BCP081
+resource a365FrontDoorOutboundRule 'Microsoft.CognitiveServices/accounts/managedNetworks/outboundRules@2025-10-01-preview' = {
+  parent: managedNetwork
+  name: 'allow-a365-frontdoor-rule'
+  properties: {
+    type: 'ServiceTag'
+    destination: {
+      serviceTag: 'AzureFrontDoor.Frontend'
+      protocol: 'TCP'
+      portRanges: '443'
+      action: 'Allow'
+    }
+    category: 'UserDefined'
+  }
+  dependsOn: [acrOutboundRule]
 }
 
 output managedNetworkSettingsName string = managedNetwork.name

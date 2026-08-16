@@ -48,7 +48,7 @@ Use the table below to choose the right Terraform infrastructure template for yo
 | [**15a**](../15a-private-network-standard-agent-setup/) | Standard (BYO resources) | BYO VNet + Private Endpoints | System Assigned MI | Standalone E2E network isolation (creates VNet, DNS zones, and resource group) |
 | [**17**](../17-private-network-standard-user-assigned-identity-agent-setup/) | Standard (BYO resources) | BYO VNet + Private Endpoints | **User Assigned MI** | Same as 15a but with user-managed identity |
 | [**16**](../16-private-network-standard-agent-apim-setup-preview/) | Standard (BYO resources) | BYO VNet + Private Endpoints | System Assigned MI | Same as 15a **plus** private APIM integration (preview) |
-| [**19**](../19-hybrid-private-resources-agent-setup/) | Standard (BYO resources) | Hybrid (selective private/public) | System Assigned MI | Hybrid networking with selective private endpoints |
+| [**19**](../19-private-network-agent-setup-with-tools/) | Standard (BYO resources) | BYO VNet + Private Endpoints | System Assigned MI | E2E network isolation with tools behind VNet (Functions, MCP, OpenAPI, A2A) |
 | [**10**](../10-private-network-basic/) | Basic (platform-managed) | BYO VNet + Private Endpoints | System Assigned MI | Basic Foundry with private networking — no agent BYO resources |
 | [**41**](../41-standard-agent-setup/) | Standard (BYO resources) | **Public** (no VNet) | System Assigned MI | Standard agents without network isolation |
 
@@ -111,7 +111,7 @@ Use the table below to choose the right Terraform infrastructure template for yo
 1. The delegated agent subnet must be exclusively used by a single Foundry account. It cannot be shared across accounts.
 2. The Foundry resource and the virtual network must be in the same Azure region. BYO resources (Storage, Cosmos DB, AI Search) may be in different regions.
 3. Private Class A IP address ranges (10.x.x.x) are only supported in the following regions: **Australia East, Brazil South, Canada East, East US, East US 2, France Central, Germany West Central, Italy North, Japan East, South Africa North, South Central US, South India, Spain Central, Sweden Central, UAE North, UK South, West US, West US 3.** Use Class B (172.16.x.x) or C (192.168.x.x) ranges for other regions.
-4. This template does **not** support tools (MCP servers, OpenAPI tools, Azure Functions, A2A) behind the VNet. Use [template 19](../19-hybrid-private-resources-agent-setup/) for that scenario.
+4. This template does **not** support tools (MCP servers, OpenAPI tools, Azure Functions, A2A) behind the VNet. Use [template 19](../19-private-network-agent-setup-with-tools/) for that scenario.
 5. There is no upgrade path from BYO VNet (this template) to Managed Virtual Network. A Foundry resource redeployment is required.
 6. All projects within the same Foundry account share model deployments. Per-project model isolation is not supported.
 7. Cosmos DB is deployed as single-region. Multi-region replication must be configured manually post-deployment.
@@ -371,6 +371,18 @@ By bundling these BYO features (file storage, search, and thread storage), the s
   - Disabled local auth
   - Single region deployment
 
+**Azure Monitor (Application Insights & Log Analytics)**
+- Log Analytics Workspace: Microsoft.OperationalInsights/workspaces
+  - SKU: PerGB2018
+  - Retention: 30 days
+- Application Insights: Microsoft.Insights/components
+  - Kind: web
+  - Linked to Log Analytics workspace
+  - Public ingestion disabled (reached privately via AMPLS)
+- Azure Monitor Private Link Scope (AMPLS): Microsoft.Insights/privateLinkScopes
+  - Access mode: PrivateOnly ingestion, Open query
+  - Scoped resources: Application Insights + Log Analytics
+
 ### Network Security Design
 
 This implementation utilizes a BYO VNet (Bring Your Own Virtual Network) approach with subnet delegation. The pre-existing virtual network must include subnets for agent delegation and private endpoints.
@@ -382,6 +394,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 - Azure AI Search
 - Azure Storage
 - Azure Cosmos DB
+- Azure Monitor Private Link Scope (AMPLS)
 
 **Private DNS Zones**
 
@@ -391,6 +404,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 | **Azure AI Search**        | searchService| `privatelink.search.windows.net` | `search.windows.net` |
 | **Azure Cosmos DB**        | Sql          | `privatelink.documents.azure.com` | `documents.azure.com` |
 | **Azure Storage**          | blob         | `privatelink.blob.core.windows.net` | `blob.core.windows.net` |
+| **Azure Monitor (AMPLS)**  | azuremonitor | `privatelink.monitor.azure.com`<br>`privatelink.oms.opinsights.azure.com`<br>`privatelink.ods.opinsights.azure.com`<br>`privatelink.agentsvc.azure-automation.net` | `monitor.azure.com`<br>`oms.opinsights.azure.com`<br>`ods.opinsights.azure.com`<br>`agentsvc.azure-automation.net` |
 
 ---
 
@@ -440,6 +454,7 @@ code/
 ├── data.tf                                         # Creates data objects for active subscription being deployed to and deployment security context
 ├── locals.tf                                       # Creates local variables for project GUID
 ├── main.tf                                         # Main deployment file        
+├── monitor.tf                                      # Azure Monitor (Application Insights + AMPLS) for agent tracing
 ├── outputs.tf                                      # Placeholder file for future outputs
 ├── providers.tf                                    # Terraform provider configuration 
 ├── example.tfvars                                  # Sample tfvars file

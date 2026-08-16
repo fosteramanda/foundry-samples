@@ -81,11 +81,15 @@ Use the table below to choose the right infrastructure template for your scenari
    az provider register --namespace 'Microsoft.ContainerService'
    ```
 
+   > ⚠️ **`Microsoft.App` and `Microsoft.ContainerService` are mandatory for network injection.** When `networkInjections.scenario='agent'` is used, the capability host is created on the agent subnet's Azure Container Apps environment. If either provider is in `NotRegistered`, the failure surfaces **after** the Foundry account resource is already accepted — the account reaches `provisioningState: Failed` (error: *"Subscription … is not registered with the required resource providers … Microsoft.App and Microsoft.ContainerService"*) and must be cleaned up before retrying (see [Account Deletion Prerequisites and Cleanup Guidance](#account-deletion-prerequisites-and-cleanup-guidance)). Run the [preflight check](../deployment-tools/preflight/README.md) to catch this before any resource is created.
+
 1. Network administrator permissions (if operating in a restricted or enterprise environment)
 
 1. Sufficient quota for all resources required by this template in the target Azure region, including model deployment quota.
     * If no parameters are passed in, this template creates an Microsoft Foundry resource, Foundry project, Azure Cosmos DB for NoSQL, Azure AI Search, and Azure Storage account
 1. Azure CLI installed and configured on your local workstation or deployment pipeline server
+
+> **💡 Recommended**: Run the [preflight check](../deployment-tools/preflight/README.md) before deploying to catch common misconfigurations (provider registration, subnet conflicts, soft-deleted accounts) before they surface as cryptic ARM errors mid-deploy.
 
 ---
 
@@ -102,8 +106,18 @@ Use the table below to choose the right infrastructure template for your scenari
   
   > **Notes:** 
   - If you do not provide an existing virtual network, the template will create a new virtual network with the default address spaces and subnets described above. If you use an existing virtual network, make sure it already contains two subnets (Agent and Private Endpoint) before deploying the template.
-  - The account-level capability host is created implicitly by the platform via `networkInjections.scenario='agent'` on the Foundry account (see `modules-network-secured/ai-account-identity.bicep`). Only one capability host per account is allowed, so `main.bicep` does not declare a second one for fresh deployments. Set `createAccountCapabilityHost=true` only when the account has no capability host — BYO accounts without one, or after running `deleteCapHost.sh` (see [Account Deletion Prerequisites and Cleanup Guidance](#account-deletion-prerequisites-and-cleanup-guidance)).
+  - The account-level capability host (named `{accountName}@aml_aiagentservice`) is created implicitly by the Cognitive Services resource provider via `networkInjections.scenario='agent'` on the Foundry account (see `modules-network-secured/ai-account-identity.bicep`). Only one capability host per account is allowed, so `main.bicep` does not declare a second one for fresh deployments (doing so returns HTTP 409). Set `createAccountCapabilityHost=true` only when the account has no capability host — BYO accounts without one, or after running `deleteCapHost.sh` (see [Account Deletion Prerequisites and Cleanup Guidance](#account-deletion-prerequisites-and-cleanup-guidance)). **On a network-injected account, capability-host creation can take roughly 30–35 minutes** — this is expected; do not cancel the deployment assuming it has hung.
   - You must ensure the subnet is exclusively delegated to __Microsoft.App/environments__ and cannot be used by any other Azure resources.
+
+#### Agent subnet with UDR, NSG, or restricted egress
+
+The delegated agent subnet runs the agent compute on **Azure Container Apps** (that is what the `Microsoft.App/environments` delegation provisions), so it inherits Container Apps' networking rules **in addition to** Foundry's outbound requirements. If your subnet has a User-Defined Route (UDR), a Network Security Group (NSG), the *private subnet* setting (no default outbound), or deny-by-default policies, keep the following in mind — otherwise deployment can reach a `Running` state and then **fail without a clear error** because required platform traffic is blocked:
+
+- **UDR / Azure Firewall:** A default route (`0.0.0.0/0`) to a firewall force-tunnels the platform's required outbound traffic. You must allow the endpoints listed in [Firewall requirements for private virtual networks](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/deploy-hosted-agent-code#firewall-requirements-for-private-virtual-networks) (at minimum the `AzureActiveDirectory` service tag plus the documented FQDNs).
+- **NSG:** Supported. Deny-by-default is fine as long as the required platform flows are allowed — see [Azure Container Apps networking](https://learn.microsoft.com/en-us/azure/container-apps/networking).
+- **Private subnet (no default outbound access):** If enabled, you must provide an explicit egress path (NAT gateway, or UDR → firewall) **and** allow the required endpoints above; otherwise provisioning fails.
+- **Private Endpoint network policies:** These apply to the *private endpoint* subnet, which is separate from the delegated agent subnet — enabling them there does not affect agent injection.
+- **Subnet basics:** RFC 1918 range only (no CGNAT `100.64.0.0/10`, no public ranges), delegated exclusively to `Microsoft.App/environments`. See the [networking deep dive](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/agents-networking-deep-dive) for sizing and IP-allocation details.
 
 
 
@@ -140,6 +154,7 @@ Note: If not provided, the following resources will be created automatically for
 - Azure Cosmos DB for NoSQL  
 - Azure AI Search
 - Azure Storage
+- Azure Container Registry (Premium SKU) with private endpoint *(when `enableContainerRegistry=true`)*
 
 #### Parameters
 
@@ -169,6 +184,8 @@ Note: If not provided, the following resources will be created automatically for
 | `createAccountCapabilityHost` | When `true`, the template explicitly creates the account-level capability host. Leave `false` for fresh deployments — the platform auto-creates it via `networkInjections.scenario='agent'`. Set `true` only for a BYO account with no capability host, or to recreate after running `deleteCapHost.sh`. Only one capability host per account is allowed. | `false` | No |
 | `dnsZonesSubscriptionId` | Subscription ID for existing DNS zones. Accepts either a bare GUID (`<subscription-id>`) or a full ARM subscription path (`/subscriptions/<subscription-id>`); the template normalizes the value internally. | `''` (current sub) | No |
 | `existingDnsZones` | Map of DNS zone names to resource groups | All empty (creates new) | No |
+| `enableContainerRegistry` | When `true`, creates an Azure Container Registry (Premium SKU) with a private endpoint in the PE subnet, a `privatelink.azurecr.io` DNS zone, and an AcrPull role assignment for the project managed identity. | `true` | No |
+| `developerIpCidr` | Developer IP CIDR to allowlist for ACR push access (e.g., `203.0.113.0/26`). When set, enables public network access with a deny-all default + an IP allowlist rule so developers can push images. When empty, public access remains fully disabled. | `''` | No |
 
 #### BYO Resource Details
 
@@ -219,6 +236,8 @@ To use an existing Azure AI Search resource, set aiSearchServiceResourceId param
 >   --subscription <search-sub> --auth-options aadOrApiKey \
 >   --aad-auth-failure-mode http401WithBearerChallenge
 > ```
+
+> **AI Search → AI Services connectivity**: This template configures AI Services with `networkAcls.bypass: AzureServices`, which allows Azure AI Search to reach AI Services through the trusted-services bypass. This works for most scenarios. If your security policy requires removing the bypass (setting it to `None`), deploy [Shared Private Links](../deployment-tools/networking/README.md) from AI Search to AI Services instead — this creates a private endpoint from AI Search's managed infrastructure directly into AI Services via Private Link.
 
 
 4. **Use an existing Azure Storage account**
@@ -279,6 +298,8 @@ az group delete --name <your-resource-group> --yes --no-wait
 ```
 
 > **Important**: If you need to reuse the same subnet, follow the [Account Deletion Prerequisites and Cleanup Guidance](#account-deletion-prerequisites-and-cleanup-guidance) to properly purge the account and wait for the capability host to fully unlink (~20 minutes).
+
+> **💡 Tip**: For VNet-injection deployments, use the [cleanup tool](../deployment-tools/cleanup/README.md) it handles the required deletion order (project caphost → account caphost → purge → SAL wait) automatically.
 
 ---  
 
@@ -405,6 +426,19 @@ Cosmos DB Account
   - Disabled local auth
   - Single region deployment 
 
+Azure Monitor (Application Insights & Log Analytics)
+- Log Analytics Workspace: Microsoft.OperationalInsights/workspaces
+  - SKU: PerGB2018
+  - Retention: 30 days
+- Application Insights: Microsoft.Insights/components
+  - Kind: web
+  - Linked to Log Analytics workspace
+  - Public ingestion disabled (reached privately via AMPLS)
+- Azure Monitor Private Link Scope (AMPLS): microsoft.insights/privateLinkScopes
+  - Access mode: PrivateOnly ingestion, Open query
+  - Scoped resources: Application Insights + Log Analytics
+  - Enables hosted agents to export telemetry via private network
+
 ### Network Security Design
 This implementation utilizes a BYO VNet (Bring Your Own Virtual Network) approach, also known as custom VNet support with subnet delegation. Within your existing virtual network, one delegated subnet will be created.
 
@@ -424,6 +458,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 - Azure AI Search
 - Azure Storage
 - Azure Cosmos DB
+- Azure Monitor Private Link Scope (AMPLS) — enables telemetry export from hosted agents
 
 **Private DNS Zones**
 | Private Link Resource Type | Sub Resource | Private DNS Zone Name | Public DNS Zone Forwarders |
@@ -432,6 +467,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 | **Azure AI Search**        | searchService| `privatelink.search.windows.net` | `search.windows.net` |
 | **Azure Cosmos DB**        | Sql          | `privatelink.documents.azure.com` | `documents.azure.com` |
 | **Azure Storage**          | blob         | `privatelink.blob.core.windows.net` | `blob.core.windows.net` |
+| **Azure Monitor (AMPLS)**  | azuremonitor | `privatelink.monitor.azure.com`<br>`privatelink.oms.opinsights.azure.com`<br>`privatelink.ods.opinsights.azure.com`<br>`privatelink.agentsvc.azure-automation.net` | `monitor.azure.com`<br>`oms.opinsights.azure.com`<br>`ods.opinsights.azure.com`<br>`agentsvc.azure-automation.net` |
 
 ### Authentication & Authorization
 
@@ -463,6 +499,10 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
       - Cosmos DB for NoSQL container: `<${projectWorkspaceId}>-agent-entity-store`
 
 
+  - **Azure Monitor (Application Insights)**
+    - Log Analytics Reader (`73c42c96-874c-492b-b04d-ab87d138a893`) — read the agent trace/telemetry data
+    - Privileged Monitoring Data Reader (`dbc9c667-e97f-4491-aee6-90b9cf960190`) — required to read GenAI prompt/response content
+
 ---
 
 ## Module Structure
@@ -474,12 +514,15 @@ modules-network-secured/
 ├── ai-account-identity.bicep                       # Microsoft Foundry deployment and configuration (supports BYO existing account)
 ├── ai-project-identity.bicep                       # Foundry project deployment and connection configuration           
 ├── ai-search-role-assignments.bicep                # AI Search RBAC configuration
+├── application-insights.bicep                      # Workspace-based Application Insights for agent tracing
+├── application-insights-role-assignment.bicep     # Application Insights RBAC (project MI trace/GenAI read access)
 ├── azure-storage-account-role-assignments.bicep    # Storage Account RBAC configuration  
 ├── blob-storage-container-role-assignments.bicep   # Blob Storage Container RBAC configuration
 ├── cosmos-container-role-assignments.bicep         # CosmosDB container Account RBAC configuration
 ├── cosmosdb-account-role-assignment.bicep          # CosmosDB Account RBAC configuration
 ├── existing-vnet.bicep                             # Bring your existing virtual network to template deployment
 ├── format-project-workspace-id.bicep               # Formatting the project workspace ID
+├── monitor-private-link-scope.bicep                # Azure Monitor Private Link Scope (AMPLS) for private telemetry ingestion
 ├── network-agent-vnet.bicep                        # Logic for routing virtual network set-up if existing virtual network is selected
 ├── private-endpoint-and-dns.bicep                  # Creating virtual networks and DNS zones. 
 ├── standard-dependent-resources.bicep              # Deploying CosmosDB, Storage, and Search

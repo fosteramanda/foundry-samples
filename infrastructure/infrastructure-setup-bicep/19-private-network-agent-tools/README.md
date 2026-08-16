@@ -104,6 +104,8 @@ Use the table below to choose the right infrastructure template for your scenari
     * If no parameters are passed in, this template creates an Microsoft Foundry resource, Foundry project, Azure Cosmos DB for NoSQL, Azure AI Search, and Azure Storage account
 1. Azure CLI installed and configured on your local workstation or deployment pipeline server
 
+> **💡 Recommended**: Run the [preflight check](../deployment-tools/preflight/README.md) before deploying to catch common misconfigurations (provider registration, subnet conflicts, soft-deleted accounts) before they surface as cryptic ARM errors mid-deploy.
+
 ---
 
 ## Pre-Deployment Steps
@@ -177,6 +179,7 @@ Note: If not provided, the following resources will be created automatically for
 - Azure Cosmos DB for NoSQL
 - Azure AI Search
 - Azure Storage
+- Azure Container Registry (Premium SKU) with private endpoint *(when `enableContainerRegistry=true`)*
 
 #### Parameters
 
@@ -226,6 +229,8 @@ Note: If not provided, the following resources will be created automatically for
 | `existingAzureCosmosDBAccountResourceId` | ARM Resource ID of existing Cosmos DB | `''` (creates new) | No |
 | `existingFabricWorkspaceResourceId` | ARM Resource ID of existing Fabric workspace | `''` | No |
 | `existingDnsZones` | Map of `'<zoneFqdn>': { subscriptionId, resourceGroup }` — see [Use existing Private DNS zones](#5-use-existing-private-dns-zones-cross-rg--cross-subscription) | All `{ subscriptionId: '', resourceGroup: '' }` (creates new) | No |
+| `enableContainerRegistry` | When `true`, creates an Azure Container Registry (Premium SKU) with a private endpoint in the PE subnet, a `privatelink.azurecr.io` DNS zone, and an AcrPull role assignment for the project managed identity. | `true` | No |
+| `developerIpCidr` | Developer IP CIDR to allowlist for ACR push access (e.g., `203.0.113.0/26`). When set, enables public network access with a deny-all default + an IP allowlist rule so developers can push images. When empty, public access remains fully disabled. | `''` | No |
 
 > **Naming change (May 2026):** `aiSearchResourceId`, `azureStorageAccountResourceId`, `azureCosmosDBAccountResourceId`, and `fabricWorkspaceResourceId` were renamed to `existingAiSearchResourceId`, `existingAzureStorageAccountResourceId`, `existingAzureCosmosDBAccountResourceId`, and `existingFabricWorkspaceResourceId` for consistency with the `existing*ResourceId` pattern used by VNet and subnet params. Update existing parameter files accordingly.
 
@@ -271,6 +276,8 @@ To use an existing Cosmos DB for NoSQL resource, set `existingAzureCosmosDBAccou
 
 To use an existing Azure AI Search resource, set `existingAiSearchResourceId` to the full ARM ID of the target search service.
  - `param existingAiSearchResourceId = '/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Search/searchServices/{searchServiceName}'`
+
+> **AI Search → AI Services connectivity**: This template configures AI Services with `networkAcls.bypass: AzureServices`, which allows Azure AI Search to reach AI Services through the trusted-services bypass. This works for most scenarios. If your security policy requires removing the bypass (setting it to `None`), deploy [Shared Private Links](../deployment-tools/networking/README.md) from AI Search to AI Services instead — this creates a private endpoint from AI Search's managed infrastructure directly into AI Services via Private Link.
 
 
 4. **Use an existing Azure Storage account**
@@ -365,6 +372,8 @@ az group delete --name <your-resource-group> --yes --no-wait
 ```
 
 > **Important**: If you need to reuse the same subnet, follow the [Account Deletion Prerequisites and Cleanup Guidance](#account-deletion-prerequisites-and-cleanup-guidance) to properly purge the account and wait for the capability host to fully unlink (~20 minutes).
+
+> **💡 Tip**: For VNet-injection deployments, use the [cleanup tool](../deployment-tools/cleanup/README.md) it handles the required deletion order (project caphost → account caphost → purge → SAL wait) automatically.
 
 ---
 
@@ -505,6 +514,19 @@ Cosmos DB Account
   - Disabled local auth
   - Single region deployment
 
+Azure Monitor (Application Insights & Log Analytics)
+- Log Analytics Workspace: Microsoft.OperationalInsights/workspaces
+  - SKU: PerGB2018
+  - Retention: 30 days
+- Application Insights: Microsoft.Insights/components
+  - Kind: web
+  - Linked to Log Analytics workspace
+  - Public ingestion disabled (reached privately via AMPLS)
+- Azure Monitor Private Link Scope (AMPLS): microsoft.insights/privateLinkScopes
+  - Access mode: PrivateOnly ingestion, Open query
+  - Scoped resources: Application Insights + Log Analytics
+  - Enables hosted agents to export telemetry via private network
+
 ### Network Security Design
 This implementation utilizes a BYO VNet (Bring Your Own Virtual Network) approach, also known as custom VNet support with subnet delegation. Within your existing virtual network, delegated subnets will be created.
 
@@ -525,6 +547,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 - Azure AI Search
 - Azure Storage
 - Azure Cosmos DB
+- Azure Monitor Private Link Scope (AMPLS) — enables telemetry export from hosted agents
 
 **Private DNS Zones**
 | Private Link Resource Type | Sub Resource | Private DNS Zone Name | Public DNS Zone Forwarders |
@@ -533,6 +556,7 @@ Private endpoints ensure secure, internal-only connectivity. Private endpoints a
 | **Azure AI Search**        | searchService| `privatelink.search.windows.net` | `search.windows.net` |
 | **Azure Cosmos DB**        | Sql          | `privatelink.documents.azure.com` | `documents.azure.com` |
 | **Azure Storage**          | blob         | `privatelink.blob.core.windows.net` | `blob.core.windows.net` |
+| **Azure Monitor (AMPLS)**  | azuremonitor | `privatelink.monitor.azure.com`<br>`privatelink.oms.opinsights.azure.com`<br>`privatelink.ods.opinsights.azure.com`<br>`privatelink.agentsvc.azure-automation.net` | `monitor.azure.com`<br>`oms.opinsights.azure.com`<br>`ods.opinsights.azure.com`<br>`agentsvc.azure-automation.net` |
 
 ### Authentication & Authorization
 
@@ -622,6 +646,10 @@ az containerapp create \
 
 Then configure private DNS zone for Container Apps (see TESTING-GUIDE.md Step 6.3).
 
+  - **Azure Monitor (Application Insights)**
+    - Log Analytics Reader (`73c42c96-874c-492b-b04d-ab87d138a893`) — read the agent trace/telemetry data
+    - Privileged Monitoring Data Reader (`dbc9c667-e97f-4491-aee6-90b9cf960190`) — required to read GenAI prompt/response content
+
 ---
 
 ## Module Structure
@@ -633,6 +661,8 @@ modules-network-secured/
 ├── ai-project-identity.bicep                       # Foundry project deployment and connection configuration
 ├── ai-project-identity-unique.bicep                # Modified project module with unique connection names
 ├── ai-search-role-assignments.bicep                # AI Search RBAC configuration
+├── application-insights.bicep                      # Workspace-based Application Insights for agent tracing
+├── application-insights-role-assignment.bicep     # Application Insights RBAC (project MI trace/GenAI read access)
 ├── azure-storage-account-role-assignment.bicep     # Storage Account RBAC configuration
 ├── blob-storage-container-role-assignments.bicep   # Blob Storage Container RBAC configuration
 ├── blob-storage-container-role-assignments-unique.bicep # Modified storage role assignment module
@@ -640,6 +670,7 @@ modules-network-secured/
 ├── cosmosdb-account-role-assignment.bicep          # CosmosDB Account RBAC configuration
 ├── existing-vnet.bicep                             # Bring your existing virtual network to template deployment
 ├── format-project-workspace-id.bicep               # Formatting the project workspace ID
+├── monitor-private-link-scope.bicep                # Azure Monitor Private Link Scope (AMPLS) for private telemetry ingestion
 ├── network-agent-vnet.bicep                        # Logic for routing virtual network set-up if existing virtual network is selected
 ├── private-endpoint-and-dns.bicep                  # Creating virtual networks and DNS zones.
 ├── standard-dependent-resources.bicep              # Deploying CosmosDB, Storage, and Search

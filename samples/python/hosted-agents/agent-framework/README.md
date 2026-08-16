@@ -2,6 +2,11 @@
 
 This directory contains samples that demonstrate how to use the [Agent Framework](https://github.com/microsoft/agent-framework) to host agents with different capabilities and configurations. Each sample includes a README with instructions on how to set up, run, and interact with the agent.
 
+> [!IMPORTANT]
+> **Migrating from Protocol version 1.0.0 to 2.0.0:** The Foundry Hosted Agents service has been updated to use Protocol version 2.0.0. If your application is using Protocol version 1.0.0, upgrade to Protocol version 2.0.0 in your `azure.yaml` or `azure.yaml` and upgrade to the latest `agent-framework-foundry-hosting` package. `agent-framework-foundry-hosting==1.0.0a260625` is the last version that supports Protocol version 1.0.0.
+>
+> The `agent-framework-foundry-hosting` Python API surface is intended to remain stable, but protocol 1.0.0 and 2.0.0 are incompatible.
+
 ## Samples
 
 ### Responses API
@@ -10,11 +15,11 @@ This directory contains samples that demonstrate how to use the [Agent Framework
 | --- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | [Basic](responses/01-basic/)                                               | A minimal agent demonstrating basic request/response interaction and multi-turn conversations using `previous_response_id`.                                                                                                                   |
 | 2   | [Tools](responses/02-tools/)                                               | An agent with local tools (e.g., weather lookup), demonstrating how to register and invoke custom tool functions alongside the LLM.                                                                                                           |
-| 3   | [MCP](responses/03-mcp/)                                                   | An agent connected to a remote MCP server (GitHub), demonstrating external MCP tool provider integration.                                                                                                                                     |
 | 4   | [Foundry Toolbox](responses/04-foundry-toolbox/)                           | An agent using Azure Foundry Toolbox, demonstrating toolbox provisioning and querying available tools at runtime.                                                                                                                             |
 | 5   | [Workflows](responses/05-workflows/)                                       | An agent with a multi-step orchestrated workflow, demonstrating chaining prompts through an orchestrated flow.                                                                                                                                |
 | 6   | [Files](responses/06-files/)                                               | An agent capable of handling files uploaded by users.                                                                                                                                                                                         |
 | 7   | [Skills](responses/07-skills/)                                             | An agent using native Agent Framework file-based skills, demonstrating skill discovery and a script-backed PDF travel guide skill.                                                                                                            |
+| 7   | [Teams Activity](responses/07-teams-activity/)                              | An agent that can be published to Teams and Microsoft 365, with optional Work IQ tools for answering questions about Teams and calendar data and support for file attachments.                                                                |
 | 8   | [Observability](responses/08-observability/)                               | An agent demonstrating observability features, including logging, metrics, and tracing.                                                                                                                                                       |
 | 9   | [Declarative Customer Support](responses/09-declarative-customer-support/) | A multi-turn customer-support triage workflow defined entirely in YAML and hosted as an agent, demonstrating declarative workflow authoring with `InvokeAzureAgent` calls to specialist Foundry-hosted agents and conversation-aware routing. |
 | 10  | [Downstream Azure services](responses/10-downstream-azure/)                | An agent that performs data-plane operations on Azure Blob Storage and Service Bus using its per-agent Microsoft Entra identity, demonstrating the per-agent identity + Azure RBAC pattern with no connection strings or shared keys.         |
@@ -22,6 +27,13 @@ This directory contains samples that demonstrate how to use the [Agent Framework
 | 12  | [Foundry Skills](responses/12-foundry-skills/)                             | An agent that uploads `SKILL.md` files to the Foundry Skills REST API and downloads them at startup, decoupling tone/policy guidelines from agent code.                                                                                       |
 | 13  | [Foundry Memory](responses/13-foundry-memory/)                             | An agent with persistent semantic memory backed by an Azure AI Foundry Memory Store, using `FoundryMemoryProvider` to remember user facts across sessions.                                                                                    |
 | 14  | [Browser Automation Agent](responses/14-browser-automation-agent/)         | A Foundry-hosted browser automation agent using Foundry Toolbox and the Browser Automation tool (Azure Playwright Service) for general browsing, web scraping, and form filling.                                                                |
+| 15  | [Optimization Travel Approver](responses/15-optimization-travel-approver/) | A travel request approval agent for Agent Optimizer, demonstrating optimization of agent instructions, skills, and tool descriptions.                                                                                                        |
+| 16  | [Content Safety Guardrail](responses/16-content-safety-guardrail/)         | An agent with a definition-level Responsible AI content safety guardrail that screens prompts and responses against a configured RAI policy.                                                                                                  |
+| 17  | [Foundry IQ Toolbox](responses/17-foundry-iq-toolbox/)                     | An agent that grounds answers in a Foundry IQ knowledge base through a Foundry Toolbox MCP connection authenticated with the agent's managed identity.                                                                                        |
+| 18  | [Egress Control](responses/18-egress-control/)                             | An agent for testing managed egress proxy policies by making outbound HTTP requests that validate Allow, Deny, Transform, and Rewrite rules.                                                                                                  |
+| 19  | [Harness Research](responses/19-harness-research/)                         | A research harness with planning, todos, web search, compaction, file memory, and autonomous execute-mode looping over the Responses protocol.                                                                                                |
+| 20  | [Harness Data Processing](responses/20-harness-data-processing/)           | A file-backed data-analysis harness that auto-runs read-only tools and exposes resumable approval requests for protected writes over the Responses protocol.                                                                                   |
+| 21  | [Harness Scaling Capabilities](responses/21-harness-scaling-capabilities/) | A personal-finance harness that scales with file-based skills, a confined shell, CodeAct, background research agents, and token limits over the Responses protocol.                                                                            |
 
 ### Invocations API
 
@@ -37,7 +49,12 @@ This directory contains samples that demonstrate how to use the [Agent Framework
 
 ## Running the Agent Host Locally
 
-You can run any sample in this folder using one of three approaches. Pick the one that matches your workflow.
+The steps below use the [basic Responses sample](responses/01-basic/) as an example and apply to most single-agent Responses samples. Check each sample's README for additional dependencies and configuration.
+
+The other protocols require their own setup and invocation flow:
+
+- For the Invocations protocol, follow the [basic Invocations sample](invocations/01-basic/).
+- For A2A, follow the [Delegation walkthrough](a2a/01-delegation/), which deploys and connects two agents.
 
 | Approach | Best for | Setup effort |
 | --- | --- | --- |
@@ -50,7 +67,7 @@ You can run any sample in this folder using one of three approaches. Pick the on
 #### Prerequisites
 
 1. **Azure Developer CLI (`azd`)**
-   - [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) and the AI agent extension: `azd ext install azure.ai.agents`
+   - [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) (1.25 or later) and the unified Foundry CLI extension: `azd ext install microsoft.foundry`
    - Authenticated: `azd auth login`
 
 2. **Azure Subscription**
@@ -63,7 +80,7 @@ You can run any sample in this folder using one of three approaches. Pick the on
 mkdir hosted-agent-framework-agent && cd hosted-agent-framework-agent
 
 # Initialize from the manifest
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/01-basic/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/01-basic/azure.yaml
 ```
 
 Follow the instructions from `azd ai agent init` to complete the agent initialization. If you don't have an existing Foundry project and a model deployment, `azd ai agent init` will guide you through creating them.
@@ -133,7 +150,8 @@ Or in PowerShell:
 (Invoke-WebRequest -Uri http://localhost:8088/responses -Method POST -ContentType "application/json" -Body '{"input": "Hello!"}').Content
 ```
 
-### Using the Foundry Toolkit VS Code Extension
+<details>
+<summary><h3>Using the Foundry Toolkit VS Code Extension</h3></summary>
 
 The [Foundry Toolkit VS Code extension](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?view=foundry&pivots=vscode) has a built-in sample gallery. You can open this sample directly from the extension without cloning the repository, it scaffolds the project into a new workspace, generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically, and configures a one-click **F5** debug experience.
 
@@ -142,15 +160,26 @@ The extension also adds an **Agent Inspector** UI for chatting with a hosted age
 #### Prerequisites
 
 1. **Foundry Toolkit VS Code Extension** — [install from the VS Code marketplace](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?pivots=vscode) and sign in to Azure.
-2. The agent is already running locally — start it with [`azd ai agent run`](#using-azd) or [`python main.py`](#using-python) first.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
 
-#### Open the Agent Inspector
+#### Set up the Python virtual environment
 
-With the agent running on `http://localhost:8088/`:
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies: `pip install uv && uv pip install -r requirements.txt`
+
+#### Run and debug with F5 (recommended)
+
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically.
+
+#### Or run manually, then open the Inspector
+
+Once the agent is running on `http://localhost:8088/` (via [`azd ai agent run`](#using-azd) or [`python main.py`](#using-python)):
 
 1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Open Agent Inspector**.
 2. The Inspector auto-connects to the running agent.
-3. Send messages from the Inspector to chat with the agent and watch the streamed responses.
+3. Send messages to chat and watch the streamed responses.
+
+</details>
 
 ### Using `python`
 
@@ -166,13 +195,13 @@ With the agent running on `http://localhost:8088/`:
 Clone the repository containing the sample code:
 
 ```bash
-git clone https://github.com/microsoft/hosted-agents-vnext-private-preview.git
-cd hosted-agents-vnext-private-preview/samples/python/hosted-agents/agent-framework
+git clone https://github.com/microsoft-foundry/foundry-samples.git
+cd foundry-samples/samples/python/hosted-agents/agent-framework/responses/01-basic/src/agent-framework-agent-basic-responses
 ```
 
 #### Environment setup
 
-1. Navigate to the sample directory you want to explore. Create a virtual environment:
+1. Navigate to the sample's service directory (the `project` path in its `azure.yaml`). Create a virtual environment:
 
    ```bash
    python -m venv .venv
@@ -190,7 +219,7 @@ cd hosted-agents-vnext-private-preview/samples/python/hosted-agents/agent-framew
    pip install -r requirements.txt
    ```
 
-3. Create a `.env` file with your Foundry configuration following the `env.example` file in the sample.
+3. Create a `.env` file with your Foundry configuration following the `.env.example` file in the sample.
 
 4. Make sure you are logged in with the Azure CLI:
 
@@ -235,7 +264,7 @@ Once you've tested locally, deploy to Microsoft Foundry. You can use either `azd
 
 If you already have a Foundry project and the necessary Azure resources provisioned, you can skip the setup steps and proceed directly to deploying the agent.
 
-After running `azd ai agent init -m <agent.manifest.yaml>` and following the prompts to configure your agent, you will have a project ready for deployment.
+After running `azd ai agent init -m <azure.yaml>` and following the prompts to configure your agent, you will have a project ready for deployment.
 
 #### Setting Up a New Foundry Project
 

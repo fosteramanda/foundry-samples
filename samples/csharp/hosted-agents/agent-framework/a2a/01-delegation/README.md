@@ -11,7 +11,7 @@ The caller sees the executor purely as an A2A skill discovered from the executor
 
 ```
 caller (hosted agent)
-  └─ Toolbox (loaded server-side via AIProjectClient.GetToolboxToolsAsync)
+  └─ Toolbox (registered server-side via AddFoundryToolboxes)
        └─ a2a_preview tool
             └─ RemoteA2A connection ──► executor's A2A endpoint
 ```
@@ -50,7 +50,7 @@ The two agents are set up in separate `azd` projects. Four steps:
 ```bash
 mkdir hosted-agent-a2a-executor-dotnet && cd hosted-agent-a2a-executor-dotnet
 
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/a2a/01-delegation/executor/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/a2a/01-delegation/executor/azure.yaml
 
 azd provision    # writes .env (FOUNDRY_PROJECT_ENDPOINT, AZURE_AI_MODEL_DEPLOYMENT_NAME)
 azd deploy
@@ -68,21 +68,21 @@ This PATCHes the executor to publish its `agent_card` and add `a2a` to `agent_en
 
 On success the script prints the executor's A2A endpoint URL — **copy it**, you'll paste it into the caller prompt in the next step.
 
-> The `RemoteA2A` connection and `a2a_preview` toolbox are **not** created here — they're declared in the caller's `agent.manifest.yaml` and created by `azd provision` on the caller (step 3).
+> The `RemoteA2A` connection and `a2a_preview` toolbox are **not** created here — they're declared in the caller's `azure.yaml` and created by `azd provision` on the caller (step 3).
 
 ### 3. Deploy the caller
 
 ```bash
 mkdir ../hosted-agent-a2a-caller-dotnet && cd ../hosted-agent-a2a-caller-dotnet
 
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/a2a/01-delegation/caller/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/a2a/01-delegation/caller/azure.yaml
 # Paste the A2A endpoint URL from step 2 when prompted for `a2a_executor_endpoint`.
 
 azd provision    # creates the RemoteA2A connection + a2a_preview toolbox from the manifest
 azd deploy
 ```
 
-The caller's manifest declares a `kind: connection` (`RemoteA2A` / `UserEntraToken`) pointing at the A2A endpoint, and a `kind: toolbox` with one `a2a_preview` tool. `azd provision` creates both — there's nothing to wire by hand. At startup the caller resolves the toolbox by name (`TOOLBOX_NAME=a2a-delegation-tools`) via `AIProjectClient.GetToolboxToolsAsync` and passes the tools to the agent as server-side tools; the underlying connection is resolved on the server side.
+The caller's manifest declares a `kind: connection` (`RemoteA2A` / `UserEntraToken`) pointing at the A2A endpoint, and a `kind: toolbox` with one `a2a_preview` tool. `azd provision` creates both — there's nothing to wire by hand. At startup the caller registers the toolbox by name (`TOOLBOX_NAME=a2a-delegation-tools`) with `AddFoundryToolboxes`; the hosting layer discovers its tools and injects them into every request as server-side tools, and the underlying connection is resolved on the server side.
 
 ### 4. Invoke the caller
 

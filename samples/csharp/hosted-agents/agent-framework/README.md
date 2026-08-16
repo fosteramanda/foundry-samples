@@ -2,6 +2,14 @@
 
 This directory contains samples that demonstrate how to use the [Agent Framework](https://github.com/microsoft/agent-framework) to host agents with different capabilities and configurations. Each sample includes a README with instructions on how to interact with the agent.
 
+> [!IMPORTANT]
+> **Responses container protocol v2.0.** These samples target the Foundry Responses container
+> protocol **v2.0** (declared in each `azure.yaml`) and reference the
+> `Microsoft.Agents.AI.*` **1.12.0** package line that carries the AgentServer 2.0 migration. That
+> package line is not published yet, so `dotnet restore` will fail until it lands — the version pins
+> are placeholders (`1.12.0-preview.*` / `1.12.0-alpha.*`) and will be finalized when 1.12.0 ships.
+> For the previous protocol v1 definition, use the samples at the last commit on the 1.11.x line.
+
 ## Samples
 
 ### Responses API
@@ -14,7 +22,7 @@ This directory contains samples that demonstrate how to use the [Agent Framework
 | 4 | [mcp-tools](mcp-tools/) | An agent demonstrating client-side and server-side MCP tool integration. |
 | 5 | [text-search-rag](text-search-rag/) | A support agent with RAG capabilities using `TextSearchProvider`. |
 | 6 | [workflows](workflows/) | A multi-agent translation pipeline using `WorkflowBuilder`. |
-| 7 | [foundry-toolbox-server-side](foundry-toolbox-server-side/) | An agent that loads a Foundry Toolbox with `GetToolboxToolsAsync()` and passes its tools as server-side tools — Foundry executes them on the agent's behalf. |
+| 7 | [foundry-toolbox-server-side](foundry-toolbox-server-side/) | An agent that loads a Foundry Toolbox via `AddFoundryToolboxes()` and exposes its tools as server-side tools — Foundry executes them on the agent's behalf. |
 | 8 | [toolbox-auth-paths](toolbox-auth-paths/) | A multi-tool Foundry Toolbox demonstrating the authentication paths an MCP tool can use (key-based `CustomKeys`, public no-auth, and optional Entra agent identity) — all resolved server-side. |
 | 9 | [azure-search-rag](azure-search-rag/) | A support agent with RAG grounded in an Azure AI Search keyword index via `TextSearchProvider` over `Azure.Search.Documents`. |
 | 10 | [foundry-memory-rag](foundry-memory-rag/) | A personal-coach agent with persistent per-user memory that survives across requests and sessions using `FoundryMemoryProvider`. |
@@ -47,7 +55,7 @@ You can run any sample in this folder using one of three approaches. Pick the on
 
 1. **Azure Developer CLI (`azd`)**
 
-    - [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) and the AI agent extension: `azd ext install azure.ai.agents`
+    - [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd) (1.25 or later) and the unified Foundry CLI extension: `azd ext install microsoft.foundry`
     - Authenticated: `azd auth login`
 
 2. **Azure Subscription**
@@ -60,7 +68,7 @@ You can run any sample in this folder using one of three approaches. Pick the on
 mkdir hosted-agent-framework-agent && cd hosted-agent-framework-agent
 
 # Initialize from the manifest
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/hello-world/agent.manifest.yaml
+azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/csharp/hosted-agents/agent-framework/hello-world/azure.yaml
 ```
 
 Follow the instructions from `azd ai agent init` to complete the agent initialization. If you don't have an existing Foundry project and a model deployment, `azd ai agent init` will guide you through creating them.
@@ -130,24 +138,27 @@ Or in PowerShell:
 (Invoke-WebRequest -Uri http://localhost:8088/responses -Method POST -ContentType "application/json" -Body '{"input": "Hello!"}').Content
 ```
 
-### Using the Foundry Toolkit VS Code Extension
+<details>
+<summary><h3>Using the Foundry Toolkit VS Code Extension</h3></summary>
 
-The [Foundry Toolkit VS Code extension](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?view=foundry&pivots=vscode) has a built-in sample gallery. You can open this sample directly from the extension without cloning the repository, it scaffolds the project into a new workspace, generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically, and configures a one-click **F5** debug experience.
-
-The extension also adds an **Agent Inspector** UI for chatting with a hosted agent that is already running locally, plus a guided **Deploy Hosted Agent** command (see [Deploying the Agent to Foundry](#deploying-the-agent-to-foundry) below).
+The [Foundry Toolkit VS Code extension](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio) has a built-in sample gallery. You can open a sample directly from the extension without cloning the repository — it scaffolds the project into a new workspace, generates `agent.yaml`, `.env`, and `.vscode/tasks.json` + `launch.json` automatically, and configures a one-click **F5** debug experience. It also adds an **Agent Inspector** UI for chatting with a running agent and a guided **Deploy Hosted Agent** command (see [Deploying the Agent to Foundry](#deploying-the-agent-to-foundry) below).
 
 #### Prerequisites
 
-1. **Foundry Toolkit VS Code Extension** — [install from the VS Code marketplace](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?pivots=vscode) and sign in to Azure.
-2. The agent is already running locally — start it with [`azd ai agent run`](#using-azd) or [`dotnet run`](#using-dotnet-run) first.
+1. **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed and signed in to Azure.
+2. **[C# Dev Kit](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit)** extension. Run Command Palette (`Ctrl+Shift+P`) → **C#: Check Workspace Requirements** to confirm the toolchain.
 
-#### Open the Agent Inspector
+#### Run and debug the agent
 
-With the agent running on `http://localhost:8088/`:
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
 
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Open Agent Inspector**.
-2. The Inspector auto-connects to the running agent.
-3. Send messages from the Inspector to chat with the agent and watch the streamed responses.
+#### Or run manually, then open the Inspector
+
+1. Start the agent with [`azd ai agent run`](#using-azd) or [`dotnet run`](#using-dotnet-run) — it listens on `http://localhost:8088/`.
+2. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Open Agent Inspector**.
+3. The Inspector auto-connects to the running agent. Send messages to chat and watch the streamed responses.
+
+</details>
 
 ### Using `dotnet run`
 
@@ -238,7 +249,7 @@ Once you've tested locally, deploy to Microsoft Foundry. You can use either `azd
 
 If you already have a Foundry project and the necessary Azure resources provisioned, you can skip the setup steps and proceed directly to deploying the agent.
 
-After running `azd ai agent init -m <agent.manifest.yaml>` and following the prompts to configure your agent, you will have a project ready for deployment.
+After running `azd ai agent init -m <azure.yaml>` and following the prompts to configure your agent, you will have a project ready for deployment.
 
 #### Setting Up a New Foundry Project
 

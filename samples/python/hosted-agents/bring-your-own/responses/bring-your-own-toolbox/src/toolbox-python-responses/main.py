@@ -1,0 +1,505 @@
+# Copyright (c) Microsoft. All rights reserved.
+
+"""Toolbox — Bring Your Own Responses agent with Foundry Toolbox MCP.
+
+Hosted agent that connects to an Azure AI Foundry toolbox via MCP,
+discovers tools at startup, and lets the model call them during
+conversation. Uses the Responses protocol for request/response handling.
+
+The agent:
+1. Connects to the toolbox MCP endpoint and discovers available tools
+2. On each request, sends the conversation + tool definitions to the model
+3. If the model requests a tool call, executes it via MCP and loops
+4. Returns the final text response through the Responses protocol SSE stream
+
+Conversation history is automatically managed by the platform via
+``previous_response_id``. The handler calls ``context.get_history()`` to
+retrieve prior turns and includes them in the model call so the agent
+maintains context across messages.
+
+Required environment variables:
+    FOUNDRY_PROJECT_ENDPOINT: Foundry project endpoint (auto-injected in hosted containers)
+    AZURE_AI_MODEL_DEPLOYMENT_NAME: Model deployment name (declared in agent.manifest.yaml)
+    TOOLBOX_NAME: Toolbox resource name (declared in agent.manifest.yaml); the MCP URL
+        is constructed from this and FOUNDRY_PROJECT_ENDPOINT automatically.
+
+Usage::
+
+    # Set environment variables
+    export FOUNDRY_PROJECT_ENDPOINT="https://<account>.services.ai.azure.com/api/projects/<project>"
+    export AZURE_AI_MODEL_DEPLOYMENT_NAME="gpt-4.1"
+    export TOOLBOX_NAME="<toolbox-resource-name>"
+
+    # Start the agent
+    python main.py
+
+    # Invoke the agent
+    curl -sS -X POST http://localhost:8088/responses \\
+        -H "Content-Type: application/json" \\
+        -d '{"input": "Search the web for Azure AI Foundry news", "stream": false}' | jq .
+"""
+
+from azure.ai.agentserver.responses import (
+    CreateResponse,
+    ResponseContext,
+    ResponseEventStream,
+    ResponsesAgentServerHost,
+    ResponsesServerOptions,
+    get_input_expanded,
+)
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.ai.projects import AIProjectClient
+
+# Container protocol v2.0.0 exposes the inbound per-request context
+# (call_id, session_id, ...) via a ContextVar populated by the runtime.
+from azure.ai.agentserver.core import (
+    FoundryAgentRequestContext,
+    get_request_context,
+)
+import asyncio
+import json
+import logging
+import os
+import time
+
+import httpx
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
+
+
+logger = logging.getLogger(__name__)
+
+if not os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+    logger.warning(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING not set — traces will not be sent to "
+        "Application Insights. Set it to enable local telemetry. "
+        "(This variable is auto-injected in hosted Foundry containers — do not declare it in agent.manifest.yaml.)"
+    )
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+_endpoint = os.environ.get("FOUNDRY_PROJECT_ENDPOINT")
+if not _endpoint:
+    raise EnvironmentError(
+        "FOUNDRY_PROJECT_ENDPOINT environment variable is not set. "
+        "Set it to your Foundry project endpoint, or use 'azd ai agent run' "
+        "which sets it automatically."
+    )
+
+_model = os.environ.get("AZURE_AI_MODEL_DEPLOYMENT_NAME")
+if not _model:
+    raise EnvironmentError(
+        "AZURE_AI_MODEL_DEPLOYMENT_NAME environment variable is not set. "
+        "Set it to your model deployment name as declared in agent.manifest.yaml."
+    )
+
+# Toolbox MCP endpoint resolution (in priority order):
+#   1. TOOLBOX_ENDPOINT — explicit full URL override (CI / local).
+#   2. TOOLBOX_<NAME>_MCP_ENDPOINT — azd auto-injects this per toolbox declared
+#      in azure.yaml. Variable name = upper(name) with dashes -> underscores.
+#   3. Construct from FOUNDRY_PROJECT_ENDPOINT + TOOLBOX_NAME as a final fallback.
+_TOOLBOX_ENDPOINT_OVERRIDE = os.getenv("TOOLBOX_ENDPOINT", "")
+_TOOLBOX_NAME = os.getenv("TOOLBOX_NAME", "")
+if _TOOLBOX_ENDPOINT_OVERRIDE:
+    TOOLBOX_ENDPOINT = _TOOLBOX_ENDPOINT_OVERRIDE
+elif _TOOLBOX_NAME:
+    _azd_injected_var = (
+        f"TOOLBOX_{_TOOLBOX_NAME.upper().replace('-', '_')}_MCP_ENDPOINT"
+    )
+    TOOLBOX_ENDPOINT = os.getenv(_azd_injected_var) or (
+        f"{_endpoint.rstrip('/')}/toolboxes/{_TOOLBOX_NAME}/mcp?api-version=v1"
+    )
+else:
+    TOOLBOX_ENDPOINT = ""
+if not TOOLBOX_ENDPOINT:
+    logger.warning(
+        "TOOLBOX_NAME is not set — agent will start without toolbox tools. "
+        "Set TOOLBOX_NAME or declare a toolbox resource in agent.manifest.yaml."
+    )
+# Ensure api-version query param is present when using a manually set TOOLBOX_ENDPOINT.
+elif "api-version=" not in TOOLBOX_ENDPOINT:
+    sep = "&" if "?" in TOOLBOX_ENDPOINT else "?"
+    TOOLBOX_ENDPOINT += f"{sep}api-version=v1"
+
+# Feature-flag header value (e.g. "Toolboxes=V1Preview").
+_TOOLBOX_FEATURES = os.getenv("FOUNDRY_AGENT_TOOLBOX_FEATURES", "Toolboxes=V1Preview")
+
+# Platform-injected per-request call identifier (container protocol v2.0.0).
+# Extracted from the inbound responses request via ``get_request_context()`` and
+# forwarded verbatim on every egress call to the Foundry toolbox MCP proxy so the
+# platform can correlate the downstream tool calls with the originating request.
+# The header name is owned by the SDK; use ``platform_headers()`` to build it.
+
+_credential = DefaultAzureCredential()
+_project_client = AIProjectClient(endpoint=_endpoint, credential=_credential)
+_responses_client = _project_client.get_openai_client().responses
+_token_provider = get_bearer_token_provider(
+    _credential, "https://ai.azure.com/.default")
+
+_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant with access to tools via Azure AI Foundry toolbox. "
+    "Use the available tools when appropriate to answer user questions. "
+    "Be concise and informative."
+)
+
+# ── Toolbox MCP client ────────────────────────────────────────────────────────
+
+
+class _McpToolboxClient:
+    """Lightweight MCP client for toolbox tool discovery and invocation."""
+
+    def __init__(self, endpoint: str, token_provider):
+        self.endpoint = endpoint
+        self._get_token = token_provider
+        self._session_id: str | None = None
+        self._req_id = 0
+
+    def _headers(self, call_id: str | None = None) -> dict:
+        h = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._get_token()}",
+        }
+        if _TOOLBOX_FEATURES:
+            h["Foundry-Features"] = _TOOLBOX_FEATURES
+        # Forward the per-request call ID extracted from the inbound request.
+        if call_id:
+            h.update(FoundryAgentRequestContext(call_id=call_id).platform_headers())
+        if self._session_id:
+            h["mcp-session-id"] = self._session_id
+        return h
+
+    def _next_id(self) -> int:
+        self._req_id += 1
+        return self._req_id
+
+    def initialize(self, call_id: str | None = None) -> str:
+        """Send MCP initialize + initialized notification."""
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(
+                self.endpoint,
+                headers=self._headers(call_id),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._next_id(),
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "byo-responses-toolbox", "version": "1.0.0"},
+                    },
+                },
+            )
+            resp.raise_for_status()
+            self._session_id = resp.headers.get("mcp-session-id")
+            data = resp.json()
+
+            # Send initialized notification
+            client.post(
+                self.endpoint,
+                headers=self._headers(call_id),
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            )
+            return data.get("result", {}).get("serverInfo", {}).get("name", "unknown")
+
+    def list_tools(self, call_id: str | None = None) -> list[dict]:
+        """Call tools/list and return tool definitions."""
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(
+                self.endpoint,
+                headers=self._headers(call_id),
+                json={"jsonrpc": "2.0", "id": self._next_id(
+                ), "method": "tools/list", "params": {}},
+            )
+            resp.raise_for_status()
+            return resp.json().get("result", {}).get("tools", [])
+
+    def call_tool(self, name: str, arguments: dict, call_id: str | None = None) -> str:
+        """Call a tool and return the text result."""
+        with httpx.Client(timeout=120) as client:
+            resp = client.post(
+                self.endpoint,
+                headers=self._headers(call_id),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._next_id(),
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments},
+                },
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            error = payload.get("error")
+            if error:
+                code = error.get("code", "unknown") if isinstance(error, dict) else "unknown"
+                raise RuntimeError(f"Toolbox returned JSON-RPC error code {code}")
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                raise RuntimeError("Toolbox returned no tool result")
+            if result.get("isError"):
+                raise RuntimeError("Toolbox tool execution returned an error result")
+            content = result.get("content", [])
+            texts = []
+            for c in content:
+                if isinstance(c, dict):
+                    if c.get("type") == "text" and c.get("text"):
+                        texts.append(c["text"])
+                    elif c.get("type") == "resource":
+                        resource = c.get("resource", {})
+                        if resource.get("text"):
+                            texts.append(resource["text"])
+            return "\n".join(texts) if texts else json.dumps(result)
+
+
+# ── Lazy tool discovery ───────────────────────────────────────────────────────
+# Defer MCP connection to first request so the container can start and pass
+# health checks before the toolbox endpoint is reachable.
+
+_mcp_client: _McpToolboxClient | None = None
+_tool_definitions: list[dict] = []
+_tools_initialized = False
+
+
+def _ensure_tools(call_id: str | None = None):
+    global _mcp_client, _tool_definitions, _tools_initialized
+    if _tools_initialized:
+        return
+    if not TOOLBOX_ENDPOINT:
+        raise RuntimeError(
+            "TOOLBOX_ENDPOINT is not configured; cannot produce a grounded answer"
+        )
+    logger.info("Connecting to toolbox: %s", TOOLBOX_ENDPOINT)
+    # Retry transient cold-start errors: the toolbox MCP proxy can briefly
+    # return empty tool lists or transient errors while the upstream toolbox
+    # container is still starting. Retry a few times before giving up.
+    mcp_tools: list[dict] = []
+    server_name = "unknown"
+    last_exc: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            _mcp_client = _McpToolboxClient(TOOLBOX_ENDPOINT, _token_provider)
+            server_name = _mcp_client.initialize(call_id)
+            mcp_tools = _mcp_client.list_tools(call_id)
+            if mcp_tools:
+                break
+            logger.warning(
+                "Toolbox '%s' returned 0 tools on attempt %d; retrying", server_name, attempt,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning(
+                "Toolbox connect attempt %d failed: %s; retrying", attempt, exc,
+            )
+        time.sleep(min(2 ** attempt, 15))
+    if not mcp_tools:
+        # All attempts failed or returned an empty tool set. Fail closed rather
+        # than allowing the model to answer without toolbox grounding.
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Toolbox returned no tools; cannot produce a grounded answer")
+    logger.info("Toolbox '%s' connected: %d tool(s) discovered",
+                server_name, len(mcp_tools))
+    for t in mcp_tools:
+        _tool_definitions.append({
+            "type": "function",
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "parameters": t.get("inputSchema", {"type": "object", "properties": {}}),
+        })
+    # Only mark initialized once we actually have tools — otherwise leave the
+    # flag False so the next inbound request retries.
+    if _tool_definitions:
+        _tools_initialized = True
+
+# ── Agentic loop ──────────────────────────────────────────────────────────────
+
+
+_MAX_TOOL_ROUNDS = 10
+
+
+def _call_model(
+    input_items: list[dict],
+    call_id: str | None = None,
+    *,
+    tool_choice: str = "auto",
+) -> object:
+    """Call the model with toolbox definitions and the requested tool policy."""
+    _ensure_tools(call_id)
+    return _responses_client.create(
+        model=_model,
+        instructions=_SYSTEM_PROMPT,
+        input=input_items,
+        tools=_tool_definitions,
+        tool_choice=tool_choice,
+        store=False,
+    )
+
+
+def _run_agent_loop(input_items: list[dict], call_id: str | None = None) -> str:
+    """Execute the agentic tool-calling loop synchronously.
+
+    Calls the model, checks for tool calls, executes them, feeds results
+    back, and repeats until the model produces a text response or we hit
+    the max rounds limit.
+    """
+    for round_index in range(_MAX_TOOL_ROUNDS):
+        # This sample demonstrates toolbox-grounded answers, so require at least
+        # one tool call for every inbound request. Follow-up rounds use `auto`
+        # so the model can either call another tool or produce the final answer.
+        tool_choice = "required" if round_index == 0 else "auto"
+        response = _call_model(input_items, call_id, tool_choice=tool_choice)
+
+        # Check if the model wants to call tools
+        tool_calls = [
+            item for item in response.output
+            if getattr(item, "type", None) == "function_call"
+        ]
+
+        if not tool_calls:
+            return response.output_text or "(No response)"
+
+        # Execute each tool call and build result items
+        for tc in tool_calls:
+            try:
+                arguments = json.loads(tc.arguments) if isinstance(
+                    tc.arguments, str) else tc.arguments
+                result_text = _mcp_client.call_tool(tc.name, arguments, call_id)
+                logger.info("Tool '%s' returned %d chars",
+                            tc.name, len(result_text))
+            except Exception as e:
+                logger.error("Tool '%s' failed: %s", tc.name, e)
+                result_text = f"Error calling tool: {e}"
+
+            input_items.append({
+                "type": "function_call",
+                "id": tc.id,
+                "call_id": tc.call_id,
+                "name": tc.name,
+                "arguments": tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments),
+            })
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": tc.call_id,
+                "output": result_text,
+            })
+
+    return "(Reached maximum tool call rounds)"
+
+
+# ── Responses protocol handler ────────────────────────────────────────────────
+
+app = ResponsesAgentServerHost(
+    options=ResponsesServerOptions(default_fetch_history_count=20),
+)
+
+
+def _get_input_text(request: CreateResponse) -> str | None:
+    """Extract plain text from a CreateResponse input."""
+    inp = request.get("input")
+    if isinstance(inp, str):
+        return inp
+    items = get_input_expanded(request)
+    for item in items:
+        content = item.get("content")
+        if content is None:
+            continue
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            for part in content:
+                text = part.get("text")
+                if text:
+                    return text
+    return None
+
+
+def _build_input(current_input: str, history: list) -> list[dict]:
+    """Build Responses API input from conversation history and current message."""
+    input_items = []
+    for item in history:
+        for content in item.get("content") or []:
+            text = content.get("text")
+            if content.get("type") == "output_text" and text:
+                input_items.append({"role": "assistant", "content": text})
+            elif content.get("type") == "input_text" and text:
+                input_items.append({"role": "user", "content": text})
+    input_items.append({"role": "user", "content": current_input})
+    return input_items
+
+
+@app.response_handler
+async def handler(
+    request: CreateResponse,
+    context: ResponseContext,
+    cancellation_signal: asyncio.Event,
+):
+    """Forward user input to the model with toolbox tools and conversation history."""
+    stream = ResponseEventStream(
+        response_id=context.response_id,
+        request=request,
+    )
+
+    yield stream.emit_created()
+    yield stream.emit_in_progress()
+
+    user_input = _get_input_text(request) or ""
+    if not user_input:
+        message_item = stream.add_output_item_message()
+        yield message_item.emit_added()
+        for event in message_item.text_content("No input provided."):
+            yield event
+        yield message_item.emit_done()
+        yield stream.emit_completed()
+        return
+
+    # Conversation history retrieval can fail (transient store errors,
+    # missing conversation context, etc.). Treat history as best-effort —
+    # an empty list still produces a coherent single-turn reply.
+    try:
+        history = await context.get_history()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("get_history failed; continuing without history: %s", exc)
+        history = []
+    input_items = _build_input(user_input, history)
+
+    # Extract the per-request call ID (container protocol v2.0.0) from the
+    # inbound request context so it can be forwarded on toolbox egress calls.
+    call_id = None
+    try:
+        call_id = get_request_context().call_id
+    except Exception:  # noqa: BLE001
+        call_id = None
+
+    logger.info("Processing request %s (call_id %s)", context.response_id, call_id)
+
+    loop = asyncio.get_running_loop()
+    try:
+        assistant_reply = await asyncio.wait_for(
+            loop.run_in_executor(None, _run_agent_loop, input_items, call_id),
+            timeout=240.0,
+        )
+    except asyncio.TimeoutError:
+        assistant_reply = (
+            "I could not complete this request within the local timeout. "
+            "Please retry with a simpler prompt."
+        )
+    except asyncio.CancelledError:
+        assistant_reply = "The request was cancelled before completion. Please retry."
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Agent loop failed: %s", exc)
+        assistant_reply = f"Agent loop failed: {exc}"
+
+    message_item = stream.add_output_item_message()
+    yield message_item.emit_added()
+
+    text_content = message_item.add_text_content()
+    yield text_content.emit_added()
+    yield text_content.emit_delta(assistant_reply)
+    yield text_content.emit_text_done()
+    yield text_content.emit_done()
+    yield message_item.emit_done()
+
+    yield stream.emit_completed()
+
+
+app.run()

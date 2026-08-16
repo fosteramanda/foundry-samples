@@ -2,7 +2,7 @@
 
 # Env Vars Agent — Python (Responses Protocol)
 
-A hosted agent built with `azure-ai-agentserver-responses` that demonstrates Foundry's **connection-templated environment-variable injection**. Four example env vars are declared in `agent.manifest.yaml` — covering all four corners of the connection grid (ApiKey × CustomKeys × secret × non-secret) — and injected into the container at runtime by the platform's secret resolver.
+A hosted agent built with `azure-ai-agentserver-responses` that demonstrates Foundry's **connection-templated environment-variable injection**. Four example env vars are declared in `azure.yaml` — covering all four corners of the connection grid (ApiKey × CustomKeys × secret × non-secret) — and injected into the container at runtime by the platform's secret resolver.
 
 The agent exposes a single function-calling tool, `get_env_var(name, kind)`, that returns the runtime value with a **kind-aware safety policy**:
 
@@ -25,10 +25,13 @@ Built with `azure-ai-agentserver-responses` (BYO — no Agent Framework). The mo
 
 ## How It Works
 
-1. **Connection setup (one-time)**: in your Foundry project, create
-   - an **ApiKey** connection named `dummy-api-key` (give it a `target` URL and a `key`), and
-   - a **CustomKeys** connection named `dummy-custom-keys` with two custom keys — `secret-key` (marked **as secret**) and `plain-key` (plain).
-2. **Template declaration**: `agent.manifest.yaml` declares the four env vars with placeholder values:
+1. **Connection setup**: `azure.yaml` provisions
+   - an **ApiKey** connection named `dummy-api-key`, and
+   - a **CustomKeys** connection named `dummy-custom-keys` with a secret
+     `secret-key` credential and plain `plain-key` metadata.
+   The committed values are non-production demonstration values; replace them
+   when adapting the sample to real connections.
+2. **Template declaration**: `azure.yaml` declares the four env vars with placeholder values:
    ```yaml
    - name: SECRET_API_KEY
      value: "${{connections.dummy-api-key.credentials.key}}"
@@ -60,10 +63,11 @@ Built with `azure-ai-agentserver-responses` (BYO — no Agent Framework). The mo
 
 - Python 3.12+
 - Azure CLI installed and authenticated (`az login`)
-- Foundry project with a deployed model (e.g., `gpt-4.1-mini`)
-- (For deployment) the project's hosted-agent feature enabled, plus the two connections referenced above (`dummy-api-key` ApiKey, `dummy-custom-keys` CustomKeys)
+- Foundry project with a deployed model (e.g., `gpt-5.4-mini`)
+- (For deployment) the project's hosted-agent feature enabled; `azure.yaml`
+  creates the two demonstration connections referenced by the agent
 
-### Using `azd` (Recommended)
+### Using `azd`
 
 ```bash
 azd ai agent run
@@ -71,13 +75,13 @@ azd ai agent run
 
 The agent starts on `http://localhost:8088/`.
 
-### Without `azd`
+### Manual setup
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env  # then edit values — fill in any test values you like (skip if .env already exists)
 export FOUNDRY_PROJECT_ENDPOINT="https://your-project.services.ai.azure.com/api/projects/your-project"
-export AZURE_AI_MODEL_DEPLOYMENT_NAME="gpt-4.1-mini"
+export AZURE_AI_MODEL_DEPLOYMENT_NAME="gpt-5.4-mini"
 export SECRET_API_KEY="ab12-fake-test-key"
 export TARGET="https://api.example.com"
 export SECRET_KEY="p@ssw0rd-test-value"
@@ -127,9 +131,36 @@ curl -N -X POST http://localhost:8088/responses \
   -d '{"input": "did SECRET_KEY resolve? it is a credentials placeholder.", "stream": true}'
 ```
 
-#### 3. Test in Agent Inspector
+#### 3. Test in VS Code (Foundry Toolkit)
 
-Once the agent is running, open **Agent Inspector** in VS Code to interactively send messages and view responses.
+**Prerequisites**
+
+1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
+2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+
+**Set up the Python virtual environment**
+
+- Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
+- Install dependencies in the virtual environment:
+
+  ```bash
+  # use uv to accelerate
+  pip install uv
+  uv pip install -r requirements.txt
+
+  # or pure pip
+  pip install -r requirements.txt
+  ```
+
+**Run and debug the agent**
+
+Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector.
+
+**Or run manually, then open the Inspector**
+
+1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
+2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ```
 what is TARGET? it is the target of an ApiKey connection.
@@ -187,8 +218,8 @@ The agent's `get_env_var(name, kind)` tool mirrors this three-way split: pass `k
 |------|---------|
 | `main.py` | `ResponsesAgentServerHost` startup + Responses-API function-calling loop with the `get_env_var` tool |
 | `requirements.txt` | Python dependencies — `azure-ai-agentserver-responses` + `azure-ai-projects` + `azure-identity` |
-| `agent.yaml` | Container agent spec (`kind: hosted`, protocol, resources) |
-| `agent.manifest.yaml` | Foundry deployment manifest — model, env vars, connection placeholders |
+| `azure.yaml` | Container agent spec (`kind: hosted`, protocol, resources) |
+| `azure.yaml` | Foundry deployment manifest — model, env vars, connection placeholders |
 | `Dockerfile` | python:3.12-slim image, exposes port 8088 |
 | `.env.example` or `.env` | Template for local-run env vars |
 | `.dockerignore` | Excludes build artifacts and `.env` from the container image |
