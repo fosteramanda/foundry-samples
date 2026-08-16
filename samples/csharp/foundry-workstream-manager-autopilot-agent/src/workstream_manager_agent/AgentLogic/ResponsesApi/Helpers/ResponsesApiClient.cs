@@ -6,6 +6,8 @@ using WorkstreamManager.AgentLogic;
 using WorkstreamManager.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -24,6 +26,13 @@ internal class ResponsesApiClient
     private readonly string _accessToken;
     private readonly List<McpServerConfig> _mcpServers;
     private readonly HttpClient _httpClient;
+
+    // MCP servers that recently failed the connector preflight, keyed by server URL, with the
+    // UTC instant the quarantine expires. Process-wide and short-lived on purpose: a broken tool
+    // source (e.g. a Foundry toolbox version holding a connection the proxy cannot resolve) is
+    // usually broken for every turn, and re-probing it on each one would add latency for no gain;
+    // but tool sources also get fixed out from under us, so the quarantine must expire by itself.
+    private static readonly ConcurrentDictionary<string, (DateTime ExpiresUtc, string Reason)> _quarantinedMcpServers = new();
 
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
@@ -56,10 +65,21 @@ internal class ResponsesApiClient
         var deployment = string.IsNullOrWhiteSpace(modelDeploymentOverride)
             ? _configuration["ModelDeployment"] ?? throw new InvalidOperationException("ModelDeployment not configured")
             : modelDeploymentOverride.Trim();
-        var instructions = instructionsOverride ?? AgentInstructions.GetInstructions(_agentMetadata);
+        var instructions = instructionsOverride ?? AgentInstructions.GetInstructions(
+            _agentMetadata,
+            _configuration["SourceOfTruthAgentId"],
+            _configuration["SourceOfTruthAgentName"]);
 
-        var mcpTools = includeMcpTools
-            ? _mcpServers.Select(server =>
+        // Skip tool sources that are already quarantined from an earlier connector failure, so a
+        // known-bad server does not fail this turn on the way to being discovered again.
+        var activeServers = includeMcpTools
+            ? _mcpServers.Where(server => !IsQuarantined(server)).ToList()
+            : new List<McpServerConfig>();
+
+        // Deliberately NOT materialized: BuildRequestBody enumerates this on every send, so
+        // dropping a server from activeServers after a connector failure rebuilds the tools array
+        // without having to re-project it here.
+        var mcpTools = activeServers.Select(server =>
             {
                 var headers = new Dictionary<string, string>
                 {
@@ -84,8 +104,7 @@ internal class ResponsesApiClient
                     require_approval = "never",
                     headers,
                 };
-            }).ToArray()
-            : Array.Empty<object>();
+            });
 
         // Local function tools (like create_work_item) are independent of MCP server tools.
         // Honor additionalTools regardless of includeMcpTools so callers can run an MCP-free
@@ -94,7 +113,7 @@ internal class ResponsesApiClient
 
         _logger.LogInformation(
             "Invoking Responses API with {McpToolCount} MCP tool servers and {LocalToolCount} local tools (persistResponseId={Persist}, model={Deployment}, usePreviousResponseId={UsePreviousResponseId})",
-            mcpTools.Length,
+            activeServers.Count,
             localTools.Count,
             persistResponseId,
             deployment,
@@ -116,9 +135,37 @@ internal class ResponsesApiClient
 
         var requestUrl = $"{endpoint.TrimEnd('/')}/openai/responses?api-version=2025-03-01-preview";
 
-        var (success, responseContent) = await SendRequestAsync(
+        // Local function so the closure reads previousResponseId by reference: clearing it below
+        // is enough to rebuild the body without it.
+        Dictionary<string, object> BuildInitialRequestBody() =>
+            BuildRequestBody(input, deployment, instructions, includeMcpTools, mcpTools, localTools, previousResponseId);
+
+        var (success, responseContent, errorBody) = await SendWithConnectorRecoveryAsync(
             requestUrl,
-            BuildRequestBody(input, deployment, instructions, includeMcpTools, mcpTools, localTools, previousResponseId));
+            activeServers,
+            BuildInitialRequestBody);
+
+        // A stored previous_response_id can outlive the response it points at - the service's
+        // response store expires entries, and this id is cached on the container's own disk. Left
+        // alone the conversation is bricked rather than degraded: the dangling id is re-sent on
+        // every future turn and never replaced, because the call fails before SaveResponseId runs.
+        // Dropping it costs the model's memory of the thread, which is already gone anyway.
+        if (!success && previousResponseId != null && IsPreviousResponseNotFound(errorBody))
+        {
+            _logger.LogWarning(
+                "previous_response_id {PreviousResponseId} no longer exists for conversation {ConversationId}; clearing it and retrying without prior conversation state.",
+                previousResponseId,
+                conversationId);
+
+            ClearPreviousResponseId(conversationId);
+            previousResponseId = null;
+
+            (success, responseContent, errorBody) = await SendWithConnectorRecoveryAsync(
+                requestUrl,
+                activeServers,
+                BuildInitialRequestBody);
+        }
+
         if (!success)
         {
             return responseContent;
@@ -153,9 +200,10 @@ internal class ResponsesApiClient
                 });
             }
 
-            (success, responseContent) = await SendRequestAsync(
+            (success, responseContent, errorBody) = await SendWithConnectorRecoveryAsync(
                 requestUrl,
-                BuildRequestBody(toolOutputs, deployment, instructions, includeMcpTools, mcpTools, localTools, currentResponseId));
+                activeServers,
+                () => BuildRequestBody(toolOutputs, deployment, instructions, includeMcpTools, mcpTools, localTools, currentResponseId));
             if (!success)
             {
                 return responseContent;
@@ -213,7 +261,7 @@ internal class ResponsesApiClient
         string deployment,
         string instructions,
         bool includeMcpTools,
-        IReadOnlyCollection<object> mcpTools,
+        IEnumerable<object> mcpTools,
         IReadOnlyCollection<JsonNode> localTools,
         string? priorResponseId)
     {
@@ -247,7 +295,243 @@ internal class ResponsesApiClient
         return requestBody;
     }
 
-    private async Task<(bool Success, string Content)> SendRequestAsync(string requestUrl, Dictionary<string, object> requestBody)
+    /// <summary>
+    /// Sends the request and, when it fails because the Responses API could not connect to one of
+    /// the attached MCP servers, finds the offending server, quarantines it, and retries once
+    /// without it.
+    ///
+    /// The Responses API validates every MCP server in <c>tools</c> before it runs the model, so a
+    /// single unreachable tool source returns
+    /// <c>400 { "type": "external_connector_error", "param": "tools" }</c> and the turn produces no
+    /// answer at all — even for a question that needed none of those tools. Recovering here keeps a
+    /// broken tool source degrading to "that tool is missing" instead of "the agent is down".
+    /// </summary>
+    private async Task<(bool Success, string Content, string? ErrorBody)> SendWithConnectorRecoveryAsync(
+        string requestUrl,
+        List<McpServerConfig> activeServers,
+        Func<Dictionary<string, object>> buildRequestBody)
+    {
+        var (success, content, errorBody) = await SendRequestAsync(requestUrl, buildRequestBody());
+        if (success || activeServers.Count == 0 || !IsMcpConnectorError(errorBody))
+        {
+            return (success, content, errorBody);
+        }
+
+        if (!_configuration.GetValue("EnableMcpConnectorRecovery", true))
+        {
+            _logger.LogWarning("MCP connector error detected but recovery is disabled via EnableMcpConnectorRecovery.");
+            return (success, content, errorBody);
+        }
+
+        var removed = await QuarantineUnreachableServersAsync(activeServers);
+        if (removed.Count == 0)
+        {
+            _logger.LogError(
+                "MCP connector error, but no attached server failed the preflight - retrying would send the same tools. Attached: {Servers}",
+                string.Join(", ", activeServers.Select(s => s.McpServerName)));
+            return (success, content, errorBody);
+        }
+
+        _logger.LogWarning(
+            "Retrying Responses API without unreachable MCP server(s): {RemovedServers}. Remaining: {RemainingServers}",
+            string.Join(", ", removed),
+            activeServers.Count == 0 ? "(none)" : string.Join(", ", activeServers.Select(s => s.McpServerName)));
+
+        return await SendRequestAsync(requestUrl, buildRequestBody());
+    }
+
+    /// <summary>
+    /// True when the service rejected the request solely because the <c>previous_response_id</c> we
+    /// sent no longer exists in the response store.
+    /// </summary>
+    internal static bool IsPreviousResponseNotFound(string? errorBody)
+    {
+        if (string.IsNullOrWhiteSpace(errorBody))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(errorBody);
+            if (!doc.RootElement.TryGetProperty("error", out var error) || error.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var code = error.TryGetProperty("code", out var codeProp) ? codeProp.GetString() : null;
+            if (string.Equals(code, "previous_response_not_found", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var param = error.TryGetProperty("param", out var paramProp) ? paramProp.GetString() : null;
+            var message = error.TryGetProperty("message", out var messageProp) ? messageProp.GetString() : null;
+            return string.Equals(param, "previous_response_id", StringComparison.OrdinalIgnoreCase)
+                && message?.Contains("not found", StringComparison.OrdinalIgnoreCase) == true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Removes the cached response id for a conversation so the next turn starts a fresh chain
+    /// instead of re-sending an id the service has already discarded.
+    /// </summary>
+    internal void ClearPreviousResponseId(string conversationId)
+    {
+        try
+        {
+            var filePath = GetResponseIdFilePath(conversationId);
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+                _logger.LogInformation("Cleared stale previous_response_id for conversation {ConversationId}", conversationId);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal: the retry below still drops the id for this turn, and a successful
+            // response overwrites the file anyway.
+            _logger.LogWarning(ex, "Failed to clear previous_response_id for conversation {ConversationId}", conversationId);
+        }
+    }
+
+    /// <summary>
+    /// Preflights every attached MCP server in parallel and removes the ones that definitively
+    /// fail from <paramref name="activeServers"/>, recording them in the process-wide quarantine.
+    /// Inconclusive probes leave the server attached: stripping a working tool source on a flaky
+    /// probe would be a worse failure than the one being recovered from.
+    /// </summary>
+    private async Task<List<string>> QuarantineUnreachableServersAsync(List<McpServerConfig> activeServers)
+    {
+        var probeTimeout = TimeSpan.FromSeconds(_configuration.GetValue("McpHealthProbeTimeoutSeconds", 20));
+        var probe = new McpServerHealthProbe(_logger, _httpClient, probeTimeout);
+
+        var results = await Task.WhenAll(activeServers.Select(async server =>
+        {
+            var result = await probe.ProbeAsync(server.McpServerName, server.Url, BuildMcpHeaders(server));
+            return (Server: server, Result: result);
+        }));
+
+        var quarantineFor = TimeSpan.FromSeconds(_configuration.GetValue("McpQuarantineSeconds", 300));
+        var removed = new List<string>();
+
+        foreach (var (server, result) in results)
+        {
+            switch (result.Health)
+            {
+                case McpServerHealth.Unhealthy:
+                    _logger.LogError(
+                        "MCP server '{ServerLabel}' ({ServerUrl}) failed preflight and is quarantined for {QuarantineSeconds}s: {Detail}",
+                        server.McpServerName,
+                        server.Url,
+                        quarantineFor.TotalSeconds,
+                        result.Detail);
+                    _quarantinedMcpServers[server.Url] = (DateTime.UtcNow + quarantineFor, result.Detail);
+                    activeServers.Remove(server);
+                    removed.Add(server.McpServerName);
+                    break;
+
+                case McpServerHealth.Inconclusive:
+                    _logger.LogWarning(
+                        "MCP server '{ServerLabel}' preflight was inconclusive; keeping it attached: {Detail}",
+                        server.McpServerName,
+                        result.Detail);
+                    break;
+
+                default:
+                    _logger.LogInformation("MCP server '{ServerLabel}' passed preflight.", server.McpServerName);
+                    break;
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>
+    /// Reproduces the headers the Responses API sends to an MCP server: the shared agent-user
+    /// bearer, overridden by any per-server headers (the Foundry toolbox proxy supplies its own
+    /// Authorization plus the preview feature flag).
+    /// </summary>
+    private Dictionary<string, string> BuildMcpHeaders(McpServerConfig server)
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Authorization"] = $"Bearer {_accessToken}",
+        };
+
+        if (server.Headers != null)
+        {
+            foreach (var kv in server.Headers)
+            {
+                headers[kv.Key] = kv.Value;
+            }
+        }
+
+        return headers;
+    }
+
+    private bool IsQuarantined(McpServerConfig server)
+    {
+        if (!_quarantinedMcpServers.TryGetValue(server.Url, out var entry))
+        {
+            return false;
+        }
+
+        if (DateTime.UtcNow >= entry.ExpiresUtc)
+        {
+            _quarantinedMcpServers.TryRemove(server.Url, out _);
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Skipping quarantined MCP server '{ServerLabel}' until {ExpiresUtc:o}: {Reason}",
+            server.McpServerName,
+            entry.ExpiresUtc,
+            entry.Reason);
+        return true;
+    }
+
+    /// <summary>
+    /// True when the Responses API rejected the request because it could not reach an MCP server
+    /// listed in <c>tools</c>, rather than because of the prompt, the model, or the local tools.
+    /// </summary>
+    internal static bool IsMcpConnectorError(string? errorBody)
+    {
+        if (string.IsNullOrWhiteSpace(errorBody))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(errorBody);
+            if (!doc.RootElement.TryGetProperty("error", out var error) || error.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var type = error.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
+            if (string.Equals(type, "external_connector_error", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var param = error.TryGetProperty("param", out var paramProp) ? paramProp.GetString() : null;
+            var code = error.TryGetProperty("code", out var codeProp) ? codeProp.GetString() : null;
+            return string.Equals(param, "tools", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(code, "http_error", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<(bool Success, string Content, string? ErrorBody)> SendRequestAsync(string requestUrl, Dictionary<string, object> requestBody)
     {
         var json = JsonSerializer.Serialize(requestBody, new JsonSerializerOptions
         {
@@ -274,11 +558,49 @@ internal class ResponsesApiClient
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogError("Responses API call failed with status {StatusCode}: {Response}", response.StatusCode, responseContent);
-            return (false, $"I encountered an error processing your request. Status: {response.StatusCode}");
+            return (false, BuildFailureMessage(response.StatusCode, responseContent), responseContent);
         }
 
         _logger.LogInformation("Responses API response ({Bytes} bytes): {Response}", responseContent.Length, responseContent);
-        return (true, responseContent);
+        return (true, responseContent, null);
+    }
+
+    /// <summary>
+    /// Builds the message the user actually sees when the Responses API rejects the call. A bare
+    /// "Status: BadRequest" is unactionable - it does not say whether the prompt, the model, or a
+    /// tool source failed - so append the service's own reason when it gives one.
+    /// </summary>
+    private static string BuildFailureMessage(HttpStatusCode statusCode, string responseContent)
+    {
+        var message = $"I encountered an error processing your request. Status: {statusCode}";
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseContent);
+            if (doc.RootElement.TryGetProperty("error", out var error) &&
+                error.ValueKind == JsonValueKind.Object &&
+                error.TryGetProperty("message", out var messageProp) &&
+                messageProp.ValueKind == JsonValueKind.String)
+            {
+                var reason = messageProp.GetString();
+                if (!string.IsNullOrWhiteSpace(reason))
+                {
+                    const int maxChars = 300;
+                    if (reason.Length > maxChars)
+                    {
+                        reason = reason[..maxChars] + "…";
+                    }
+
+                    message += $" ({reason})";
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Non-JSON error body - the status alone is all we can report.
+        }
+
+        return message;
     }
 
     private List<ResponsesApiFunctionCall> ExtractFunctionCalls(string responseJson)

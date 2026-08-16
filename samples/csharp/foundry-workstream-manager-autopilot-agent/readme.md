@@ -180,7 +180,42 @@ Everything above is blueprint/project setup that happens **before** any agent in
 
 - The toolbox data plane requires the `Foundry-Features: Toolboxes=V1Preview` header; the agent sends it automatically (override with `ToolboxFeaturesHeader`).
 - The bearer scope presented to the proxy defaults to `https://ai.azure.com/.default` and is configurable via `ToolboxAccessTokenScope` while toolbox auth is in preview. The agent-user token issuance path for the toolbox proxy is the main untested assumption of this experiment — if the proxy rejects the agent-user bearer, capture the response and adjust the scope (or the blueprint's delegations) accordingly.
-- In hybrid mode a toolbox token failure is non-fatal: the agent logs a warning and continues with its WorkIQ tools only.
+- In hybrid mode a toolbox **token** failure is non-fatal: the agent logs a warning and continues with its WorkIQ tools only.
+
+### A broken tool source used to take the whole agent down
+
+A toolbox token failure is non-fatal, but a toolbox that *fails to enumerate its tools* is a different failure and it used to be fatal. The Responses API validates every MCP server in a request's `tools` array before it runs the model, so one server that cannot answer `tools/list` fails the entire call:
+
+```json
+{ "error": { "message": "Server returned 424: None", "type": "external_connector_error", "param": "tools", "code": "http_error" } }
+```
+
+which the agent surfaced to the user as `I encountered an error processing your request. Status: BadRequest` — on **every** turn, including questions that needed none of those tools.
+
+Two things make this survivable now:
+
+1. **Version-pin the toolbox.** `ToolboxVersion` is set to `2`. Without a pin, the agent calls `/toolboxes/{name}/mcp`, which serves the toolbox's **default version** — so publishing a new toolbox version, or repointing the default, silently changes what every running instance loads. Versions containing an `a2a_preview` tool whose connection uses `AgenticIdentityToken` cannot be resolved through the MCP proxy at all (`requires AgentInstanceClientId and AgentBlueprintClientId, or an ApplicationName`), because the proxy has no agent context on an MCP call — that is a supported shape for an agent's own `definition.tools`, not for a toolbox consumed as an MCP server.
+2. **Connector recovery in the agent.** On `external_connector_error`, `ResponsesApiClient` preflights every attached MCP server itself (`McpServerHealthProbe`: `initialize` → `notifications/initialized` → `tools/list`, with protocol-version negotiation), drops the ones that definitively fail, retries once, and quarantines them so later turns skip them. Verdicts are asymmetric on purpose: a `tools/list` failure is conclusive, while a failed `initialize` or an unreachable host is *inconclusive* and leaves the server attached — wrongly stripping a working tool source would be worse than the failure being recovered from.
+
+| Setting | Default | What it controls |
+|---------|---------|------------------|
+| `EnableMcpConnectorRecovery` | `true` | Preflight-and-retry after a connector failure. Set `false` to fail fast instead. |
+| `McpQuarantineSeconds` | `300` | How long a server that failed preflight is skipped before being retried. |
+| `McpHealthProbeTimeoutSeconds` | `20` | Per-server budget for the preflight handshake. |
+
+To find a healthy toolbox version, run `tools/list` against each one — a version that returns a JSON-RPC `error` is a version that will fail every turn:
+
+```powershell
+$tok = az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv
+$base = "https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/<name>"
+$h = @{ Authorization = "Bearer $tok"; "Foundry-Features" = "Toolboxes=V1Preview"; Accept = "application/json, text/event-stream" }
+foreach ($v in @("1","2","3")) {
+    $r = Invoke-WebRequest "$base/versions/$v/mcp?api-version=v1" -Method Post -Headers $h `
+        -ContentType "application/json" -SkipHttpErrorCheck `
+        -Body '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+    "v${v}: $($r.StatusCode) error=$($r.Content -match '"error"')"
+}
+```
 
 ---
 

@@ -35,6 +35,21 @@
   if (-not [string]::IsNullOrWhiteSpace($env:DIRECT_MESSAGE_ALLOWLIST_TABLE_NAME)) {
       $environmentVariables.DirectMessageAllowListTableName = $env:DIRECT_MESSAGE_ALLOWLIST_TABLE_NAME
   }
+  # Agent-to-agent delegation target. Only lives in the agent version's environment variables
+  # (there is no build arg for it), so it must be re-supplied on every new version or the next
+  # version silently loses Source of Truth delegation.
+  if (-not [string]::IsNullOrWhiteSpace($env:SOURCE_OF_TRUTH_AGENT_ID)) {
+      $environmentVariables.SourceOfTruthAgentId = $env:SOURCE_OF_TRUTH_AGENT_ID
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:SOURCE_OF_TRUTH_AGENT_NAME)) {
+      $environmentVariables.SourceOfTruthAgentName = $env:SOURCE_OF_TRUTH_AGENT_NAME
+  }
+  # Toolbox version pin. The unpinned toolbox endpoint serves whatever the toolbox's default
+  # version is, so publishing a toolbox version can break every running instance. Overriding it
+  # here changes the pin without rebuilding the image (appsettings.json holds the baked default).
+  if (-not [string]::IsNullOrWhiteSpace($env:TOOLBOX_VERSION)) {
+      $environmentVariables.ToolboxVersion = $env:TOOLBOX_VERSION
+  }
 
   $agentUrl = "$($AzureAIProjectEndpoint)/agents/$($AgentName)/versions?api-version=2025-11-15-preview"
 
@@ -177,17 +192,25 @@
   }
 
   # Patch agent endpoint with activity protocol
+  #
+  # The authorization scheme is configurable because it is NOT a safe constant: this PATCH
+  # overwrites whatever is on the endpoint, so hardcoding one value here means any change made
+  # out-of-band is silently reverted on the next provision. BotServiceTenant is the default;
+  # override with AGENT_ENDPOINT_AUTH_SCHEME.
+  $authScheme = $env:AGENT_ENDPOINT_AUTH_SCHEME
+  if ([string]::IsNullOrWhiteSpace($authScheme)) { $authScheme = "BotServiceTenant" }
+
   $patchUrl = "$($AzureAIProjectEndpoint)/agents/$($AgentName)?api-version=2025-11-15-preview"
   $patchBody = @{
       agent_endpoint = @{
           protocols = @("activity")
           authorization_schemes = @(
-            @{ "type" = "BotServiceRbac" }
+            @{ "type" = $authScheme }
         )
       }
   } | ConvertTo-Json -Depth 5
 
-  Write-Host "Patching agent endpoint at: $patchUrl"
+  Write-Host "Patching agent endpoint at: $patchUrl (authorization scheme: $authScheme)"
   Write-Host "Patch Body:"
   Write-Host $patchBody
 
