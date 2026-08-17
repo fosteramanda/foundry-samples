@@ -119,10 +119,19 @@ internal class ResponsesApiClient
             deployment,
             usePreviousResponseId);
 
+        // Fingerprint the attached MCP servers. A Responses API chain captures its tool
+        // inventory when the chain STARTS: continuing with previous_response_id does not
+        // re-enumerate, so a conversation begun before a tool existed never sees that tool and
+        // the model correctly reports it as unavailable - indefinitely. Changing the server set
+        // therefore has to start a fresh chain. Only MCP servers are fingerprinted, and only
+        // when they are attached at all, so the tool-less judge and passive-detection passes
+        // keep their conversation context.
+        var toolFingerprint = includeMcpTools ? ComputeMcpFingerprint(activeServers) : null;
+
         string? previousResponseId = null;
         if (usePreviousResponseId)
         {
-            previousResponseId = LoadPreviousResponseId(conversationId);
+            previousResponseId = LoadPreviousResponseId(conversationId, toolFingerprint);
             if (previousResponseId != null)
             {
                 _logger.LogInformation("Continuing conversation {ConversationId} with previous_response_id: {PreviousResponseId}", conversationId, previousResponseId);
@@ -212,20 +221,51 @@ internal class ResponsesApiClient
 
         if (persistResponseId)
         {
-            SaveResponseId(conversationId, responseContent);
+            SaveResponseId(conversationId, responseContent, toolFingerprint);
         }
 
         return ExtractOutputText(responseContent);
     }
 
-    internal string? LoadPreviousResponseId(string conversationId)
+    internal string? LoadPreviousResponseId(string conversationId, string? expectedToolFingerprint = null)
     {
         try
         {
             var filePath = GetResponseIdFilePath(conversationId);
             if (File.Exists(filePath))
             {
-                var id = File.ReadAllText(filePath).Trim();
+                var stored = File.ReadAllText(filePath).Trim();
+                if (string.IsNullOrEmpty(stored))
+                {
+                    return null;
+                }
+
+                // Format: "v2:<toolFingerprint>:<responseId>". Anything else is a legacy file
+                // written before tool fingerprinting; treat it as a mismatch so the chain
+                // restarts once and picks up the current tool set.
+                string? storedFingerprint = null;
+                var id = stored;
+                if (stored.StartsWith("v2:", StringComparison.Ordinal))
+                {
+                    var parts = stored.Split(':', 3);
+                    if (parts.Length == 3)
+                    {
+                        storedFingerprint = parts[1];
+                        id = parts[2];
+                    }
+                }
+
+                if (expectedToolFingerprint != null && storedFingerprint != expectedToolFingerprint)
+                {
+                    _logger.LogInformation(
+                        "Tool set changed for conversation {ConversationId} (stored={StoredFingerprint}, current={CurrentFingerprint}); " +
+                        "starting a fresh response chain so the model sees the current tools.",
+                        conversationId,
+                        storedFingerprint ?? "(legacy)",
+                        expectedToolFingerprint);
+                    return null;
+                }
+
                 return string.IsNullOrEmpty(id) ? null : id;
             }
         }
@@ -659,6 +699,21 @@ internal class ResponsesApiClient
         }
     }
 
+    /// <summary>
+    /// Stable short hash of the attached MCP server set. Used to detect that a conversation's
+    /// stored response chain predates the current tools, so the chain can be restarted rather
+    /// than pinning an inventory the model can no longer act on.
+    /// </summary>
+    private static string ComputeMcpFingerprint(IEnumerable<McpServerConfig> servers)
+    {
+        var canonical = string.Join("|", servers
+            .Select(s => $"{s.McpServerName}@{s.Url}")
+            .OrderBy(s => s, StringComparer.Ordinal));
+
+        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
+        return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
+    }
+
     private static string GetResponseStoreDir()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -677,7 +732,7 @@ internal class ResponsesApiClient
         return Path.Combine(GetResponseStoreDir(), $"{safeId}.responseid");
     }
 
-    private void SaveResponseId(string conversationId, string responseJson)
+    private void SaveResponseId(string conversationId, string responseJson, string? toolFingerprint)
     {
         try
         {
@@ -689,7 +744,8 @@ internal class ResponsesApiClient
                 {
                     var dir = GetResponseStoreDir();
                     Directory.CreateDirectory(dir);
-                    File.WriteAllText(GetResponseIdFilePath(conversationId), responseId);
+                    var payload = $"v2:{toolFingerprint ?? string.Empty}:{responseId}";
+                    File.WriteAllText(GetResponseIdFilePath(conversationId), payload);
                     _logger.LogDebug("Saved response_id {ResponseId} for conversation {ConversationId}", responseId, conversationId);
                 }
             }
