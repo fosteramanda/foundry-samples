@@ -47,6 +47,10 @@ builder.Services.AddSingleton<AgentTokenHelper>();
 // Register work item tracking service
 builder.Services.AddSingleton<WorkItemService>();
 
+// Durable per-conversation Responses API chain state. Previously container-local files, which
+// lost conversation continuity on every container recycle and could not work across replicas.
+builder.Services.AddSingleton<ConversationStateStore>();
+
 // Register OpenAPI for external agents
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();

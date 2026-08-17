@@ -31,7 +31,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         ILogger logger,
         string accessToken,
         List<McpServerConfig> mcpServers,
-        string? graphAccessToken = null)
+        string? graphAccessToken = null,
+        ConversationStateStore? conversationState = null)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -48,7 +49,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         {
             httpClient.Timeout = TimeSpan.FromSeconds(responsesTimeoutSeconds);
         }
-        _responsesApiClient = new ResponsesApiClient(agentMetadata, _logger, _configuration, accessToken, mcpServers, httpClient);
+        _responsesApiClient = new ResponsesApiClient(agentMetadata, _logger, _configuration, accessToken, mcpServers, httpClient, conversationState);
         _reactionService = new ReactionService(_logger, graphAccessToken, httpClient);
 
         // Initialize WorkItemToolHandler

@@ -4,6 +4,7 @@ using Azure.Core;
 using Azure.Identity;
 using WorkstreamManager.AgentLogic;
 using WorkstreamManager.Models;
+using WorkstreamManager.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
@@ -26,6 +27,8 @@ internal class ResponsesApiClient
     private readonly string _accessToken;
     private readonly List<McpServerConfig> _mcpServers;
     private readonly HttpClient _httpClient;
+    private readonly ConversationStateStore? _conversationState;
+    private readonly string _statePartitionKey;
 
     // MCP servers that recently failed the connector preflight, keyed by server URL, with the
     // UTC instant the quarantine expires. Process-wide and short-lived on purpose: a broken tool
@@ -40,7 +43,8 @@ internal class ResponsesApiClient
         IConfiguration configuration,
         string accessToken,
         List<McpServerConfig> mcpServers,
-        HttpClient httpClient)
+        HttpClient httpClient,
+        ConversationStateStore? conversationState = null)
     {
         _agentMetadata = agentMetadata ?? throw new ArgumentNullException(nameof(agentMetadata));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -48,6 +52,11 @@ internal class ResponsesApiClient
         _accessToken = accessToken;
         _mcpServers = mcpServers ?? throw new ArgumentNullException(nameof(mcpServers));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _conversationState = conversationState;
+
+        // Partition conversation state per agent instance, matching WorkItemService, so one
+        // instance can never read another instance's conversation chain.
+        _statePartitionKey = $"{_agentMetadata.TenantId}:{_agentMetadata.UserId}";
     }
 
     internal async Task<string> InvokeAsync(
@@ -131,7 +140,7 @@ internal class ResponsesApiClient
         string? previousResponseId = null;
         if (usePreviousResponseId)
         {
-            previousResponseId = LoadPreviousResponseId(conversationId, toolFingerprint);
+            previousResponseId = await LoadPreviousResponseIdAsync(conversationId, toolFingerprint);
             if (previousResponseId != null)
             {
                 _logger.LogInformation("Continuing conversation {ConversationId} with previous_response_id: {PreviousResponseId}", conversationId, previousResponseId);
@@ -167,6 +176,7 @@ internal class ResponsesApiClient
                 conversationId);
 
             ClearPreviousResponseId(conversationId);
+            await ClearPreviousResponseIdAsync(conversationId);
             previousResponseId = null;
 
             (success, responseContent, errorBody) = await SendWithConnectorRecoveryAsync(
@@ -222,9 +232,76 @@ internal class ResponsesApiClient
         if (persistResponseId)
         {
             SaveResponseId(conversationId, responseContent, toolFingerprint);
+            await SaveResponseIdAsync(conversationId, responseContent, toolFingerprint);
         }
 
         return ExtractOutputText(responseContent);
+    }
+
+    /// <summary>
+    /// Loads the chain pointer, preferring durable storage and falling back to the
+    /// container-local file when no table is configured.
+    ///
+    /// When durable storage is available but has no row yet, the local file is read once and
+    /// migrated up. That keeps conversations alive across the switchover instead of silently
+    /// resetting everyone's context the moment this ships.
+    /// </summary>
+    private async Task<string?> LoadPreviousResponseIdAsync(string conversationId, string? expectedToolFingerprint)
+    {
+        if (_conversationState is { IsDurable: true })
+        {
+            var durable = await _conversationState.LoadAsync(_statePartitionKey, conversationId, expectedToolFingerprint);
+            if (durable != null)
+            {
+                return durable;
+            }
+
+            // Only migrate when the local file still agrees with the current tool set; otherwise
+            // the fingerprint check has already decided this chain must restart.
+            var local = LoadPreviousResponseId(conversationId, expectedToolFingerprint);
+            if (local != null)
+            {
+                _logger.LogInformation("Migrating conversation {ConversationId} from local file to durable storage.", conversationId);
+                await _conversationState.SaveAsync(_statePartitionKey, conversationId, local, expectedToolFingerprint);
+            }
+
+            return local;
+        }
+
+        return LoadPreviousResponseId(conversationId, expectedToolFingerprint);
+    }
+
+    private async Task SaveResponseIdAsync(string conversationId, string responseJson, string? toolFingerprint)
+    {
+        if (_conversationState is not { IsDurable: true })
+        {
+            return;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseJson);
+            if (doc.RootElement.TryGetProperty("id", out var idProp))
+            {
+                var responseId = idProp.GetString();
+                if (!string.IsNullOrEmpty(responseId))
+                {
+                    await _conversationState.SaveAsync(_statePartitionKey, conversationId, responseId, toolFingerprint);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist conversation state for {ConversationId}.", conversationId);
+        }
+    }
+
+    private async Task ClearPreviousResponseIdAsync(string conversationId)
+    {
+        if (_conversationState is { IsDurable: true })
+        {
+            await _conversationState.ClearAsync(_statePartitionKey, conversationId);
+        }
     }
 
     internal string? LoadPreviousResponseId(string conversationId, string? expectedToolFingerprint = null)

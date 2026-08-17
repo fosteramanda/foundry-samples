@@ -16,7 +16,8 @@ using Microsoft.Agents.Builder.App.UserAuth;
 public sealed class ResponsesApiAgentLogicServiceFactory(
     IConfiguration configuration,
     ILogger<ResponsesApiAgentLogicServiceFactory> logger,
-    AgentTokenHelper tokenHelper)
+    AgentTokenHelper tokenHelper,
+    ConversationStateStore conversationState)
 {
     private static readonly HttpClient HttpClient = new();
 
@@ -128,7 +129,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
             logger,
             accessToken.Token,
             mcpServers,
-            graphAccessToken);
+            graphAccessToken,
+            conversationState);
 
         return service;
     }
