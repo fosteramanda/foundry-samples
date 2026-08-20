@@ -2,6 +2,7 @@ namespace WorkstreamManager.AgentLogic.ResponsesApi;
 
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using WorkstreamManager.Models;
 using WorkstreamManager.Services;
 using WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
@@ -20,6 +21,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly IConfiguration _configuration;
     private readonly ResponsesApiClient _responsesApiClient;
     private readonly WorkItemToolHandler _workItemTools;
+    private readonly WorkIqA2AToolHandler _workIqA2ATools;
     private readonly TeamsActivityHelper _teamsHelper;
     private readonly AccessControlService _accessControl;
     private readonly AddressedToAgentGate _addressedToAgentGate;
@@ -32,7 +34,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         string accessToken,
         List<McpServerConfig> mcpServers,
         string? graphAccessToken = null,
-        ConversationStateStore? conversationState = null)
+        ConversationStateStore? conversationState = null,
+        AgentTokenHelper? tokenHelper = null)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -60,10 +63,30 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             workItemService = new WorkItemService(configuration, new LoggerFactory().CreateLogger<WorkItemService>());
         }
         _workItemTools = new WorkItemToolHandler(agentMetadata, _logger, graphAccessToken, httpClient, workItemService, _reactionService);
+        _workIqA2ATools = new WorkIqA2AToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration);
         _teamsHelper = new TeamsActivityHelper(_logger);
         _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken, httpClient, _teamsHelper, _workItemTools);
         _addressedToAgentGate = new AddressedToAgentGate(_logger, _configuration, _responsesApiClient, _teamsHelper, httpClient, graphAccessToken);
     }
+
+    /// <summary>
+    /// All locally-executed function tools offered to the model. Local tools run in this
+    /// container, unlike MCP tools which the Responses API calls server-side.
+    /// </summary>
+    private List<JsonNode> BuildLocalToolDefinitions()
+    {
+        var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
+        tools.AddRange(_workIqA2ATools.GetToolDefinitions());
+        return tools;
+    }
+
+    /// <summary>
+    /// Dispatches a local tool call to whichever handler owns it. Returns null when no
+    /// handler recognises the name, which the caller reports back to the model.
+    /// </summary>
+    private async Task<string?> ExecuteLocalToolAsync(string toolName, string arguments)
+        => await _workItemTools.TryExecuteAsync(toolName, arguments)
+           ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments);
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
@@ -145,8 +168,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var response = await _responsesApiClient.InvokeAsync(
             input: incomingText ?? string.Empty,
             conversationId: conversationId,
-            additionalTools: _workItemTools.GetToolDefinitions(),
-            localToolExecutor: _workItemTools.TryExecuteAsync);
+            additionalTools: BuildLocalToolDefinitions(),
+            localToolExecutor: ExecuteLocalToolAsync);
 
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse

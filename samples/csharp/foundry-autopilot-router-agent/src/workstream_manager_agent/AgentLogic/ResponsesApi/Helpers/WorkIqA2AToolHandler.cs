@@ -32,11 +32,13 @@ internal class WorkIqA2AToolHandler
 {
     internal const string DefaultBaseUrl = "https://workiq.svc.cloud.microsoft/a2a/";
     internal const string DefaultAudience = "fdcc1f02-fc51-4226-8753-f668596af7f7";
+    internal const string DefaultWorkIqMcpUrl = "https://workiq.svc.cloud.microsoft/mcp";
 
     private readonly ILogger _logger;
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly string _audience;
+    private readonly string _workIqMcpUrl;
     private readonly AgentTokenCredential? _credential;
 
     // Agents that completed a call but returned no text. Work IQ reports these as
@@ -67,8 +69,13 @@ internal class WorkIqA2AToolHandler
         var configuredAudience = configuration["WorkIqAudience"];
         _audience = string.IsNullOrWhiteSpace(configuredAudience) ? DefaultAudience : configuredAudience.Trim();
 
-        // One credential covers discovery and invocation: both are A2A on the same host and
-        // audience (fdcc1f02-…).
+        // Invocation goes through the Work IQ MCP `ask` tool. Same audience as A2A, so the
+        // existing _credential covers it — no second token, no second consent.
+        var configuredWorkIqMcp = configuration["WorkIqMcpUrl"];
+        _workIqMcpUrl = string.IsNullOrWhiteSpace(configuredWorkIqMcp) ? DefaultWorkIqMcpUrl : configuredWorkIqMcp.Trim();
+
+        // One audience for both surfaces: the A2A gateway and the Work IQ MCP `ask` tool
+        // share fdcc1f02-…, so a single credential covers discovery and invocation.
         _credential = tokenHelper is null ? null : new AgentTokenCredential(tokenHelper, agentMetadata);
     }
 
@@ -488,23 +495,160 @@ internal class WorkIqA2AToolHandler
             return "message is required.";
         }
 
-        // Pure A2A: discovery and invocation both go through the Work IQ A2A gateway.
+        // Invocation goes through the Work IQ MCP `ask` tool.
         //
-        // This sample is deliberately one half of an A/B pair. Its twin,
-        // foundry-autopilot-router-agent, does the same job entirely over Work IQ MCP
-        // (`list_agents` + `ask`). Same tenant, same target agents, one variable — the
-        // transport — so the two can be compared in production rather than in a script.
+        // Measured 18 Aug 2026, all four paths against the same two agents in one session:
+        //   workiq /mcp  `ask`        -> reached the agent (canary marker returned)
+        //   workiq /a2a  message/send -> reached the agent (canary marker returned)
+        //   agent365     copilot_chat -> reached NOTHING. Generic Copilot answered for both a
+        //                                Copilot Studio agent and a Foundry agent, with no
+        //                                attribution field anywhere in the payload to detect it.
         //
-        // Measured 18 Aug 2026, both transports reach a Copilot Studio agent and return its
-        // canary marker; both support multi-turn. They differ on failure reporting: `ask`
-        // returns a structured error with a requestId, the A2A send returns HTTP 404 with a
-        // literal null body. Foundry-backed agents return nothing on either — a platform
-        // defect, not a transport choice.
+        // copilot_chat is therefore not a fallback, it is a liability: it fabricates a fluent
+        // answer instead of failing. `ask` and the A2A send are equivalent in capability
+        // (same canary, both support multi-turn); `ask` wins on failure reporting — a structured
+        // error with a requestId, where the A2A send returns HTTP 404 with a literal null body.
         //
-        // copilot_chat on the Agent 365 server is not an option here and is not a fallback:
-        // it reaches no agent at all, and answers as generic Copilot with no attribution
-        // field in the payload to reveal it. Removed from this sample entirely.
+        // Foundry-backed agents return "(no response)" on `ask` and an empty artifact on A2A.
+        // That is a platform defect, not a transport choice: no caller-side path reaches them.
+        var viaMcp = await AskViaWorkIqMcpAsync(agentId, message);
+        if (viaMcp != null)
+        {
+            return viaMcp;
+        }
+
+        _logger.LogInformation(
+            "Work IQ MCP ask unavailable for agent {AgentId}; falling back to the A2A send path.",
+            agentId);
+
         return await AskViaA2AAsync(agentId, message);
+    }
+
+    /// <summary>
+    /// Calls the Work IQ MCP `ask` tool with the target agent id. Returns null when the call
+    /// could not be made at all, so the caller can fall back to the A2A send; returns a message
+    /// string when the call was made and produced something to report.
+    /// </summary>
+    private async Task<string?> AskViaWorkIqMcpAsync(string agentId, string message)
+    {
+        if (_credential == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var token = await _credential.GetTokenAsync(
+                new TokenRequestContext([$"{_audience}/.default"]),
+                CancellationToken.None);
+
+            // The parameter is `question`, not `query`. A wrong name returns
+            // "An error occurred invoking 'ask'" without naming the offending argument.
+            var arguments = new JsonObject
+            {
+                ["question"] = message,
+                ["agentId"] = agentId,
+            };
+
+            var (ok, result, error) = await CallMcpToolAsync(_workIqMcpUrl, token.Token, "ask", arguments);
+            if (!ok)
+            {
+                _logger.LogWarning(
+                    "Work IQ MCP ask failed for agent {AgentId}: {Error}",
+                    agentId,
+                    error);
+                return null;
+            }
+
+            var answer = ExtractAskAnswer(result);
+
+            // `ask` reports an unreachable agent as the literal string "(no response)" with
+            // isError=false, so status is not a usable success signal — content is.
+            if (string.IsNullOrWhiteSpace(answer)
+                || answer.Equals("(no response)", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning(
+                    "Work IQ MCP ask returned no content for agent {AgentId}. raw={Raw}",
+                    agentId,
+                    Truncate(result ?? string.Empty, 1500));
+                _silentAgents.Add(agentId);
+                return $"Agent '{agentId}' accepted the request but returned no content. Tell the user that agent produced no answer; do not answer on its behalf.";
+            }
+
+            _logger.LogInformation(
+                "Work IQ MCP ask answered for agent {AgentId} ({Length} chars).",
+                agentId,
+                answer.Length);
+            return answer;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Work IQ MCP ask threw for agent {AgentId}.", agentId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Pulls the answer out of an `ask` tool result. The text sits at
+    /// result.content[].text, with the same string mirrored in structuredContent.answer.
+    /// </summary>
+    private string ExtractAskAnswer(string? resultJson)
+    {
+        if (string.IsNullOrWhiteSpace(resultJson))
+        {
+            return string.Empty;
+        }
+
+        // CallMcpToolAsync already unwraps result.content[].text, so what normally arrives
+        // here is the answer itself — plain prose, not JSON. Parsing it as JSON throws, and
+        // an earlier version swallowed that exception and returned empty, which reported a
+        // perfectly good answer (canary marker and all) as "no content". Only parse when the
+        // payload actually looks like JSON, and never discard text we cannot parse.
+        var trimmed = resultJson.TrimStart();
+        if (trimmed.Length == 0 || (trimmed[0] != '{' && trimmed[0] != '[' && trimmed[0] != '"'))
+        {
+            return resultJson.Trim();
+        }
+
+        try
+        {
+            var root = JsonNode.Parse(resultJson);
+
+            if (root is JsonValue)
+            {
+                return root.GetValue<string>()?.Trim() ?? resultJson.Trim();
+            }
+
+            var structured = root?["structuredContent"]?["answer"]?.GetValue<string>();
+            if (!string.IsNullOrWhiteSpace(structured))
+            {
+                return structured.Trim();
+            }
+
+            if (root?["content"] is JsonArray content)
+            {
+                var chunks = content
+                    .Select(c => c?["text"]?.GetValue<string>())
+                    .Where(t => !string.IsNullOrWhiteSpace(t))
+                    .Select(t => t!.Trim())
+                    .ToList();
+
+                if (chunks.Count > 0)
+                {
+                    return string.Join("\n\n", chunks).Trim();
+                }
+            }
+
+            var answer = root?["answer"]?.GetValue<string>();
+            return string.IsNullOrWhiteSpace(answer) ? string.Empty : answer.Trim();
+        }
+        catch (JsonException ex)
+        {
+            // Unparsable is not the same as empty. Hand back whatever came off the wire
+            // rather than silently converting a real answer into "no content".
+            _logger.LogInformation(ex, "Work IQ MCP ask result was not JSON; using it as raw text.");
+            return resultJson.Trim();
+        }
     }
 
     /// <summary>

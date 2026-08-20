@@ -130,7 +130,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
             accessToken.Token,
             mcpServers,
             graphAccessToken,
-            conversationState);
+            conversationState,
+            tokenHelper);
 
         return service;
     }

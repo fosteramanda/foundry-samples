@@ -136,7 +136,7 @@ internal class ResponsesApiClient
         // therefore has to start a fresh chain. Only MCP servers are fingerprinted, and only
         // when they are attached at all, so the tool-less judge and passive-detection passes
         // keep their conversation context.
-        var toolFingerprint = includeMcpTools ? ComputeMcpFingerprint(activeServers) : null;
+        var toolFingerprint = includeMcpTools ? ComputeToolFingerprint(activeServers, localTools) : null;
 
         string? previousResponseId = null;
         if (usePreviousResponseId)
@@ -782,11 +782,32 @@ internal class ResponsesApiClient
     /// stored response chain predates the current tools, so the chain can be restarted rather
     /// than pinning an inventory the model can no longer act on.
     /// </summary>
-    private static string ComputeMcpFingerprint(IEnumerable<McpServerConfig> servers)
+    /// <summary>
+    /// Fingerprints everything the model can call this turn: the MCP server set AND the
+    /// locally-executed function tools.
+    ///
+    /// A response chain freezes its tool inventory at the point the chain started, so a
+    /// conversation begun before a tool existed will never see that tool — and, worse, the
+    /// model will keep restating whatever conclusion it reached without it. Hashing only
+    /// the MCP servers missed this: shipping a new local tool changed nothing in the
+    /// fingerprint, so live conversations silently kept the old tool set until they were
+    /// abandoned.
+    /// </summary>
+    private static string ComputeToolFingerprint(IEnumerable<McpServerConfig> servers, IEnumerable<JsonNode>? localTools)
     {
-        var canonical = string.Join("|", servers
-            .Select(s => $"{s.McpServerName}@{s.Url}")
-            .OrderBy(s => s, StringComparer.Ordinal));
+        var parts = servers
+            .Select(s => $"mcp:{s.McpServerName}@{s.Url}")
+            .ToList();
+
+        if (localTools != null)
+        {
+            parts.AddRange(localTools
+                .Select(t => t?["name"]?.GetValue<string>())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => $"fn:{n}"));
+        }
+
+        var canonical = string.Join("|", parts.OrderBy(s => s, StringComparer.Ordinal));
 
         var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
