@@ -186,6 +186,19 @@ public class A365AgentApplication : AgentApplication
 
                 // Execute logic
                 await agentService.NewActivityReceived(turnContext, turnState, cancellationToken);
+
+                // If the turn handed work to an agent that had not finished, capture where to
+                // deliver the answer. Done only when something is actually outstanding, so the
+                // common case writes nothing. StoreConversationAsync must run inside the turn —
+                // the conversation reference it captures does not exist outside one.
+                if (agentService.HasPendingDelegations)
+                {
+                    var proactiveConversationId = await Proactive.StoreConversationAsync(turnContext, cancellationToken);
+                    await agentService.PersistPendingDelegationsAsync(proactiveConversationId);
+                    _logger.LogInformation(
+                        "Captured proactive conversation {ConversationId} for pending delegation follow-up.",
+                        proactiveConversationId);
+                }
             }
             catch (Exception ex)
             {

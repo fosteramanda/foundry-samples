@@ -22,10 +22,13 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly ResponsesApiClient _responsesApiClient;
     private readonly WorkItemToolHandler _workItemTools;
     private readonly WorkIqA2AToolHandler _workIqA2ATools;
+    private readonly RoutineToolHandler _routineTools;
     private readonly TeamsActivityHelper _teamsHelper;
     private readonly AccessControlService _accessControl;
     private readonly AddressedToAgentGate _addressedToAgentGate;
     private readonly ReactionService _reactionService;
+    private readonly AgentMetadata _agentMetadata;
+    private readonly PendingDelegationStore? _pendingDelegations;
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -35,11 +38,14 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         List<McpServerConfig> mcpServers,
         string? graphAccessToken = null,
         ConversationStateStore? conversationState = null,
-        AgentTokenHelper? tokenHelper = null)
+        AgentTokenHelper? tokenHelper = null,
+        PendingDelegationStore? pendingDelegations = null)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         var agentMetadata = agent ?? throw new ArgumentNullException(nameof(agent));
+        _agentMetadata = agentMetadata;
+        _pendingDelegations = pendingDelegations;
 
         var httpClient = new HttpClient();
         // A single Responses API call can run for a while when the model fans out to MCP tools
@@ -64,9 +70,59 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         }
         _workItemTools = new WorkItemToolHandler(agentMetadata, _logger, graphAccessToken, httpClient, workItemService, _reactionService);
         _workIqA2ATools = new WorkIqA2AToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration);
+        _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
+        _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
+        // Derived from the handler itself rather than re-reading config, so the prompt can never
+        // describe a tracker whose tools were not attached.
+        _responsesApiClient.WorkItemsEnabled = _workItemTools.GetToolDefinitions().Count > 0;
         _teamsHelper = new TeamsActivityHelper(_logger);
         _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken, httpClient, _teamsHelper, _workItemTools);
         _addressedToAgentGate = new AddressedToAgentGate(_logger, _configuration, _responsesApiClient, _teamsHelper, httpClient, graphAccessToken);
+    }
+
+    /// <inheritdoc />
+    public bool HasPendingDelegations =>
+        _pendingDelegations?.IsAvailable == true && _workIqA2ATools.PendingHandoffs.Count > 0;
+
+    /// <inheritdoc />
+    public async Task PersistPendingDelegationsAsync(string proactiveConversationId)
+    {
+        if (_pendingDelegations == null || string.IsNullOrWhiteSpace(proactiveConversationId))
+        {
+            return;
+        }
+
+        // Partition by agent name so one deployed agent never polls another's outstanding work.
+        var partitionKey = _configuration["FoundryAgentName"]
+            ?? Environment.GetEnvironmentVariable("FOUNDRY_AGENT_NAME")
+            ?? "default";
+
+        foreach (var handoff in _workIqA2ATools.PendingHandoffs)
+        {
+            var stored = await _pendingDelegations.AddAsync(new PendingDelegationEntity
+            {
+                PartitionKey = partitionKey,
+                AgentId = handoff.AgentId,
+                DisplayName = handoff.DisplayName,
+                TaskId = handoff.TaskId,
+                A2AUrl = handoff.A2AUrl,
+                Question = handoff.Question,
+                ProactiveConversationId = proactiveConversationId,
+                OwnerUserId = _agentMetadata.UserId.ToString(),
+                OwnerAgentId = _agentMetadata.AgentId.ToString(),
+                OwnerAppId = _agentMetadata.AgentApplicationId.ToString(),
+                OwnerTenantId = _agentMetadata.TenantId.ToString(),
+            });
+
+            if (!stored)
+            {
+                // The user has already been told a follow-up is coming, so a failure to persist
+                // means a promise we cannot keep. Log it loudly rather than letting it vanish.
+                _logger.LogError(
+                    "Pending delegation to {AgentId} could not be stored; the promised follow-up will NOT arrive.",
+                    handoff.AgentId);
+            }
+        }
     }
 
     /// <summary>
@@ -77,6 +133,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     {
         var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
+        tools.AddRange(_routineTools.GetToolDefinitions());
         return tools;
     }
 
@@ -86,7 +143,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     /// </summary>
     private async Task<string?> ExecuteLocalToolAsync(string toolName, string arguments)
         => await _workItemTools.TryExecuteAsync(toolName, arguments)
-           ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments);
+           ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
+           ?? await _routineTools.TryExecuteAsync(toolName, arguments);
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
@@ -165,11 +223,33 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // Capture activity context for 📌 reaction on work item creation
         _workItemTools.SetCurrentActivityContext(turnContext.Activity);
 
+        // A routine created this turn must post into THIS conversation when it fires, so the
+        // routine tools need the activity that addresses it.
+        _routineTools.SetCurrentActivityContext(turnContext.Activity);
+
+        // Start a fresh delegation trail for this turn so the cue below reflects only what
+        // this turn actually did.
+        _workIqA2ATools.BeginTurn();
+
         var response = await _responsesApiClient.InvokeAsync(
             input: incomingText ?? string.Empty,
             conversationId: conversationId,
             additionalTools: BuildLocalToolDefinitions(),
             localToolExecutor: ExecuteLocalToolAsync);
+
+        // Append the delegation cue, if this turn delegated at all. Deliberately host-rendered
+        // rather than left to the model: the prompt asks the model to name the agent it
+        // consulted, but that is a request it can silently drop, and the case where it matters
+        // most — the agent returned nothing and the model answered from its own knowledge — is
+        // exactly the case where a model is most likely to omit it. This line is derived from
+        // the calls that actually happened, so it cannot disagree with them.
+        //
+        // Empty when nothing was delegated, so turns the agent answered itself are unchanged.
+        var delegationCue = _workIqA2ATools.BuildDelegationCue();
+        if (!string.IsNullOrEmpty(delegationCue) && !string.IsNullOrWhiteSpace(response))
+        {
+            response += delegationCue;
+        }
 
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse
@@ -346,7 +426,29 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 "Email body:\n" +
                 body;
 
-            var response = await _responsesApiClient.InvokeAsync(prompt, conversationId);
+            // Attach the Work IQ A2A tools so an email can be answered by consulting a
+            // specialist, exactly as a Teams message can. Without them the model has nothing
+            // to call and email is silently a second-class channel — it would answer product
+            // questions from its own knowledge with no way to tell it had never asked anyone.
+            //
+            // Only the A2A tools, not the full local bundle: the work-item tools depend on
+            // SetCurrentActivityContext, which is a Teams concept (it drives the 📌 reaction)
+            // and is never set on this path.
+            _workIqA2ATools.BeginTurn();
+
+            var response = await _responsesApiClient.InvokeAsync(
+                prompt,
+                conversationId,
+                additionalTools: _workIqA2ATools.GetToolDefinitions(),
+                localToolExecutor: _workIqA2ATools.TryExecuteAsync);
+
+            // Same delegation cue as the chat path. Email renders HTML, and the reply is
+            // already built as HTML, so the cue lands the same way it does in Teams.
+            var delegationCue = _workIqA2ATools.BuildDelegationCue();
+            if (!string.IsNullOrEmpty(delegationCue) && !string.IsNullOrWhiteSpace(response))
+            {
+                response += delegationCue;
+            }
 
             var responseActivity = EmailResponse.CreateEmailResponseActivity(response);
 

@@ -44,6 +44,22 @@
   if (-not [string]::IsNullOrWhiteSpace($env:SOURCE_OF_TRUTH_AGENT_NAME)) {
       $environmentVariables.SourceOfTruthAgentName = $env:SOURCE_OF_TRUTH_AGENT_NAME
   }
+  # Routines (standing work). The agent creates its own scheduled jobs through the Foundry
+  # Routines API, which needs to know its own project endpoint and agent name — a routine's
+  # action names the agent to invoke. Both come from the azd .env rather than appsettings.json
+  # so the sample stays deployment-neutral. Without these the routine tools disable themselves
+  # and the prompt omits the scheduling section, rather than offering standing work the agent
+  # cannot actually create.
+  if (-not [string]::IsNullOrWhiteSpace($env:AZURE_AI_PROJECT_ENDPOINT)) {
+      $environmentVariables.FoundryProjectEndpoint = $env:AZURE_AI_PROJECT_ENDPOINT
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:AGENT_NAME)) {
+      $environmentVariables.FoundryAgentName = $env:AGENT_NAME
+  }
+  # Stamped into the routine's recipient so a scheduled run reaches this agent's blueprint.
+  if (-not [string]::IsNullOrWhiteSpace($env:AGENT_IDENTITY_BLUEPRINT_ID)) {
+      $environmentVariables.AgenticAppBlueprintId = $env:AGENT_IDENTITY_BLUEPRINT_ID
+  }
   # Toolbox version pin. The unpinned toolbox endpoint serves whatever the toolbox's default
   # version is, so publishing a toolbox version can break every running instance. Overriding it
   # here changes the pin without rebuilding the image (appsettings.json holds the baked default).

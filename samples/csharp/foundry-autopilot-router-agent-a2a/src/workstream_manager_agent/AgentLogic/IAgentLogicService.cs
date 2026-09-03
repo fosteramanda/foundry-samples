@@ -31,5 +31,20 @@ public interface IAgentLogicService
     /// </summary>
     /// <returns></returns>
     Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// True when the turn just handed work to another agent that had not finished in time.
+    /// The host uses this to decide whether it is worth capturing a proactive conversation.
+    /// </summary>
+    bool HasPendingDelegations => false;
+
+    /// <summary>
+    /// Persists delegations still in flight, so a background poller can deliver their answers
+    /// after the turn ends. Called only when <see cref="HasPendingDelegations"/> is true, with
+    /// the id of a conversation the host has already stored for proactive delivery.
+    ///
+    /// Default no-op so implementations without asynchronous delegation are unaffected.
+    /// </summary>
+    Task PersistPendingDelegationsAsync(string proactiveConversationId) => Task.CompletedTask;
 }
 

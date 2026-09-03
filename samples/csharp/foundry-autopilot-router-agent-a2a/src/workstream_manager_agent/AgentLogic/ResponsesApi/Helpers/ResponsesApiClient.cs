@@ -37,6 +37,21 @@ internal class ResponsesApiClient
     // but tool sources also get fixed out from under us, so the quarantine must expire by itself.
     private static readonly ConcurrentDictionary<string, (DateTime ExpiresUtc, string Reason)> _quarantinedMcpServers = new();
 
+    /// <summary>
+    /// Whether the routine (standing work) tools are attached this turn. Set by the owning service
+    /// once the routine handler exists, so the prompt only describes scheduling when the agent can
+    /// actually schedule — advertising tools it was not given is what makes an agent promise work
+    /// it never set up.
+    /// </summary>
+    internal bool RoutinesEnabled { get; set; }
+
+    /// <summary>
+    /// Whether the work-item tracker tools are attached this turn. Set by the owning service from
+    /// the handler's real state, not from configuration, so the prompt and the tool list cannot
+    /// disagree.
+    /// </summary>
+    internal bool WorkItemsEnabled { get; set; } = true;
+
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
         ILogger logger,
@@ -78,7 +93,9 @@ internal class ResponsesApiClient
             _agentMetadata,
             _configuration["SourceOfTruthAgentId"],
             _configuration["SourceOfTruthAgentName"],
-            _configuration["ToolboxName"]);
+            _configuration["ToolboxName"],
+            RoutinesEnabled,
+            WorkItemsEnabled);
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.
