@@ -51,6 +51,114 @@ internal class WorkIqA2AToolHandler
 
     private sealed record AgentCardSummary(string? Description, List<string> Skills);
 
+    // Display names seen during discovery, so the delegation trail can show "MCS Test"
+    // rather than the opaque agent id the model actually passes.
+    private readonly Dictionary<string, string> _nameCache = new(StringComparer.OrdinalIgnoreCase);
+
+    // Agents delegated to during the CURRENT turn, in call order, with whether each one
+    // actually produced an answer.
+    //
+    // This exists because attribution cannot be left to the model. The prompt asks it to name
+    // the agent it consulted, but a prompt is a request, not a guarantee: a model that
+    // delegates, gets nothing back, and then answers from its own knowledge produces text that
+    // is indistinguishable from a successful hand-off. Recording the trail at the call site
+    // makes the hand-off observable no matter what the model writes, and lets the host render a
+    // cue the model cannot forget or contradict.
+    private readonly List<DelegationRecord> _delegations = new();
+
+    /// <param name="Answered">
+    /// False when the agent accepted the request and returned no usable content — the silent
+    /// failure this whole sample exists to surface.
+    /// </param>
+    /// <param name="Outcome">
+    /// Answered, NoAnswer (the silent failure this sample exists to surface), or Pending (accepted
+    /// and still working — a follow-up is queued). Collapsing Pending into NoAnswer would tell the
+    /// user an agent had nothing to say when an answer is in fact on its way.
+    /// </param>
+    internal sealed record DelegationRecord(string AgentId, string DisplayName, DelegationOutcome Outcome);
+
+    internal enum DelegationOutcome
+    {
+        Answered,
+        NoAnswer,
+        Pending,
+    }
+
+
+    /// <summary>
+    /// A delegation that was accepted but not finished within the turn. Captured here and drained
+    /// by the caller after the turn, which is what turns a slow specialist into a follow-up
+    /// message instead of a dead end.
+    /// </summary>
+    internal sealed record PendingHandoff(
+        string AgentId,
+        string DisplayName,
+        string TaskId,
+        string A2AUrl,
+        string Question);
+
+    private readonly List<PendingHandoff> _pendingHandoffs = new();
+
+    /// <summary>Delegations still in flight at the end of the turn, for the follow-up poller.</summary>
+    internal IReadOnlyList<PendingHandoff> PendingHandoffs => _pendingHandoffs;
+
+    /// <summary>
+    /// Clears the per-turn delegation trail. Called at the start of every turn: the handler
+    /// instance can outlive a single turn, and a stale trail would attribute the previous
+    /// turn's hand-off to this one.
+    /// </summary>
+    internal void BeginTurn()
+    {
+        _delegations.Clear();
+        _pendingHandoffs.Clear();
+    }
+
+    /// <summary>Delegations made during the current turn, in call order.</summary>
+    internal IReadOnlyList<DelegationRecord> Delegations => _delegations;
+
+    /// <summary>
+    /// Renders the turn's delegation trail as a short HTML cue for the end user, or an empty
+    /// string when nothing was delegated — so a turn the agent answered itself looks exactly
+    /// as it did before, with no cue to explain away. The cue is meant to be rare enough that
+    /// its presence is informative.
+    ///
+    /// Deduplicated by agent id: a retry against the same agent is one hand-off from the
+    /// user's point of view, not two. An agent counts as having answered if any of its calls
+    /// produced content.
+    /// </summary>
+    internal string BuildDelegationCue()
+    {
+        if (_delegations.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var parts = _delegations
+            .GroupBy(d => d.AgentId, StringComparer.OrdinalIgnoreCase)
+            .Select(g =>
+            {
+                var name = System.Net.WebUtility.HtmlEncode(g.First().DisplayName);
+
+                // Best outcome wins for an agent asked more than once: an answer supersedes a
+                // failed first attempt, and a queued follow-up supersedes a bare no-answer.
+                if (g.Any(d => d.Outcome == DelegationOutcome.Answered))
+                {
+                    return $"<b>{name}</b>";
+                }
+                if (g.Any(d => d.Outcome == DelegationOutcome.Pending))
+                {
+                    return $"<b>{name}</b> \u2014 still working, will follow up";
+                }
+                // Report the no-answer case explicitly. It is the case the user most needs to
+                // see, because the reply that follows it was written without the specialist's
+                // input even when it reads like an authoritative answer.
+                return $"<b>{name}</b> \u2014 no answer";
+            })
+            .ToList();
+
+        return $"<p><i>\U0001F517 Delegated to: {string.Join(" \u00B7 ", parts)}</i></p>";
+    }
+
     internal WorkIqA2AToolHandler(
         AgentMetadata agentMetadata,
         AgentTokenHelper? tokenHelper,
@@ -252,10 +360,16 @@ internal class WorkIqA2AToolHandler
         foreach (var agent in agents)
         {
             var id = agent?["agentId"]?.GetValue<string>() ?? string.Empty;
+            var displayName = agent?["name"]?.GetValue<string>();
+            if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(displayName))
+            {
+                _nameCache[id] = displayName;
+            }
+
             var entry = new JsonObject
             {
                 ["agentId"] = id,
-                ["name"] = agent?["name"]?.GetValue<string>(),
+                ["name"] = displayName,
                 ["provider"] = agent?["provider"]?.GetValue<string>(),
             };
 
@@ -504,8 +618,32 @@ internal class WorkIqA2AToolHandler
         // copilot_chat on the Agent 365 server is not an option here and is not a fallback:
         // it reaches no agent at all, and answers as generic Copilot with no attribution
         // field in the payload to reveal it. Removed from this sample entirely.
-        return await AskViaA2AAsync(agentId, message);
+        var pendingBefore = _pendingHandoffs.Count;
+        var answer = await AskViaA2AAsync(agentId, message);
+
+        // Reuse the existing failure convention rather than inventing a second one: every
+        // no-answer path in AskViaA2AAsync returns a message starting "Agent '<id>' …", and
+        // that prefix is already load-bearing there. A real answer never starts that way.
+        var outcome = _pendingHandoffs.Count > pendingBefore
+            ? DelegationOutcome.Pending
+            : answer.StartsWith("Agent '", StringComparison.Ordinal)
+                ? DelegationOutcome.NoAnswer
+                : DelegationOutcome.Answered;
+
+        _delegations.Add(new DelegationRecord(agentId, ResolveDisplayName(agentId), outcome));
+
+        return answer;
     }
+
+    /// <summary>
+    /// Friendly name for an agent id, falling back to the id itself. The fallback matters:
+    /// the model can pass an id it got from somewhere other than discovery, and showing the
+    /// raw id is honest, whereas showing nothing would hide that a hand-off happened.
+    /// </summary>
+    private string ResolveDisplayName(string agentId) =>
+        _nameCache.TryGetValue(agentId, out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name
+            : agentId;
 
     /// <summary>
     /// Minimal MCP streamable-HTTP client: initialize, then tools/call. Handles both plain JSON
@@ -722,6 +860,27 @@ internal class WorkIqA2AToolHandler
                     method,
                     agentId,
                     text.Length);
+                return text;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Polls a previously-accepted A2A task for its answer, from outside any turn.
+    ///
+    /// Exists for the follow-up poller: the in-turn recovery path gives a slow agent only a few
+    /// seconds, but an agent that takes minutes can be collected later. Returns null while the
+    /// task is still unfinished, so the caller can tell "not yet" from "nothing to say".
+    /// </summary>
+    internal async Task<string?> TryFetchTaskAnswerAsync(string a2aUrl, string agentId, string taskId)
+    {
+        foreach (var method in new[] { "GetTask", "tasks/get" })
+        {
+            var text = await TryGetTaskAsync(a2aUrl, agentId, taskId, method);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
                 return text;
             }
         }
@@ -1001,6 +1160,24 @@ internal class WorkIqA2AToolHandler
                 || state.Contains("WORKING", StringComparison.OrdinalIgnoreCase);
             if (pending)
             {
+                // The agent took the work but has not finished. Capture enough to poll it after
+                // the turn ends, so a slow specialist becomes a follow-up message rather than a
+                // dead end. Falls back to today's behaviour when there is no task id to poll —
+                // an answer we cannot retrieve is better reported than pretended.
+                if (!string.IsNullOrWhiteSpace(_lastTaskId))
+                {
+                    _pendingHandoffs.Add(new PendingHandoff(
+                        agentId,
+                        ResolveDisplayName(agentId),
+                        _lastTaskId!,
+                        url,
+                        message));
+
+                    return ($"Agent '{agentId}' accepted the request and is still working (state={state}). " +
+                            "Tell the user you have asked that agent and will follow up as soon as it answers. " +
+                            "Do NOT answer the question on its behalf and do not repeat the question back.", false, null);
+                }
+
                 return ($"Agent '{agentId}' accepted the request and is still working (state={state}); it did not return an answer synchronously.", false, null);
             }
 

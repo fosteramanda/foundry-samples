@@ -51,6 +51,13 @@ builder.Services.AddSingleton<WorkItemService>();
 // lost conversation continuity on every container recycle and could not work across replicas.
 builder.Services.AddSingleton<ConversationStateStore>();
 
+// Asynchronous delegation follow-up. The store is durable (Azure Tables) on purpose: an answer
+// that arrives after the turn ends must survive a container restart, or the agent silently
+// breaks a promise it already made to the user. The poller collects those answers and delivers
+// them proactively into the original conversation.
+builder.Services.AddSingleton<PendingDelegationStore>();
+builder.Services.AddHostedService<DelegationFollowUpService>();
+
 // Register OpenAPI for external agents
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
@@ -151,3 +158,4 @@ app.UseHttpsRedirection();
 app.MapControllers();
 
 app.Run();
+
