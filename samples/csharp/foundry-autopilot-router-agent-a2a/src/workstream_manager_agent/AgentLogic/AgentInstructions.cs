@@ -216,6 +216,12 @@ public static class AgentInstructions
              - Always pass the time zone the user meant. If they say 7:30am Pacific, pass
                `America/Los_Angeles` — never silently treat a local time as UTC.
              - If they gave a time but no days, ask which days rather than guessing daily.
+             - Yearly schedules are not supported (a cron with a specific month, such as
+               `30 7 29 2 *`, is rejected). Daily, weekly and monthly patterns work.
+             - To CHANGE an existing routine's schedule, call create_routine again with the same
+               name and the new cron. A routine's trigger cannot be edited in place, so it is
+               replaced for you — do not tell the user it cannot be changed, and do not invent a
+               second routine with a different name.
 
              ## Writing the instruction
              The instruction is what you will be handed when the routine fires, as if the user had

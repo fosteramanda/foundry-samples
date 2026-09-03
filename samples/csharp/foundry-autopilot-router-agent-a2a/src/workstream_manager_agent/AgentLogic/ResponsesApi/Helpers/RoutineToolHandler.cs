@@ -257,6 +257,28 @@ public class RoutineToolHandler
         }
 
         var (ok, response, error) = await SendAsync(HttpMethod.Put, $"routines/{Uri.EscapeDataString(name)}", body);
+
+        // A routine's trigger is immutable: the API rejects a PUT that changes the schedule of an
+        // existing routine with "Routine trigger cannot be changed after creation. Delete and
+        // recreate...". That is exactly what "move my morning email to 8am" looks like, so handle
+        // it here rather than surfacing a platform error the user cannot act on. Delete and
+        // recreate once; the routine keeps its name and the user sees a normal reschedule.
+        if (!ok && error != null && error.Contains("trigger cannot be changed", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation(
+                "Routine {Name} exists with a different schedule; deleting and recreating to change the trigger.",
+                name);
+
+            var (deleted, _, deleteError) = await SendAsync(HttpMethod.Delete, $"routines/{Uri.EscapeDataString(name)}", null);
+            if (!deleted)
+            {
+                return $"Could not reschedule '{name}': its trigger cannot be changed in place and "
+                     + $"removing the old one failed ({deleteError}).";
+            }
+
+            (ok, response, error) = await SendAsync(HttpMethod.Put, $"routines/{Uri.EscapeDataString(name)}", body);
+        }
+
         if (!ok)
         {
             _logger.LogError("Routine create failed for {Name}: {Error}", name, error);
