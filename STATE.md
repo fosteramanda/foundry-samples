@@ -574,15 +574,28 @@ Amanda required this session to use the NotARealCo tenant *without* disturbing o
 sessions on the machine, which use `fosteramanda@microsoft.com`. Done with a separate
 `AZURE_CONFIG_DIR` at `C:\Users\fosteramanda\.azure-notarealco-session`.
 
-**The machine-wide default context was nevertheless found pointing at NotARealCo at
-the end of the session** and was restored to
+**The machine-wide default context was nevertheless found pointing at NotARealCo** and
+was restored to
 `azure-openai-agents-exp-nonprod-01` / tenant `72f988bf-…` / `fosteramanda@microsoft.com`,
-verified against a snapshot taken before any change. The cause was not established:
-the isolation verified clean immediately after login, and the default config now
-contains three NotARealCo subscriptions, so a login reached it at some point. The
-deploy script did not pin `AZURE_CONFIG_DIR` for most of the session — it does now.
-**If other sessions ran against Azure during 2026-09-03 03:00–07:50 local, check what
-subscription they used.**
+verified against a snapshot taken before any change.
+
+**Root cause: `AZURE_CONFIG_DIR` does not fully isolate on this machine (az 2.83.0).**
+The drift reproduced after the first repair, which made it diagnosable. The isolated
+`azureProfile.json` (760 b, 2 subscriptions) had not been written since login, while
+the default profile (112 KB, 253 subscriptions) was rewritten during a token call made
+with `AZURE_CONFIG_DIR` set — and the default config now contains three NotARealCo
+subscriptions. So the NotARealCo login landed in *both* directories, and operations
+against the isolated config can still flip the default active subscription.
+
+**Do not rely on `AZURE_CONFIG_DIR` alone for tenant isolation here.** Safer pattern:
+pass `--subscription <id>` explicitly on every command so nothing depends on, or
+mutates, the active context; snapshot the default context first and re-verify at the
+end in a fresh process.
+
+**If other sessions ran against Azure during 2026-09-03 03:00–07:55 local, check which
+subscription they used** — the active default was NotARealCo for much of that window.
+Her Microsoft account and all 235 subscriptions remain present and signed in; only the
+*active* selection changed.
 
 ### Open
 
