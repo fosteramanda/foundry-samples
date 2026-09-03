@@ -526,3 +526,77 @@ Needs your decision:
    loop would cross-wire task ids between agents.
 6. **.NET 9 SDK is missing on this machine**, so nothing here can be built
    until it is installed.
+
+---
+
+## Session update — 2026-09-03 (routines, email delivery, tenant isolation)
+
+Deployed **v27** of `autopilotroutera2a` (Teams: *Office of Amanda*), 100% traffic.
+Committed as `c72d891` on `autopilot-toolbox`, pushed to the **fork only**.
+Before this the repo sat at v17 while the agent ran v24 — ten versions of drift.
+
+### What changed
+
+**Routines (standing work) — new.** The agent creates its own scheduled jobs from a
+conversation. The key insight is that a routine's `action.input` is a *conversation
+reference*: it decides which chat the scheduled run posts into, and those ids only
+exist on a live turn. So the routine is written from the turn that requested it,
+which is exactly what makes each instance own its own routines.
+
+**Email delivery resolves the recipient at creation time.** A 07:30 run has no sender
+and no chat context, so a stored "email me" has nobody to send to and fails silently
+every morning. The address is resolved from the requester's directory id and written
+in literally; if it cannot resolve, the routine is refused rather than created broken.
+`mcp_MailTools` added to the manifest (name verified in docs, not guessed).
+`McpServers.Mail.All` was already granted on the blueprint.
+
+**Delegation cue.** Host-rendered from the calls that actually happened, not left to
+the model. Three outcomes: answered / no answer / still working.
+
+**Async delegation follow-up.** Pending work persisted durably, collected by a
+background poller, delivered proactively with the question restated.
+
+**Stopped advertising tools the agent was not given.** The toolbox was unbound (it
+carried a Work IQ MCP `ask` that bypassed A2A entirely — measured: the model chose it
+and never touched A2A). ADO and work-item sections are now conditional, the latter
+derived from the handler's real tool list so prompt and tools cannot disagree.
+
+### Corrected
+
+An earlier claim in this session that the work-item tools were unattached and the
+morning email would arrive empty was **wrong**. It was based on `appsettings.json`
+alone; the Dockerfile sets `ENV WorkItemsTableServiceUri` from a build-arg, which
+.NET config reads over the empty appsettings value. The tools are attached.
+
+### Tenant isolation — and a drift that had to be repaired
+
+Amanda required this session to use the NotARealCo tenant *without* disturbing other
+sessions on the machine, which use `fosteramanda@microsoft.com`. Done with a separate
+`AZURE_CONFIG_DIR` at `C:\Users\fosteramanda\.azure-notarealco-session`.
+
+**The machine-wide default context was nevertheless found pointing at NotARealCo at
+the end of the session** and was restored to
+`azure-openai-agents-exp-nonprod-01` / tenant `72f988bf-…` / `fosteramanda@microsoft.com`,
+verified against a snapshot taken before any change. The cause was not established:
+the isolation verified clean immediately after login, and the default config now
+contains three NotARealCo subscriptions, so a login reached it at some point. The
+deploy script did not pin `AZURE_CONFIG_DIR` for most of the session — it does now.
+**If other sessions ran against Azure during 2026-09-03 03:00–07:50 local, check what
+subscription they used.**
+
+### Open
+
+- **Nothing has exercised any of this.** No telemetry for 30 days; the container has
+  been asleep since 20 Aug. One Teams message is needed to wake it, capture a
+  conversation reference, and let the routine be created.
+- `mcp_MailTools` URL shape is unverified. Docs give mail as tenant-scoped
+  (`/agents/tenants/{tenantId}/servers/…`); the short form was used to match the four
+  servers that demonstrably pass preflight here. The health probe will quarantine and
+  log it if wrong.
+- Whether a routine fires against a scaled-to-zero container is untested. This is the
+  difference between the 7:30 email arriving and not.
+- Async delegation follow-up has never been seen to fire — every Foundry agent fails
+  fast rather than returning `WORKING`.
+- The MCP twin (`foundry-autopilot-router-agent`) is still not deployed, so the A/B
+  has only one arm running.
+- `workiq-foundry-invocation-failure-v4-FINAL.docx` still describes v16.
