@@ -3,6 +3,8 @@
 Last updated: 2026-09-03. Revised the same day after locating the source
 session (`9bc6280f-…`) in the local session store: the decisions section is
 now cited from that conversation rather than reconstructed from the diff.
+Revised again after tracing the delegation path end to end, which showed
+multi-agent fan-out is built rather than missing (item 4 below).
 
 Read this before touching anything in this folder. Read AGENTS.md next.
 
@@ -386,18 +388,40 @@ the diff at all. They were missing from the first draft of this file.
 3. Verify the follow-up loop end to end at runtime: delegate to a slow
    agent, let the turn end, confirm the answer is delivered proactively into
    the original conversation after a container restart.
-4. **Answer the question the session ended on.** Amanda's last two turns
-   were requirements, and the session stopped before either was confirmed
-   working. T327: "can the main agent delegate to multiple at the same
-   time?" T328: the interleaving scenario, where turn 1 delegates, turn 2
-   answers directly, turn 3 delegates, and then the turn-1 answer arrives
-   before the turn-3 answer. The uncommitted `PendingDelegationStore` and
-   `DelegationFollowUpService` are the beginning of an answer, not a
-   finished one: they persist each pending delegation with its original
-   question, which is what out-of-order delivery needs, but nothing in this
-   tree demonstrates concurrent fan-out to several agents from a single
-   turn. Confirm whether multi-agent delegation in one turn is supported
-   before telling Amanda this is done.
+4. **Verify the multi-agent delegation the session ended on.** Amanda's last
+   two turns were requirements: T327, "can the main agent delegate to
+   multiple at the same time?", and T328, the interleaving case where turn 1
+   delegates, turn 2 answers directly, turn 3 delegates, and the turn-1
+   answer arrives before the turn-3 answer. **Both are built.** Traced
+   2026-09-03, end to end:
+
+   | Link in the chain | Where | Supports many? |
+   |---|---|---|
+   | Model emits several tool calls in one response | `ResponsesApiClient.cs:210`, `foreach (var functionCall in functionCalls)` | yes |
+   | Each pending hand-off recorded | `WorkIqA2AToolHandler._pendingHandoffs`, a `List` | yes |
+   | All hand-offs persisted | `ResponsesApiAgentLogicService.cs:94`, `foreach (var handoff in ...PendingHandoffs)` | yes |
+   | Row per delegation | `PendingDelegationStore`, `RowKey = Guid.NewGuid()`, commented "an agent can have several outstanding at once" | yes |
+   | Poller drains all outstanding | `DelegationFollowUpService.PollOnceAsync`, `foreach (var item in pending)` | yes |
+   | Out-of-order readability | every follow-up restates its own `Question` | yes |
+   | Cue names several agents | `BuildDelegationCue`, groups by agent id, joins with `·`, per-agent outcome | yes |
+
+   So the correct status is **built but never run**, not unbuilt. Two
+   caveats worth knowing before testing:
+
+   - **Delegations are sequential, not parallel.** The dispatch loop awaits
+     each call before starting the next, so several agents can be
+     *outstanding* at once but the sends are serialised. Each send costs a
+     bounded number of round trips (up to two send shapes, then up to two
+     `GetTask` attempts and a stream attempt), so fanning out to several
+     agents multiplies in-turn latency. If a turn ever times out under
+     fan-out, this is why.
+   - **`_lastTaskId` is a single mutable field** on the handler
+     (`WorkIqA2AToolHandler.cs:823`), written when a send response is parsed
+     and read immediately after to build the `PendingHandoff`. That is safe
+     only because the loop is sequential. Anyone who "optimises" the
+     dispatch loop into `Task.WhenAll` will silently cross-wire task ids
+     between agents, and the symptom will be follow-ups delivering the wrong
+     agent's answer. Fix the field before parallelising, not after.
 5. Resolve the ADO contradiction: either restore ADO capability to this arm
    or correct the readme. See decision 20 for why the permission side of
    this was parked.
@@ -491,12 +515,14 @@ Needs your decision:
 4. **The asynchronous-delegation work is still uncommitted.** I committed
    only STATE.md and AGENTS.md, as you asked, and left your in-flight code
    alone. Tell me if you want it committed.
-5. **That session ended mid-requirement, and it is your last word on the
-   design.** Your final two turns asked whether the agent can delegate to
-   several agents at once (T327) and described the interleaving case where
-   answers come back out of order (T328). The uncommitted code covers the
-   out-of-order half. I can find nothing in the tree that fans out to
-   multiple agents from one turn, so treat that half as unbuilt rather than
-   untested. Item 4 in "What is left to do".
+5. **The design you asked for on 2026-08-21 is built, not half-built.** I
+   said last time that multi-agent fan-out looked unbuilt. I traced it
+   properly and I was wrong: every link supports several delegations at
+   once, from the model emitting parallel tool calls through to the poller
+   restating each question on delivery. What is true is that none of it has
+   ever been run. Status is "built, never executed". Details and the trace
+   table are in item 4 of "What is left to do". One landmine recorded there:
+   `_lastTaskId` is a single shared field, so parallelising the dispatch
+   loop would cross-wire task ids between agents.
 6. **.NET 9 SDK is missing on this machine**, so nothing here can be built
    until it is installed.
