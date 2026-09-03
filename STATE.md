@@ -613,3 +613,29 @@ Her Microsoft account and all 235 subscriptions remain present and signed in; on
 - The MCP twin (`foundry-autopilot-router-agent`) is still not deployed, so the A/B
   has only one arm running.
 - `workiq-foundry-invocation-failure-v4-FINAL.docx` still describes v16.
+
+### Routines API — measured behaviour (2026-09-03)
+
+Validated by creating a throwaway routine and deleting it, rather than assuming:
+
+- **Our payload shape is correct.** A `PUT /routines/{name}` with the
+  `invoke_agent_activityprotocol_api` action and a full activity `input` round-trips
+  unchanged through `GET`.
+- **`30 7 * * 1-5` is accepted** — the weekday-07:30 schedule Amanda asked for.
+- **Yearly cron is rejected**: a specific month (e.g. `30 7 29 2 *`) returns
+  `UserError: yearly cron expression is not supported`. Daily/weekly/monthly are fine.
+- **Triggers are immutable.** Changing an existing routine's cron returns
+  `Routine trigger cannot be changed after creation. Delete and recreate…`. This is
+  exactly what "move my morning email to 8am" looks like, so `create_routine` now
+  deletes and recreates on that specific error (v28).
+- **Enable/disable works** via read-modify-write with the trigger unchanged, so pause
+  and resume are safe.
+- The API stamps `"authorization": {"identity": "agent"}` — scheduled runs execute as
+  the agent, not as the user who set the routine up.
+
+Probing for a manual "run now" endpoint was inconclusive: `run`, `:run`, `trigger` and
+`runs` all return 404, but so does any path on a routine that does not exist, so this
+does not establish absence. Likewise the `mcp_MailTools` URL shape is still unverified —
+an unauthenticated probe returns 401 for a deliberately nonsensical server name too,
+so auth precedes routing and 401 proves nothing. The health probe will settle it in the
+logs on the first real turn.
