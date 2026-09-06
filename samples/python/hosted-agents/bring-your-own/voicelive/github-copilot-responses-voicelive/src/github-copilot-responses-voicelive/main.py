@@ -298,6 +298,7 @@ async def handle_response(
             yield current_content.emit_delta(text)
 
         await send_task
+        yield stream.emit_completed()
     except Exception as exc:
         logger.exception("Copilot request failed")
         async for event in close_item():
