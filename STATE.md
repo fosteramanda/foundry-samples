@@ -863,3 +863,58 @@ ignored - the response comes back `enabled`.
 
 So verifying a deploy requires either a cold start or a check that the running instance id
 changed. The routine is PAUSED again to stop the error loop.
+
+---
+
+## The FIC blocker, diagnosed precisely — needs Amanda's approval to fix (2026-09-07)
+
+`AADSTS7002203` on every scheduled run. The mismatch is exact:
+
+| | Value |
+|---|---|
+| FIC registered on the blueprint (`ProjectManagedIdentityFederatedIdentityCredential`) | `4c6f972f-cdbc-4b0f-bdce-7b146e61e3f5` — the **project** managed identity (`PROJECT_PRINCIPAL_ID` in .env) |
+| Subject the scheduled run actually presents | `f3e89c82-f3c2-4a70-a7f8-d594ad11f265` — the **agent version's instance identity** |
+
+The blueprint carries only two credentials: that project-MI one, and an `fmi-fic` whose
+subject is an FMI path. Neither matches the agent instance identity, so the agent-user
+token exchange fails and the turn ends before the model runs.
+
+### Proposed fix — NOT applied, identity change requires approval
+
+Add a third federated identity credential to blueprint app
+`ac1da9f1-7fa9-4681-ac62-aea889177a37`:
+
+```
+subject : f3e89c82-f3c2-4a70-a7f8-d594ad11f265
+issuer  : https://login.microsoftonline.com/dfa98250-28be-4cda-b270-45c05319c07c/v2.0
+audience: api://AzureADTokenExchange
+```
+
+Held back deliberately: the workspace rules require Amanda's explicit approval for
+identity changes, and this grants a new identity the ability to federate into the
+blueprint. It is narrow — one subject, same tenant, same audience as the existing two —
+but it is still a permission grant and hers to authorise.
+
+### Open question this does not answer
+
+Why the chat path works and the scheduled path does not, when both run in the same
+container under the same instance identity. Two readings:
+
+1. Chat turns never need the agent-user exchange (a cached or differently-scoped token
+   covers them), and routines are simply the first thing to exercise it. The FIC would
+   then be a genuine gap in provisioning.
+2. The platform is meant to supply user identity to a scheduled run and does not, in
+   which case adding the FIC papers over a platform bug rather than fixing it.
+
+Worth asking the Foundry team which, because the answer changes whether this is a
+sample-level fix or something they need to address. The routine stamps
+`"authorization": {"identity": "agent"}`, which leans toward (2).
+
+### Also fixed in v30 (deployed, unverified)
+
+`create_routine` never copied `aadObjectId` / `agenticUserId` from the live recipient into
+the stored activity, so a scheduled activity's recipient was thinner than the chat one it
+was created from. It now carries them through when present, and logs the live recipient at
+creation so the two can be compared directly. Whether the live activity even has those
+fields is still unmeasured — every activity captured so far has been a routine, and
+Amanda's real turns had aged out of App Insights before they could be inspected.

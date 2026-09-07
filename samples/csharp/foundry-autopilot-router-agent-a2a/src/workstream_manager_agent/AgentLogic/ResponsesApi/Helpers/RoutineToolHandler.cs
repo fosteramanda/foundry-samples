@@ -294,6 +294,17 @@ public class RoutineToolHandler
             string.IsNullOrWhiteSpace(recipient) ? "(chat)" : recipient,
             _currentActivity.Conversation?.Id);
 
+        // Log the live recipient alongside the stored one. A scheduled activity is built from
+        // this, and any field present here but missing there is a candidate cause when the
+        // scheduled run behaves differently from the chat turn that created it.
+        _logger.LogInformation(
+            "Routine source recipient: id={Id} aadObjectId={Aad} agenticUserId={AgenticUser} agenticAppId={AppId} agenticAppBlueprintId={BlueprintId}",
+            _currentActivity.Recipient?.Id,
+            _currentActivity.Recipient?.AadObjectId ?? "(absent)",
+            ReadRecipientProperty(_currentActivity, "agenticUserId") ?? "(absent)",
+            ReadRecipientProperty(_currentActivity, "agenticAppId") ?? "(absent)",
+            ReadRecipientProperty(_currentActivity, "agenticAppBlueprintId") ?? "(absent)");
+
         var where = delivery switch
         {
             "email" => $"emails it to {recipient}",
@@ -496,6 +507,23 @@ public class RoutineToolHandler
         }
 
         var recipient = new JsonObject { ["id"] = activity.Recipient?.Id };
+
+        // Carry the recipient's identity fields through verbatim when the live activity has them.
+        // Omitting them is what made the scheduled activity's recipient thinner than a real one:
+        // aadObjectId and agenticUserId were both absent on every routine run, which is exactly
+        // the difference that crashed GetAgentFromRecipient and may also be why the agent-user
+        // federated credential exchange fails on a scheduled turn (AADSTS7002203). A routine
+        // should reproduce the recipient it was created from, not a reduced version of it.
+        if (!string.IsNullOrWhiteSpace(activity.Recipient?.AadObjectId))
+        {
+            recipient["aadObjectId"] = activity.Recipient!.AadObjectId;
+        }
+
+        var agenticUserId = ReadRecipientProperty(activity, "agenticUserId");
+        if (!string.IsNullOrWhiteSpace(agenticUserId))
+        {
+            recipient["agenticUserId"] = agenticUserId;
+        }
 
         // agenticAppId / agenticAppBlueprintId identify which agent version answers the scheduled
         // run. The platform stamps them on inbound activities; fall back to configuration so a
