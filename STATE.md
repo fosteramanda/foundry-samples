@@ -810,3 +810,56 @@ C:\Users\fosteramanda\Manage-Routines.ps1 -Resume five-minute-test-email
 Still unproven downstream of the crash: whether `mcp_MailTools` actually sends, and
 whether the 401 on posting back to the conversation is only the error-reply path or would
 also block `delivery: chat` routines.
+
+---
+
+## v29 verified: crash fixed. Next blocker is identity, and it looks like a platform limit
+
+Verified on a genuine cold start (instance `e8a07f00-83b6-42dd-ac41-fe7994b549de`,
+started 10:05:05, i.e. actually running v29):
+
+| Time | Path | Exception |
+|---|---|---|
+| 09:04-09:06 | Amanda's chat turns | none - worked |
+| 09:10, 09:15, 09:30, 09:45 | scheduled runs on v28 | `ArgumentNullException` x4 |
+| 10:05 | scheduled run on v29 | `InvalidOperationException` (FIC) |
+
+**The null-Id crash is fixed.** The scheduled run now gets past `GetAgentFromRecipient`
+and reaches token acquisition, which is further than it has ever got.
+
+### New blocker
+
+```
+AADSTS7002203: No matching federated identity record found for presented assertion
+subject 'f3e89c82-f3c2-4a70-a7f8-d594ad11f265'
+```
+
+That subject is the agent **instance** identity (`agenticAppId` / instance client id),
+not the agent user. The same exchange succeeds on a normal chat turn - Amanda's 09:04
+turns produced no exceptions at all - so this is specific to the scheduled path.
+
+**Likely a platform constraint rather than our bug.** The Routines API stamps
+`"authorization": {"identity": "agent"}` on every routine, so a scheduled run executes as
+the agent identity, not on behalf of a user. The agent-USER federated credential exchange
+appears not to be available in that context. If that reading is right, then in a scheduled
+run the agent cannot obtain an agent-user token, and **every tool that depends on one is
+unavailable** - Work IQ A2A delegation and sending mail as the user included. That would
+make routines useful only for work the agent identity can do on its own, which is a much
+narrower feature than "run my morning summary".
+
+Not yet confirmed. To settle it, either check whether a federated identity credential can
+be registered for that subject, or ask the Foundry team whether user-identity token
+exchange is supported inside `invoke_agent_activityprotocol_api`. Worth asking before
+building around it - the answer decides whether routines can deliver personal email at all.
+
+### Operational finding worth keeping
+
+**A new agent version plus a traffic repin does not restart a running container.**
+Instance `296678b9` started 09:05 and was still executing v28 code at 09:45, across a v29
+deploy and a repin, while the endpoint reported `serving: v29`. Idle timeout is somewhere
+between 11 and 15 minutes: pausing the routine at ~09:47 left the container quiet, and by
+10:01 a resume produced a genuine cold start. `PATCH {"state":"disabled"}` is silently
+ignored - the response comes back `enabled`.
+
+So verifying a deploy requires either a cold start or a check that the running instance id
+changed. The routine is PAUSED again to stop the error loop.
