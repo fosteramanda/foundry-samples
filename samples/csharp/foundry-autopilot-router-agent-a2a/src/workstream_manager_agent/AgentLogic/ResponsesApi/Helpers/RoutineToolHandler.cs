@@ -525,20 +525,36 @@ public class RoutineToolHandler
             recipient["agenticUserId"] = agenticUserId;
         }
 
-        // agenticAppId / agenticAppBlueprintId identify which agent version answers the scheduled
-        // run. The platform stamps them on inbound activities; fall back to configuration so a
-        // routine can still be created if the inbound activity omits them.
+        // agenticAppId identifies which agent answers the scheduled run, and it is the value the
+        // runtime presents when exchanging for a token. It MUST come from the live activity.
+        //
+        // Do NOT fall back to the agent version's instance identity
+        // (FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID). Measured on this agent, the two differ:
+        // the inbound activity carries agenticAppId fa259cf9-..., while the instance identity is
+        // f3e89c82-.... A routine built with the latter is accepted, fires on schedule, and then
+        // fails every single run with
+        //   AADSTS7002203: No matching federated identity record found for presented assertion
+        //   subject 'f3e89c82-...'
+        // before the model ever runs. Nothing surfaces to the user; the mail simply never
+        // arrives. A routine that cannot authenticate is worse than one that was never created,
+        // so refuse instead of substituting a plausible-looking value.
         var agenticAppId = ReadRecipientProperty(activity, "agenticAppId")
-            ?? _configuration["AgenticAppId"]
-            ?? Environment.GetEnvironmentVariable("FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID");
+            ?? _configuration["AgenticAppId"];
         var blueprintId = ReadRecipientProperty(activity, "agenticAppBlueprintId")
             ?? _configuration["AgenticAppBlueprintId"]
             ?? Environment.GetEnvironmentVariable("FOUNDRY_AGENT_BLUEPRINT_CLIENT_ID");
 
-        if (!string.IsNullOrWhiteSpace(agenticAppId))
+        if (string.IsNullOrWhiteSpace(agenticAppId))
         {
-            recipient["agenticAppId"] = agenticAppId;
+            _logger.LogError(
+                "Cannot build a routine activity: the inbound recipient carries no agenticAppId. " +
+                "recipientId={RecipientId}. Refusing rather than substituting the instance identity, " +
+                "which does not authenticate on a scheduled run.",
+                activity.Recipient?.Id);
+            return null;
         }
+
+        recipient["agenticAppId"] = agenticAppId;
         if (!string.IsNullOrWhiteSpace(blueprintId))
         {
             recipient["agenticAppBlueprintId"] = blueprintId;
@@ -557,21 +573,70 @@ public class RoutineToolHandler
     }
 
     /// <summary>
-    /// Reads a non-standard property off the activity's recipient. The SDK's ChannelAccount does
-    /// not model agenticAppId, so it arrives in the extension-data bag.
+    /// Reads a property off the activity's recipient, tolerating however the SDK happens to
+    /// serialize it.
+    ///
+    /// Worth the care: a silent miss here does not fail, it produces a routine addressed to the
+    /// WRONG identity, which then fails once a minute forever with AADSTS7002203 and no
+    /// indication of why. Measured on this agent: the recipient carries
+    /// agenticAppId = fa259cf9-..., while the agent version's instance identity is
+    /// f3e89c82-... — different values, and only the first one authenticates.
+    ///
+    /// So match case-insensitively, and check the extension-data bag as well as the serialized
+    /// surface, because which of the two carries a given property depends on the SDK version.
     /// </summary>
     private static string? ReadRecipientProperty(IActivity activity, string property)
     {
         try
         {
             var json = JsonSerializer.Serialize(activity.Recipient);
-            var value = JsonNode.Parse(json)?[property]?.GetValue<string>();
-            return string.IsNullOrWhiteSpace(value) ? null : value;
+            if (JsonNode.Parse(json) is JsonObject obj)
+            {
+                foreach (var kv in obj)
+                {
+                    if (!string.Equals(kv.Key, property, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var value = kv.Value?.GetValue<string>();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        return value;
+                    }
+                }
+            }
         }
         catch
         {
-            return null;
+            // fall through to the properties bag
         }
+
+        try
+        {
+            if (activity.Recipient?.Properties != null)
+            {
+                foreach (var kv in activity.Recipient.Properties)
+                {
+                    if (!string.Equals(kv.Key, property, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var value = kv.Value.ToString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        return value.Trim('"');
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // no recoverable value
+        }
+
+        return null;
     }
 
     private async Task<(bool Ok, string? Response, string? Error)> SendAsync(
