@@ -918,3 +918,57 @@ was created from. It now carries them through when present, and logs the live re
 creation so the two can be compared directly. Whether the live activity even has those
 fields is still unmeasured — every activity captured so far has been a routine, and
 Amanda's real turns had aged out of App Insights before they could be inspected.
+
+---
+
+## Routines WORK end to end (2026-09-07, v31)
+
+Amanda received the email. Full chain proven: routine fires on schedule -> wakes a
+scaled-to-zero container -> acquires a token -> runs the model -> calls mcp_MailTools ->
+delivers to the inbox. Confirmed in logs (0 exceptions, 2 Responses API calls) and in
+Outlook ("Five-minute routine test", 15:20 PDT).
+
+### The real cause of AADSTS7002203 - it was ours, not the platform
+
+Earlier in this session the failure was attributed to a probable platform limitation:
+that a scheduled run executes as `"authorization": {"identity": "agent"}` and therefore
+cannot perform the agent-user token exchange. **That was wrong**, and a federated identity
+credential was nearly added to the blueprint on the strength of it. Amanda's Teams turn
+made the real comparison possible:
+
+```
+inbound Teams activity  recipient.agenticAppId : fa259cf9-76ee-45da-9729-764bbcc7129d
+agent version instance identity               : f3e89c82-f3c2-4a70-a7f8-d594ad11f265
+```
+
+Different identities. The routine was storing the second, because
+`ReadRecipientProperty` failed to read the value off the live activity and the code fell
+back to `FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID`. The FIC error named that exact subject
+all along.
+
+Substituting the correct value in the stored routine fixed it immediately - no identity
+change, no new credential. **The proposed FIC was not needed and would have masked a bug
+in this sample as a platform gap.**
+
+### Fixed in v31
+
+- `ReadRecipientProperty` matches case-insensitively and also checks the properties bag,
+  since which surface carries `agenticAppId` varies by SDK version.
+- The instance-identity fallback is removed entirely. When `agenticAppId` cannot be
+  resolved, creation is refused and logged rather than producing a routine that is
+  accepted, fires forever, and never authenticates.
+
+### Failure shape worth remembering
+
+The bad routine was accepted by the API, appeared correct in `GET /routines`, fired on
+time, and woke the container - then died before the model with nothing surfaced to the
+user. Every visible signal said healthy. Only the exceptions table showed it, and only the
+assertion subject in the error text identified which identity was wrong.
+
+### Operational notes
+
+- `Manage-Routines.ps1` (in the user profile) lists, shows, pauses, resumes and deletes
+  routines, and surfaces the delivery address so a wrong one is visible at a glance.
+- Routine `five-min-email-test` was deleted after the successful test. None remain.
+- A traffic repin does not restart a running container; verifying a deploy needs a cold
+  start or a check that the instance id changed.
