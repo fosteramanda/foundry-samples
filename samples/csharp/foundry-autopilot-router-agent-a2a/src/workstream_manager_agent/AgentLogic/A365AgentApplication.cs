@@ -317,7 +317,14 @@ public class A365AgentApplication : AgentApplication
             throw new ArgumentException("Activity must have a recipient and conversation.");
         }
 
-        var tenantId = Guid.TryParse(recipient.TenantId, out var parsedTenantId) ? parsedTenantId : Guid.Empty;
+        // A scheduled run's recipient carries no tenantId, but the conversation does. Falling
+        // back keeps the cross-tenant guard and token acquisition working on routine-driven
+        // turns; without it tenantId is Guid.Empty and those checks see a tenant-less activity.
+        var tenantId = Guid.TryParse(recipient.TenantId, out var parsedTenantId)
+            ? parsedTenantId
+            : Guid.TryParse(conversation.TenantId, out var parsedConversationTenantId)
+                ? parsedConversationTenantId
+                : Guid.Empty;
 
         // AAI
         var agenticAppId = Guid.TryParse(recipient.AgenticAppId, out var parsedAgenticAppId) ? parsedAgenticAppId : Guid.Empty;
@@ -326,11 +333,57 @@ public class A365AgentApplication : AgentApplication
 
         return new AgentMetadata
         {
-            UserId = Guid.Parse(agenticUserId),
+            UserId = ResolveAgentUserId(agenticUserId, recipient.Id),
             AgentId = agenticAppId,
-            AgentApplicationId = recipient.Properties.TryGetValue("agenticAppBlueprintId", out var agentAppBlueprintId) ? Guid.Parse(agentAppBlueprintId.ToString()) : Guid.TryParse(recipient.Id, out var parsedId) ? parsedId : Guid.Empty,
+            AgentApplicationId = recipient.Properties != null
+                && recipient.Properties.TryGetValue("agenticAppBlueprintId", out var agentAppBlueprintId)
+                && Guid.TryParse(agentAppBlueprintId.ToString(), out var parsedBlueprintId)
+                    ? parsedBlueprintId
+                    : Guid.TryParse(recipient.Id, out var parsedId) ? parsedId : Guid.Empty,
             TenantId = tenantId,
         };
+    }
+
+    /// <summary>
+    /// Resolves the agent user's directory object id from the activity's recipient.
+    ///
+    /// Why this is not just Guid.Parse: a scheduled run (a routine) delivers a SYNTHETIC
+    /// activity whose recipient carries only an MRI-style id plus the agentic app and blueprint
+    /// ids — no agenticUserId and no aadObjectId, both of which a real Teams activity supplies.
+    /// Parsing null threw ArgumentNullException out of GetAgentFromRecipient before any handler
+    /// ran, so every scheduled run died silently: the turn was lost, no model call, no email, and
+    /// the only visible symptom was a 401 from the catch block trying to post an error back.
+    ///
+    /// The id is recoverable from the MRI. Teams MRIs take the form "8:orgid:{objectId}", and the
+    /// trailing segment is the same GUID that aadObjectId carries on a real activity — verifiable
+    /// on any inbound message, where from.id "8:orgid:X" accompanies from.aadObjectId "X".
+    /// </summary>
+    private static Guid ResolveAgentUserId(string? agenticUserId, string? recipientId)
+    {
+        if (Guid.TryParse(agenticUserId, out var direct))
+        {
+            return direct;
+        }
+
+        if (!string.IsNullOrWhiteSpace(recipientId))
+        {
+            var delimiter = recipientId.LastIndexOf(':');
+            var candidate = delimiter >= 0 && delimiter < recipientId.Length - 1
+                ? recipientId[(delimiter + 1)..]
+                : recipientId;
+
+            if (Guid.TryParse(candidate, out var fromMri))
+            {
+                return fromMri;
+            }
+        }
+
+        // Fail loudly and specifically. Returning Guid.Empty would let the turn continue and then
+        // fail deeper in token acquisition, where the cause is far harder to see.
+        throw new ArgumentException(
+            $"Could not resolve the agent user id from the activity recipient. " +
+            $"agenticUserId/aadObjectId were absent and recipient.Id ('{recipientId}') " +
+            "does not contain a GUID.");
     }
 }
 
