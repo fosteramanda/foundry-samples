@@ -579,23 +579,38 @@ was restored to
 `azure-openai-agents-exp-nonprod-01` / tenant `72f988bf-…` / `fosteramanda@microsoft.com`,
 verified against a snapshot taken before any change.
 
-**Root cause: `AZURE_CONFIG_DIR` does not fully isolate on this machine (az 2.83.0).**
-The drift reproduced after the first repair, which made it diagnosable. The isolated
-`azureProfile.json` (760 b, 2 subscriptions) had not been written since login, while
-the default profile (112 KB, 253 subscriptions) was rewritten during a token call made
-with `AZURE_CONFIG_DIR` set — and the default config now contains three NotARealCo
-subscriptions. So the NotARealCo login landed in *both* directories, and operations
-against the isolated config can still flip the default active subscription.
+**Root cause: the WAM broker, not `AZURE_CONFIG_DIR` itself (corrected 2026-09-07).**
+An earlier note here blamed `AZURE_CONFIG_DIR` wholesale. That was wrong and made the
+problem look unfixable. Measured properly:
 
-**Do not rely on `AZURE_CONFIG_DIR` alone for tenant isolation here.** Safer pattern:
-pass `--subscription <id>` explicitly on every command so nothing depends on, or
-mutates, the active context; snapshot the default context first and re-verify at the
-end in a fresh process.
+- `AZURE_CONFIG_DIR` **does** isolate the profile and token cache — they are separate
+  files per directory, verified working.
+- The leak was **`az login` specifically**. On Windows the CLI authenticates through the
+  WAM broker, which registers the account at OS level, outside any config directory.
+  The account then became visible to the default config, which acquired four NotARealCo
+  subscriptions, one of which became active.
+- Ordinary commands run *with* the isolated config were verified **not** to
+  re-contaminate the default, before and after cleanup.
 
-**If other sessions ran against Azure during 2026-09-03 03:00–07:55 local, check which
-subscription they used** — the active default was NotARealCo for much of that window.
-Her Microsoft account and all 235 subscriptions remain present and signed in; only the
-*active* selection changed.
+So the dangerous operation is narrow: `az login`, and nothing else.
+
+**Cleaned.** `az logout --username amanda@notareal.co`, run with no `AZURE_CONFIG_DIR`
+set, removed all four leaked entries. Default is back to 235 Microsoft subscriptions,
+0 NotARealCo entries, correct active subscription. Profile backups at
+`azureProfile.json.bak-20260907-020624` in both config directories.
+
+**Durable fix.** `C:\Users\fosteramanda\az-notarealco.ps1` pins the isolated config,
+passes `--subscription` explicitly so nothing depends on the active context, refuses to
+run `az login` (the one operation that reaches past the config dir), and offers
+`-CheckDefault` to report contamination in both contexts. Note it deliberately has no
+`param()` block: any `[Parameter()]` attribute makes it an advanced function, and
+PowerShell then binds az's short flags to common parameters — `-o tsv` fails with
+"the parameter name 'o' is ambiguous".
+
+**Still true:** if other sessions ran against Azure during 2026-09-03 03:00–07:55 local,
+check which subscription they used. The active default was NotARealCo for part of that
+window. Her Microsoft account and all 235 subscriptions were never removed; only the
+*active selection* changed.
 
 ### Open
 
