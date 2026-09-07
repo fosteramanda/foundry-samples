@@ -654,3 +654,72 @@ does not establish absence. Likewise the `mcp_MailTools` URL shape is still unve
 an unauthenticated probe returns 401 for a deliberately nonsensical server name too,
 so auth precedes routing and 401 proves nothing. The health probe will settle it in the
 logs on the first real turn.
+
+---
+
+## Routines DO fire — but the scheduled run dies before the model (2026-09-07)
+
+Amanda created `five-minute-test-email` from Teams chat. Two big open questions are now
+answered, and one new defect is found.
+
+### Answered: routines fire, and they wake a sleeping container
+
+The container had no telemetry for 30 days. At 09:10:02 UTC the routine fired, the
+container woke, and the synthetic activity arrived with the instruction intact —
+including the **literal** address `amanda@notareal.co`, not the word "me". The
+create-time resolution works, which was the risky part of the design.
+
+### Answered: chat-driven routine creation works
+
+The agent built the routine itself from a sentence in Teams. `Manage-Routines.ps1`
+reads it back with the correct cron, timezone and embedded address.
+
+### New defect: the scheduled turn throws before the model runs
+
+```
+09:10:02  Received message activity: (null)      <- scheduled activities have NO activity Id
+09:10:02  POST .../v3/conversations/19:.../activities
+09:10:03  401  "The Access Token created to respond to a request from the agent
+                was rejected by the remote endpoint"
+09:10:02  System.ArgumentNullException: Value cannot be null. (Parameter 'input')
+```
+
+No `Responses API request` in that window and no DM-access-control log lines, so the
+turn died **before** any gate and before the model. Net effect: **no email is sent.**
+The same exception appears at 09:05:04, the routine's first fire, so it is consistent
+rather than a one-off.
+
+Two things are tangled here and should be separated when fixing:
+
+1. **`ArgumentNullException` (Parameter 'input')** — `input` is the parameter name used
+   by `Regex` methods. The inbound activity has a null `Id`, which is the obvious
+   difference between a scheduled activity and a real one. Not yet pinned to a line;
+   `AccessControlService` has no Regex call, so it is likely in the SDK's activity
+   processing or in a helper reached before the cross-tenant guard logs anything.
+2. **401 posting back to the conversation.** The reply attempt is almost certainly the
+   catch-block error message in `A365AgentApplication`, so it is a *consequence* of (1)
+   — but it is independently interesting: it means a scheduled run may not be able to
+   post into the conversation at all, which would matter for `delivery: chat` routines
+   even after (1) is fixed. A real chat turn at 09:06:02 posted successfully (201), so
+   this is specific to the scheduled path.
+
+`mcp_MailTools` attached cleanly — no quarantine, no preflight failure — so the mail
+server name and URL shape are probably fine. Untested beyond attachment, because the
+model never got far enough to call it.
+
+**The routine is PAUSED**, not deleted, so the definition survives for diagnosis. It was
+erroring every five minutes. Resume or delete with `Manage-Routines.ps1`.
+
+### Azure tenant isolation — root cause confirmed and fixed
+
+The WAM broker theory was proven, not assumed. `az logout --username amanda@notareal.co`
+(run with no config dir set) also invalidated the *isolated* session's ability to get new
+tokens, which only makes sense if the account lives at OS level. Setting
+`core.enable_broker_on_windows=false` **in the isolated config only**, then re-running
+`az login`, produced **0** NotARealCo entries in the default profile where the same login
+previously produced 4. Default is intact: 235 Microsoft subscriptions, correct active
+subscription.
+
+So: `AZURE_CONFIG_DIR` isolates fine; the broker was the leak; the broker is now off for
+this session's config. Helper: `C:\Users\fosteramanda\az-notarealco.ps1` (`-CheckDefault`
+reports both contexts).
