@@ -723,3 +723,90 @@ subscription.
 So: `AZURE_CONFIG_DIR` isolates fine; the broker was the leak; the broker is now off for
 this session's config. Helper: `C:\Users\fosteramanda\az-notarealco.ps1` (`-CheckDefault`
 reports both contexts).
+
+---
+
+## Session update - 2026-09-07 (Workstream Manager ADO authentication)
+
+Examined `samples\csharp\foundry-workstream-manager-autopilot-agent`, not the
+A2A router. Its factory obtains a Foundry-audience token through
+`AgentTokenCredential`, using the agent user's ID from the activity recipient,
+and attaches it to the toolbox. It does not use the human chat sender's token.
+The setup describes the ADO connection as Microsoft-managed OAuth with identity
+passthrough (`UserEntraToken`). Foundry project access does not replace ADO organization
+and project access for the identity passed to ADO.
+
+The existing `scripts\create-blueprintsp-oauth2-grants.ps1` also grants ADO MCP
+`user_impersonation` and declares it inheritable on the blueprint. Whether that
+extra grant is necessary for the Microsoft-managed connection remains open;
+its presence in the script is not proof of necessity. No application code,
+permission grants, identities, publishing, or deployments were changed.
+
+---
+
+## The null-Id crash: fixed in code (v29), NOT yet verified running (2026-09-07)
+
+### The bug, pinned exactly
+
+Stack trace from App Insights:
+
+```
+System.Guid.Parse
+  <- A365AgentApplication.ConstructAgentMetadataFromActivity
+     <- GetAgentFromRecipient
+```
+
+`A365AgentApplication.cs` line 329:
+
+```csharp
+var agenticUserId = recipient.AgenticUserId ?? recipient.AadObjectId;
+UserId = Guid.Parse(agenticUserId),          // <-- both null on a scheduled activity
+```
+
+A routine's synthetic recipient carries only `id`, `agenticAppId` and
+`agenticAppBlueprintId`. A real Teams activity also supplies `aadObjectId`; the scheduled
+one does not. `Guid.Parse(null)` throws `ArgumentNullException (Parameter 'input')` inside
+`GetAgentFromRecipient`, before any gate, before the model, before the mail tool. The
+turn is lost. The 401 seen afterwards is the catch block trying to post an error reply.
+
+### The fix (v29)
+
+`ResolveAgentUserId(agenticUserId, recipient.Id)` — falls back to extracting the GUID
+from the MRI. Teams MRIs are `8:orgid:{objectId}`, and the trailing segment is the same
+GUID `aadObjectId` carries; verifiable on any real message, where
+`from.id = "8:orgid:X"` accompanies `from.aadObjectId = "X"`. Validated against five
+inputs including the exact failing value and a garbage case that must still throw.
+
+Two adjacent fragilities fixed at the same time: `Guid.Parse` on the blueprint id became
+`TryParse` with a null-safe `Properties` check, and `tenantId` now falls back to
+`conversation.TenantId` (scheduled recipients carry no tenantId, so it was `Guid.Empty`).
+
+### Why it is still unverified — and this matters beyond this bug
+
+**A new agent version plus a traffic repin does NOT restart a running container.**
+Measured: container instance `296678b9-9f0b-47d7-bf8f-8f0d827e9944` started 09:05:03 and
+was still serving at 09:45:01, across a v29 deploy at ~09:24, a traffic repin, and an
+11-minute idle gap. The endpoint reported `serving: v29` throughout while the process
+kept executing v28 code — the stack trace still showed `Guid.Parse`, which v29 removes.
+
+`PATCH {"state":"disabled"}` was rejected silently: the response came back `enabled`.
+
+Consequence to keep in mind: **any "deployed and verified" claim in this session made
+while the container was already warm may have been testing older code.** Most of the
+session the container was cold (30 days idle), so cold starts did pick up new versions —
+but the two are worth distinguishing when something behaves unexpectedly.
+
+### To finish this
+
+The routine is PAUSED so it stops erroring every five minutes. Once the container really
+scales to zero (idle timeout is longer than 11 minutes and was not measured), resuming it
+will cold-start on v29 and the scheduled run should reach the model and send mail.
+
+```powershell
+C:\Users\fosteramanda\Manage-Routines.ps1 -Resume five-minute-test-email
+# then check: exceptions gone, a Responses API request appears, mail arrives
+```
+
+Still unproven downstream of the crash: whether `mcp_MailTools` actually sends, and
+whether the 401 on posting back to the conversation is only the error-reply path or would
+also block `delivery: chat` routines.
