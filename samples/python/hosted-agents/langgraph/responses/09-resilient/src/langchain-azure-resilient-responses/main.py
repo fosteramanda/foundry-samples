@@ -90,7 +90,6 @@ def _install_otel_langgraph_callback_compatibility() -> None:
 
 
 _AZURE_AI_SCOPE = "https://ai.azure.com/.default"
-_FOUNDRY_CHECKPOINT_STORE_PREFIX = "langchain-azure/resilient-responses"
 _SENSITIVE_TOOLS = {"book_trip"}
 _SYSTEM_PROMPT = """You are a concise trip-planning assistant.
 For a trip request, first call search_flights and search_hotels to gather options.
@@ -295,8 +294,5 @@ def create_graph():
     # Resilient handlers are re-invoked after a crash. Keep durable workflow
     # data in graph state and make every node's external effects idempotent.
     _install_otel_langgraph_callback_compatibility()
-    checkpointer = FoundryCheckpointSaver(
-        store_name_prefix=_FOUNDRY_CHECKPOINT_STORE_PREFIX,
-        user_isolation=True,
-    )
+    checkpointer = FoundryCheckpointSaver(user_isolation=True)
     return build_graph(checkpointer, build_real_model())

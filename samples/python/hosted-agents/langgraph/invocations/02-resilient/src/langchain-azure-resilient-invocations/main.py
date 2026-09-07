@@ -95,7 +95,6 @@ def _install_otel_langgraph_callback_compatibility() -> None:
 
 
 _AZURE_AI_SCOPE = "https://ai.azure.com/.default"
-_FOUNDRY_CHECKPOINT_STORE_PREFIX = "langchain-azure/resilient-invocations"
 _SENSITIVE_TOOLS = {"book_trip"}
 _SYSTEM_PROMPT = """You are a concise trip-planning assistant.
 For a trip request, first call search_flights and search_hotels to gather options.
@@ -315,10 +314,7 @@ async def amain() -> None:
         resilient_background=True,
         steerable_conversations=env_bool("STEERABLE_CONVERSATIONS"),
     )
-    checkpointer = FoundryCheckpointSaver(
-        store_name_prefix=_FOUNDRY_CHECKPOINT_STORE_PREFIX,
-        user_isolation=True,
-    )
+    checkpointer = FoundryCheckpointSaver(user_isolation=True)
     graph = build_graph(checkpointer, build_real_model())
     server = InvocationsHostServer(graph, options=options)
     await server.run_async(port=int(os.environ.get("PORT", "8088")))

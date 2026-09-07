@@ -8,7 +8,7 @@ Unlike the Responses protocol, the Invocations protocol does **not** surface int
 
 ### LangGraph Agent
 
-The agent is built with `langchain.agents.create_agent(model, tools=[...], checkpointer=MemorySaver())`, which returns a compiled LangGraph runnable implementing the standard ReAct loop. The agent registers two local tools:
+The agent is built with `langchain.agents.create_agent(model, tools=[...], checkpointer=FoundryCheckpointSaver(...))`, which returns a compiled LangGraph runnable implementing the standard ReAct loop. The agent registers two local tools:
 
 - `get_current_time` — returns the current UTC time.
 - `calculator` — evaluates a simple math expression.
@@ -19,7 +19,7 @@ See [main.py](src/langgraph-chat-invocations/main.py) for the full implementatio
 
 The exported graph is registered in `langgraph.json` and loaded by `langchain_azure_ai.agents.hosting.run`, which exposes the Invocations endpoint at `/invocations` and supports both non-streaming (single JSON response) and streaming (`{"stream": true}` SSE token deltas) modes.
 
-Multi-turn continuity is provided by the LangGraph `MemorySaver` checkpointer: the host wires the resolved `agent_session_id` into `RunnableConfig.configurable.thread_id`, so each session's history is preserved across turns. Replace `MemorySaver` with a durable checkpointer (Redis, Cosmos DB, etc.) for production.
+Multi-turn continuity is provided by `FoundryCheckpointSaver`: the host wires the resolved `agent_session_id` into `RunnableConfig.configurable.thread_id`, so each session's history is preserved across turns and process restarts. The saver uses Foundry State Store when hosted and a local file-backed store during local development.
 
 ## Option 1: Azure Developer CLI (`azd`)
 

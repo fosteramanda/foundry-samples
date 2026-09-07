@@ -28,7 +28,7 @@ Use the configuration-driven `langchain_azure_ai.agents.hosting.run` entrypoint 
 | --- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | [Chat](invocations/01-langgraph-chat/)          | A minimal LangGraph agent with two local tools, demonstrating session state via `agent_session_id` (URL param / `x-agent-session-id` response header) backed by a LangGraph checkpointer. |
 | 2   | [Resilient](invocations/02-resilient/)          | Resilient Invocations with durable checkpoints, recovery, cancellation, steering, and human approval. Uses the host class for options and server-lifetime resources.                    |
-| 3   | [Run](invocations/03-run/)                      | A minimal configuration-driven LangGraph agent hosted over the Invocations protocol with the `langchain_azure_ai.agents.hosting.run` entrypoint and in-process `MemorySaver` state.     |
+| 3   | [Run](invocations/03-run/)                      | A minimal configuration-driven LangGraph agent hosted over the Invocations protocol with the `langchain_azure_ai.agents.hosting.run` entrypoint and durable Foundry checkpoint state. |
 | 4   | [Custom Host](invocations/04-custom-host/)      | Extends a multi-turn chat agent with a locale header and custom location messages using `InvocationsHostServer`.                                                                     |
 
 ### Agent-to-Agent (A2A)

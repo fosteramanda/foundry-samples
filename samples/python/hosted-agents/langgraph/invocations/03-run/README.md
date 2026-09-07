@@ -7,10 +7,11 @@ A [LangGraph](https://langchain-ai.github.io/langgraph/) agent hosted using the 
 > point `langgraph.json` at its exported graph, and launch the hosting
 > entrypoint with the desired protocol.
 
-Multi-turn continuity is provided by a LangGraph `MemorySaver`
-checkpointer: the resolved `agent_session_id` is forwarded to the graph
-as `RunnableConfig.configurable.thread_id`, so each session's history is
-preserved in process memory.
+Multi-turn continuity is provided by `FoundryCheckpointSaver`: the resolved
+`agent_session_id` is forwarded to the graph as
+`RunnableConfig.configurable.thread_id`, so each session's history is preserved
+across process restarts. The saver uses Foundry State Store when hosted and a
+local file-backed store during local development.
 
 ## How It Works
 
@@ -19,8 +20,9 @@ preserved in process memory.
 The agent uses `langchain_openai.ChatOpenAI` with an Azure bearer token
 provider from `DefaultAzureCredential` and an OpenAI-compatible endpoint
 from `azure.ai.projects.AIProjectClient` (`az login` is enough for local
-development). The graph is the same no-tool `create_agent` graph with
-`MemorySaver` used by the other minimal Invocations samples in this repo.
+development). The graph is a minimal no-tool `create_agent` graph that uses the
+same durable Foundry checkpointing approach as the other Invocations samples in
+this repo.
 
 See [src/langgraph-run-invocations/main.py](src/langgraph-run-invocations/main.py)
 for the graph and [src/langgraph-run-invocations/langgraph.json](src/langgraph-run-invocations/langgraph.json)

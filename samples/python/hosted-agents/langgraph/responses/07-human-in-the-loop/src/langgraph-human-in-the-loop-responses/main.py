@@ -24,8 +24,8 @@ Three review decisions are supported:
   back to the ``draft`` node with the feedback appended to the
   revision history.
 
-State is persisted by an ``InMemorySaver`` checkpointer keyed by the
-``conversation`` id, so follow-up requests continue the paused run.
+State is persisted by ``FoundryCheckpointSaver`` and keyed by the
+``conversation`` id, so paused runs survive process restarts.
 """
 
 from __future__ import annotations
@@ -38,11 +38,12 @@ from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 from typing_extensions import TypedDict
+
+from langchain_azure_ai.agents.hosting import FoundryCheckpointSaver
 
 load_dotenv()
 
@@ -128,7 +129,8 @@ def _build_graph(model: ChatOpenAI):
     builder.add_node("await_approval", await_approval)
     builder.add_edge(START, "draft")
     builder.add_edge("draft", "await_approval")
-    return builder.compile(checkpointer=InMemorySaver())
+    checkpointer = FoundryCheckpointSaver(user_isolation=True)
+    return builder.compile(checkpointer=checkpointer)
 
 
 def create_graph():

@@ -5,10 +5,9 @@
 Exports a LangGraph agent for the configuration-driven
 `langchain_azure_ai.agents.hosting.run` entrypoint.
 
-Conversation state is persisted server-side by a LangGraph MemorySaver
-checkpointer keyed by `agent_session_id` (wired by the host into
-`RunnableConfig.configurable.thread_id`). Replace MemorySaver with a
-durable checkpointer (Redis, Cosmos DB, etc.) for production.
+Conversation state is persisted server-side by ``FoundryCheckpointSaver``
+and keyed by ``agent_session_id`` (wired by the host into
+``RunnableConfig.configurable.thread_id``).
 """
 
 from __future__ import annotations
@@ -23,7 +22,8 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
+
+from langchain_azure_ai.agents.hosting import FoundryCheckpointSaver
 
 load_dotenv()
 
@@ -69,5 +69,5 @@ def _build_chat_model() -> ChatOpenAI:
 graph = create_agent(
     _build_chat_model(),
     tools=[get_current_time, calculator],
-    checkpointer=MemorySaver(),
+    checkpointer=FoundryCheckpointSaver(user_isolation=True),
 )
