@@ -7,13 +7,27 @@ using WorkstreamManager.Models;
 using WorkstreamManager.Services;
 
 /// <summary>
-/// Records which meetings the autopilot has been asked to follow, and separately, whether it has
+/// Records which meetings the autopilot has been invited to, and separately, whether it has
 /// been permitted to use what was said in them.
 ///
-/// Why the permission is a separate act from the association: Teams can only grant meeting access
-/// per organizer, never per meeting. An application access policy naming this agent and that
-/// organizer opens every meeting that person runs, all at once. The finer control, "this meeting
-/// yes, last Tuesday's one to one no", does not exist in the platform, so it has to exist here.
+/// The autopilot is invited like a person. Its agent user account is a real directory user
+/// with its own mailbox and calendar, so an organizer adds officeofamanda@... to the invite
+/// exactly as they would a colleague. Everything below therefore reads the AGENT'S OWN
+/// calendar, never the manager's.
+///
+/// That distinction is the whole design. An earlier version of this handler resolved the
+/// manager's mailbox and looked for meetings there, which is the model the mailbox tools use
+/// because those act on the manager's behalf. It is the wrong model here: it made the agent a
+/// third party reading someone else's meeting, which needs tenant-wide application permissions
+/// that Entra refuses to grant to agent identities at all
+/// ("The specified app role cannot be granted to agent identities"). Being an attendee in its
+/// own right sidesteps that entirely, and it is also what the organizer expects when they add
+/// the autopilot to the invite.
+///
+/// Agent identity and agent user account are different objects and are not interchangeable.
+/// The identity is the service principal that authenticates; the user account is the member of
+/// the organization that gets invited, has a mailbox, and shows up in the attendee list.
+/// AgentMetadata.UserId below is the USER account.
 ///
 /// Two flags gate ingestion and both are required:
 ///
@@ -23,10 +37,6 @@ using WorkstreamManager.Services;
 /// They are deliberately not one field. The organizer approving is not the same event as the
 /// room being informed, and an organizer cannot consent on behalf of the other attendees. A
 /// design that collapses them reads as consent while only ever having recorded permission.
-///
-/// This handler intentionally does no transcript reading. It is the gate, not the door. At the
-/// time of writing the door is closed anyway: NotARealCo has Graph transcript access turned off
-/// at tenant level, which returns GraphAccessToTranscriptsDisabled regardless of app permissions.
 /// </summary>
 public class MeetingRegistryToolHandler
 {
@@ -37,8 +47,8 @@ public class MeetingRegistryToolHandler
     private readonly Guid _agentUserId;
     private readonly MeetingRegistryStore _store;
 
-    private string? _managerMailbox;
-    private bool _managerResolved;
+    private string? _agentMailbox;
+    private bool _mailboxResolved;
 
     public MeetingRegistryToolHandler(
         AgentMetadata agentMetadata,
@@ -78,11 +88,11 @@ public class MeetingRegistryToolHandler
             {
                 "type": "function",
                 "name": "track_meeting",
-                "description": "Starts following a meeting on the manager's calendar so it can later be recapped. This ONLY registers the meeting. It does NOT give permission to read what was said: tracking always starts with capture switched off, and the user must approve it separately. Use this when the user asks you to follow, track, watch, or take notes on a meeting.",
+                "description": "Registers a meeting YOU WERE INVITED TO so it can later be recapped. Looks at your own calendar, not anyone else's: someone must have added you to the invite first, the same way they would add a colleague. This ONLY registers the meeting. It does NOT give permission to read what was said: tracking always starts with capture switched off, and the organizer must approve it separately. Use this when the user asks you to follow, track, watch, or take notes on a meeting.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "subject": { "type": "string", "description": "All or part of the meeting subject as it appears on the calendar." },
+                        "subject": { "type": "string", "description": "All or part of the meeting subject as it appears on your calendar." },
                         "on_or_after": { "type": "string", "description": "Optional ISO 8601 date to start searching from, e.g. 2026-09-08. Defaults to 30 days ago." },
                         "on_or_before": { "type": "string", "description": "Optional ISO 8601 date to search until. Defaults to 30 days ahead." }
                     },
@@ -177,11 +187,11 @@ public class MeetingRegistryToolHandler
             return $"Could not parse arguments for {toolName}.";
         }
 
-        var mailbox = await ResolveManagerMailboxAsync();
+        var mailbox = await ResolveAgentMailboxAsync();
         if (string.IsNullOrWhiteSpace(mailbox))
         {
-            return "I could not work out whose calendar to look at. My user account has no manager set in the "
-                 + "directory. Tell the user plainly rather than guessing an address.";
+            return "I could not resolve my own mailbox, so I cannot see which meetings I was invited to. "
+                 + "Tell the user plainly rather than guessing.";
         }
 
         return toolName switch
@@ -225,8 +235,10 @@ public class MeetingRegistryToolHandler
 
         if (matches.Count == 0)
         {
-            return $"No Teams meeting matching '{subject}' was found on {mailbox}'s calendar between "
-                 + $"{from:yyyy-MM-dd} and {to:yyyy-MM-dd}. Do not invent one; ask the user to check the subject or the dates.";
+            return $"No Teams meeting matching '{subject}' is on my calendar between "
+                 + $"{from:yyyy-MM-dd} and {to:yyyy-MM-dd}. I can only recap meetings I was invited to. "
+                 + "Tell the user to add me to the meeting invite, the same way they would add a colleague, "
+                 + "and then ask again. Do not invent a meeting and do not look at anyone else's calendar.";
         }
 
         if (matches.Count > 1)
@@ -246,12 +258,15 @@ public class MeetingRegistryToolHandler
                  + "track it by. Tell the user it cannot be tracked rather than storing a partial record.";
         }
 
-        var organizer = ev?["organizer"]?["emailAddress"]?["address"]?.GetValue<string>() ?? mailbox;
-        var existing = await _store.GetAsync(organizer, threadId);
+        // Partitioned by the agent's own mailbox, because that is whose calendar these meetings are
+        // on and what list_tracked_meetings reads back. The organizer is kept as data: it is who must
+        // approve capture, but it is not the key.
+        var organizer = ev?["organizer"]?["emailAddress"]?["address"]?.GetValue<string>() ?? string.Empty;
+        var existing = await _store.GetAsync(mailbox, threadId);
 
         var entity = existing ?? new TrackedMeetingEntity
         {
-            PartitionKey = MeetingRegistryStore.ToPartitionKey(organizer),
+            PartitionKey = MeetingRegistryStore.ToPartitionKey(mailbox),
             RowKey = MeetingRegistryStore.ToRowKey(threadId),
         };
 
@@ -552,39 +567,40 @@ public class MeetingRegistryToolHandler
     }
 
     /// <summary>
-    /// The manager relationship on the agent's own user account. The agent user account and the
-    /// agent identity are different objects; this is deliberately the user account, because a
-    /// manager is a directory relationship between people and their autopilots.
+    /// The autopilot's OWN mailbox, from its agent user account. Not the manager's.
+    ///
+    /// The agent is an attendee in its own right, so the meetings it may recap are the ones on
+    /// its own calendar, put there by someone inviting it. Reading the manager's calendar here
+    /// would let it recap meetings it was never invited to, which is both wrong and unnecessary.
     /// </summary>
-    private async Task<string?> ResolveManagerMailboxAsync()
+    private async Task<string?> ResolveAgentMailboxAsync()
     {
-        if (_managerResolved)
+        if (_mailboxResolved)
         {
-            return _managerMailbox;
+            return _agentMailbox;
         }
 
-        _managerResolved = true;
-
-        var configured = _configuration["ManagerMailboxUpn"];
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            _managerMailbox = configured.Trim();
-            return _managerMailbox;
-        }
+        _mailboxResolved = true;
 
         var (ok, response, error) = await SendGraphAsync(
             HttpMethod.Get,
-            $"users/{_agentUserId}/manager?$select=mail,userPrincipalName,displayName");
+            $"users/{_agentUserId}?$select=mail,userPrincipalName,displayName");
 
         if (!ok)
         {
-            _logger.LogWarning("Could not resolve the agent's manager for the meeting registry: {Error}", error);
+            _logger.LogWarning("Could not resolve the agent's own mailbox for the meeting registry: {Error}", error);
             return null;
         }
 
         var node = JsonNode.Parse(response ?? "{}");
-        _managerMailbox = node?["mail"]?.GetValue<string>() ?? node?["userPrincipalName"]?.GetValue<string>();
-        return _managerMailbox;
+        _agentMailbox = node?["mail"]?.GetValue<string>() ?? node?["userPrincipalName"]?.GetValue<string>();
+
+        _logger.LogInformation(
+            "Meeting registry acting as the agent user {Mailbox} ({Name}), reading its own calendar.",
+            _agentMailbox,
+            node?["displayName"]?.GetValue<string>());
+
+        return _agentMailbox;
     }
 
     private async Task<(bool Ok, string? Response, string? Error)> SendGraphAsync(

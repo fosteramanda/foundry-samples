@@ -1173,3 +1173,43 @@ verification:
   "Approve capture for Design review"  -> on, still refuses, notice outstanding
   "Recap the Design review"            -> refuses, and naming which gate is missing is
                                           the correct result, not a bug
+
+### Corrected: the agent is INVITED, it does not read the manager's calendar (v36)
+
+Amanda's ruling: "it's an agent user so it can be invited directly like a human."
+
+The first implementation was wrong and she was right to stop it. It resolved the MANAGER'S
+mailbox and looked for meetings there, copying the model the mailbox tools use. Those tools
+act on the manager's behalf, so that model is correct for them and wrong here. It turned the
+autopilot into a third party reading someone else's meeting, which needs tenant-wide
+application permissions that Entra refuses to grant to agent identities at all.
+
+The agent USER account is a directory member with its own mailbox and calendar:
+
+```
+Office of Amanda   officeofamanda@notareal.co
+  agent user account : e27199b1-e82b-4b4d-b178-d1648c335dfb
+  agent identity  SP : fa259cf9-76ee-45da-9729-764bbcc7129d
+```
+
+Those are different objects and this session conflated them, which is the exact error
+CANON.md warns about. Someone adds officeofamanda@notareal.co to a meeting invite the way
+they would add a colleague, and the agent then recaps a meeting it was actually invited to.
+Being an attendee in its own right removes the whole application-permission problem: no
+access policy, no RSC manifest change, no third-party access to anyone's calendar.
+
+Note it is invited, not attending. It never joins the call and never appears in the roster.
+
+Also fixed a partition bug this surfaced: meetings were written under the organizer's
+partition key and listed back under the caller's, so every tracked meeting would have
+vanished from list_tracked_meetings. Both are now the agent's own mailbox, with the
+organizer kept as data since the organizer is who approves capture.
+
+The delegated OnlineMeetingTranscript.Read.All grant made earlier on the agent identity is
+probably inert and should be reviewed: for the app-installed-to-meeting resource the docs
+say "Delegated: Not supported", and delegated otherwise means the signed-in user's own
+meetings. The access policy OfficeOfAmanda-Transcripts is likewise probably unnecessary
+under this model. Neither was removed, but neither should be assumed load-bearing.
+
+Deployed v36, 58/58 preflight. Three new assertions guard the corrected model, including
+that ResolveManagerMailboxAsync does not come back.
