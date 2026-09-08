@@ -78,7 +78,7 @@ terraform apply -var-file=terraform.tfvars
 
 - To access your Foundry resource securely, use a VM, VPN, or ExpressRoute connected to the VNet
 - Public network access is completely disabled
-- The agent subnet must use RFC1918 Class B or Class C address space
+- Use only supported RFC 1918 or RFC 6598 address space. For RFC 1918, use addresses within `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`. For RFC 6598 (CGNAT), use addresses within `100.64.0.0/10`, excluding `100.100.0.0/17`, `100.100.192.0/19`, and `100.100.224.0/19`. Public IP ranges aren't supported.
 - The agent subnet is delegated to `Microsoft.App/environments` for VNet injection
 - This is a **basic** agent setup — for standard agent setup with BYO resources, see template `15a`
 

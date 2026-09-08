@@ -39,9 +39,7 @@ Use this template when you need:
 
 ### IP Range Support
 
-> Private Class A subnet support (10.x.x.x) is GA and available in: **Australia East, Brazil South, Canada East, East US, East US 2, France Central, Germany West Central, Italy North, Japan East, South Africa North, South Central US, South India, Spain Central, Sweden Central, UAE North, UK South, West Europe, West US, West US 3.**
->
-> Private Class B (172.16.x.x) and C (192.168.x.x) subnet support is GA in all regions supported by Microsoft Foundry Agent Service.
+> Use only supported RFC 1918 or RFC 6598 address space. For RFC 1918, use addresses within `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`. For RFC 6598 (CGNAT), use addresses within `100.64.0.0/10`, excluding `100.100.0.0/17`, `100.100.192.0/19`, and `100.100.224.0/19`. Public IP ranges aren't supported.
 
 ---
 
@@ -150,13 +148,12 @@ Use this template when you need:
 
 3. Ensure the VNet address space does not overlap with:
    - Existing networks in your Azure environment
-   - Reserved IP ranges: `169.254.0.0/16`, `172.30.0.0/16`, `172.31.0.0/16`, `192.0.2.0/24`, `0.0.0.0/8`, `127.0.0.0/8`, `100.100.0.0/17`, `100.100.192.0/19`, `100.100.224.0/19`, `100.64.0.0/11`
+   - Reserved IP ranges: `169.254.0.0/16`, `172.30.0.0/16`, `172.31.0.0/16`, `192.0.2.0/24`, `0.0.0.0/8`, `127.0.0.0/8`, `100.100.0.0/17`, `100.100.192.0/19`, `100.100.224.0/19`
    - Peered VNets or on-premises address spaces
 
 > **Notes:**
 > - If you do not provide an existing VNet, the template creates a new one with the default address spaces above.
 > - The agent subnet must be exclusively delegated to `Microsoft.App/environments` and cannot be used by any other Azure resources.
-> - For Class A IP ranges (10.x.x.x), only the [regions listed above](#ip-range-support) are supported.
 
 ---
 
@@ -429,7 +426,7 @@ If you need to manually clean up:
 
 1. The delegated agent subnet must be exclusively used by a single Foundry account. It cannot be shared across accounts. A **Service Association Link (SAL)** is placed on the subnet during account creation. The SAL has `allowDelete: false` and may take up to 30 minutes to be released after the account is deleted and purged.
 2. The Foundry resource and the VNet must be in the same Azure region. BYO backend resources (Storage, Cosmos DB, AI Search) may be in different regions.
-3. For the VNet IP range, you may use any Private Class A, B, or C range. Class A (10.x.x.x) is only supported in [specific regions](#ip-range-support). Do not use ranges that overlap with the reserved ranges listed in [Networking Requirements](#networking-requirements).
+3. Use only supported RFC 1918 or RFC 6598 address space. For RFC 1918, use addresses within `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`. For RFC 6598 (CGNAT), use addresses within `100.64.0.0/10`, excluding `100.100.0.0/17`, `100.100.192.0/19`, and `100.100.224.0/19`. Public IP ranges aren't supported.
 4. All projects within the same Foundry account share model deployments. Per-project model isolation is not supported.
 5. Cosmos DB is deployed as single-region. Multi-region replication must be configured manually post-deployment.
 6. When using BYO resources, private endpoints are still created by this template. A random suffix is added to avoid naming collisions with existing private endpoints.
