@@ -24,6 +24,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly WorkIqA2AToolHandler _workIqA2ATools;
     private readonly RoutineToolHandler _routineTools;
     private readonly ManagerMailboxToolHandler _managerMailboxTools;
+    private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
     private readonly TeamsActivityHelper _teamsHelper;
     private readonly AccessControlService _accessControl;
     private readonly AddressedToAgentGate _addressedToAgentGate;
@@ -40,7 +41,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         string? graphAccessToken = null,
         ConversationStateStore? conversationState = null,
         AgentTokenHelper? tokenHelper = null,
-        PendingDelegationStore? pendingDelegations = null)
+        PendingDelegationStore? pendingDelegations = null,
+        MeetingRegistryStore? meetingRegistry = null)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -75,6 +77,16 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
         _managerMailboxTools = new ManagerMailboxToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
         _responsesApiClient.ManagerMailboxEnabled = _managerMailboxTools.IsEnabled;
+
+        // Only constructed when durable storage exists. A capture decision that cannot be written
+        // down must not be offered at all, because the agent would otherwise report a permission
+        // it has no record of and cannot honour on the next turn.
+        if (meetingRegistry != null)
+        {
+            _meetingRegistryTools = new MeetingRegistryToolHandler(
+                agentMetadata, _logger, httpClient, _configuration, graphAccessToken, meetingRegistry);
+            _responsesApiClient.MeetingRegistryEnabled = _meetingRegistryTools.IsEnabled;
+        }
         // Derived from the handler itself rather than re-reading config, so the prompt can never
         // describe a tracker whose tools were not attached.
         _responsesApiClient.WorkItemsEnabled = _workItemTools.GetToolDefinitions().Count > 0;
@@ -138,6 +150,10 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
         tools.AddRange(_routineTools.GetToolDefinitions());
         tools.AddRange(_managerMailboxTools.GetToolDefinitions());
+        if (_meetingRegistryTools != null)
+        {
+            tools.AddRange(_meetingRegistryTools.GetToolDefinitions());
+        }
         return tools;
     }
 
@@ -149,7 +165,10 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         => await _workItemTools.TryExecuteAsync(toolName, arguments)
            ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
            ?? await _routineTools.TryExecuteAsync(toolName, arguments)
-           ?? await _managerMailboxTools.TryExecuteAsync(toolName, arguments);
+           ?? await _managerMailboxTools.TryExecuteAsync(toolName, arguments)
+           ?? (_meetingRegistryTools != null
+                ? await _meetingRegistryTools.TryExecuteAsync(toolName, arguments)
+                : null);
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {

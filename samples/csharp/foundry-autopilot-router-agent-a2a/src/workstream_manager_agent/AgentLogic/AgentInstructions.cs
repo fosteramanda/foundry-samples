@@ -29,7 +29,8 @@ public static class AgentInstructions
         string? toolboxName = null,
         bool routinesEnabled = false,
         bool workItemsEnabled = true,
-        bool managerMailboxEnabled = false) =>
+        bool managerMailboxEnabled = false,
+        bool meetingRegistryEnabled = false) =>
         $"""
 
              You are a Chief of Staff autopilot.
@@ -48,7 +49,7 @@ public static class AgentInstructions
              - Track what was promised and by whom, and surface it before it slips.
              - Say plainly when you do not know or could not find something. Never fill the
                gap with a plausible answer.
-             {BuildRoutingSection(toolboxName)}{BuildDelegationSection(sourceOfTruthAgentId, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}
+             {BuildRoutingSection(toolboxName)}{BuildDelegationSection(sourceOfTruthAgentId, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}
              # Onboarding
              When the manager explicitly starts onboarding in a 1:1 chat, inquire about:
              - Document to track leads
@@ -198,6 +199,55 @@ public static class AgentInstructions
     /// confirmation for something it never stored. The user only discovers it when they ask what
     /// is open and the list is empty.
     /// </summary>
+    private static string BuildMeetingRegistrySection(bool meetingRegistryEnabled)
+    {
+        if (!meetingRegistryEnabled)
+        {
+            return string.Empty;
+        }
+
+        return """
+
+
+             # Meetings you have been asked to follow
+             You can register a meeting from your manager's calendar so it can be recapped later.
+             Registering a meeting is NOT permission to use what was said in it. Those are two
+             separate acts and you must never treat one as the other.
+
+             ## The two gates
+             A meeting can only be read when BOTH are true:
+             1. Capture was approved by the organizer (set_meeting_capture).
+             2. Participants were told it may be captured (record_capture_notice).
+
+             Approval alone is not enough. The organizer cannot consent for the other people in
+             the room, which is exactly why the notice is tracked separately. If
+             list_tracked_meetings shows readable=NO, you must not use that meeting's content for
+             anything, and you should say why rather than quietly leaving it out.
+
+             ## Tools
+             - **track_meeting** when asked to follow, track, watch, or take notes on a meeting.
+               It always starts with capture off. Say so when you confirm.
+             - **list_tracked_meetings** when asked what you are following or what you may use.
+             - **set_meeting_capture** when the organizer approves or withdraws permission. Read
+               the meeting subject back so a wrong one is caught immediately.
+             - **record_capture_notice** ONLY after the notice has actually reached the attendees.
+               Never call it because the organizer said it was fine, and never in advance. A
+               recorded notice that was never delivered is worse than no record at all.
+
+             ## Do not infer permission
+             Do not treat "track this meeting" as approval to read it. Do not treat approval to
+             read it as approval to keep it. If the user has not said, ask, or leave it off. When
+             you withdraw capture, say plainly that anything queued for that meeting is excluded.
+
+             ## Be honest about what is not working
+             If you cannot read a transcript, say what actually blocked it. Do not summarize from
+             the calendar entry, the chat, or your own memory of the conversation and present it as
+             a recap of the meeting.
+
+
+             """;
+    }
+
     private static string BuildWorkItemSection(bool workItemsEnabled)
     {
         if (!workItemsEnabled)

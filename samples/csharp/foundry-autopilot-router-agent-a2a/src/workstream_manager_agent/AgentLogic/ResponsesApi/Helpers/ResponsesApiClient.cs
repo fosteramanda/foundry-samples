@@ -58,6 +58,13 @@ internal class ResponsesApiClient
     /// </summary>
     internal bool ManagerMailboxEnabled { get; set; }
 
+    /// <summary>
+    /// Whether the meeting registry tools are attached this turn. Derived from the handler, which
+    /// requires durable storage: without a table there is nowhere to record a capture decision, and
+    /// the prompt must not describe a permission the agent cannot actually persist.
+    /// </summary>
+    internal bool MeetingRegistryEnabled { get; set; }
+
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
         ILogger logger,
@@ -102,7 +109,8 @@ internal class ResponsesApiClient
             _configuration["ToolboxName"],
             RoutinesEnabled,
             WorkItemsEnabled,
-            ManagerMailboxEnabled);
+            ManagerMailboxEnabled,
+            MeetingRegistryEnabled);
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.

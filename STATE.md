@@ -972,3 +972,85 @@ assertion subject in the error text identified which identity was wrong.
 - Routine `five-min-email-test` was deleted after the successful test. None remain.
 - A traffic repin does not restart a running container; verifying a deploy needs a cold
   start or a check that the instance id changed.
+
+---
+
+## Meeting capture: registry built, ingestion blocked at tenant level (2026-09-08)
+
+Amanda asked for the autopilot to join meetings and participate live. Reading her own
+user stories (Downloads\meeting-user-stories.xlsx) showed they ask for something else:
+every story is pre-meeting or post-meeting. AC-MVP-US-009 reads like joining ("Add
+Agentic Colleague to a meeting") but its acceptance criteria say "accesses approved
+meeting artifacts per capture rules". Nothing requires the agent to be in the meeting.
+
+That removes the calling-bot stack entirely, and with it the Windows hosting blocker:
+application-hosted media is Windows only, and this container is Linux aspnet:9.0.
+
+### The blocker that matters
+
+Transcript ingestion cannot work in this tenant today:
+
+```
+GET /v1.0/users/{id}/onlineMeetings/getAllTranscripts(meetingOrganizerUserId='...')
+403 GraphAccessToTranscriptsDisabled   (v1.0 and beta both)
+```
+
+Learn: "By default, Microsoft Graph access is off, so agents and apps can't access
+meeting transcripts, regardless of app-level permissions." No request-side workaround.
+
+Remediation is a Teams admin action, NOT an app permission:
+Teams admin center > Meetings > Meeting settings > Transcript API access, or
+`Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true -Identity Global`.
+
+A second toggle, `-EnableAttributedTranscripts`, is also off by default and controls
+whether the API returns speaker names. Without it a recap cannot attribute a decision or
+an action to anyone, which guts most of US-017. It also means named speech records of
+every participant become readable by any app with transcript permission, tenant wide.
+Left for Amanda: she asked what it meant and had not answered when the session paused.
+
+### What was built instead
+
+Step 1 of the plan, the gate that has to exist before any ingestion:
+
+- `Services/MeetingRegistryStore.cs`: Azure Tables, same account and RBAC grant as
+  PendingDelegationStore, so no new infrastructure.
+- `AgentLogic/ResponsesApi/Helpers/MeetingRegistryToolHandler.cs`: track_meeting,
+  list_tracked_meetings, set_meeting_capture, record_capture_notice.
+- Conditional prompt section, wired through Program.cs, the factory and ResponsesApiClient
+  the same way the routine and mailbox tools are.
+
+Two flags gate ingestion and both are required: `CaptureApproved` (the organizer said
+yes) and `NoticeSentUtc` (the room was told). They are deliberately separate fields. The
+organizer cannot consent on behalf of the other attendees, and Teams cannot express
+per-meeting permission at all: an application access policy names an organizer and opens
+every meeting that person runs. The per-meeting control does not exist in the platform,
+so it exists here.
+
+Builds clean, 0 errors. NOT deployed: deployment needs Amanda's approval.
+
+### Corrections to earlier claims in this session
+
+- I told Amanda the routine tools have no pause. Wrong. `set_routine_enabled` exists and
+  does exactly that; my grep looked for `pause_routine` and missed it.
+- I said broken blueprint inheritance "had not bitten yet". Wrong. `a365 query-entra`
+  confirmed 7 of 8 resources BROKEN, and the Foundry-created identity
+  `f3e89c82-f3c2-4a70-a7f8-d594ad11f265` has zero grants as a result. The agent works
+  only because `fa259cf9` (Office of Amanda) was granted directly, per instance.
+- `inheritablePermissions` is a `/beta` path in the CLI, not `/v1.0` as I first said.
+
+### Open, flagged not resolved
+
+The user stories call the agent "Agentic Colleague". CANON.md defines "autopilot" and
+does not mention that term. I did not assume they are the same thing and kept the name
+out of the code. Amanda should say which it is before anything user-facing uses either.
+
+Related: the stories record whether a meeting is approved "for persistent memory", but
+CANON.md lists memory scope owner as an open question. The registry records the flag and
+implements no retention policy, so nothing here settles that question.
+
+### Phase ordering risk in the backlog
+
+Capture ships in Phase 2; opt-in (US-058) and participant notice (US-059) are Phase 4.
+That is two phases of ingesting meeting content without the notice US-059 says
+participants are owed. The registry above builds the Phase 4 controls now, alongside the
+capability, rather than retrofitting them.
