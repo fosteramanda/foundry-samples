@@ -1028,6 +1028,13 @@ so it exists here.
 
 Builds clean, 0 errors. NOT deployed: deployment needs Amanda's approval.
 
+Validated behaviourally, not just compiled. 29 checks run against the built assembly:
+`ExtractThreadId` against the real join URL from the Design review event (the one whose
+`?context={...}` suffix broke the OData filter), table key sanitisation, the two-flag gate
+truth table, closed-by-default field values, and that the prompt section is absent when the
+handler is not attached. That last one is the defect class that has already bitten this
+sample twice, where the prompt described tools the agent never had.
+
 ### Corrections to earlier claims in this session
 
 - I told Amanda the routine tools have no pause. Wrong. `set_routine_enabled` exists and
