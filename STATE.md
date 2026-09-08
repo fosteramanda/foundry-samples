@@ -1150,3 +1150,26 @@ the VTT and tells the model not to guess owners.
 
 39 checks pass against the built assembly, including the encoding fix and that none of the
 four tools appear in the prompt when the handler is not attached.
+
+### Deployed as v35 (2026-09-08)
+
+55/55 preflight, ACR build, traffic repinned to v35 at 100% and verified. Eleven new
+assertions cover the meeting registry, including the two most likely to rot silently:
+that `read_meeting_transcript` checks eligibility before any Graph call, and that the
+join URL is percent-encoded in the filter.
+
+`MeetingRegistryStore` resolves its table from `WorkItemsTableServiceUri`
+(https://autopilotroutera2astorag.table.core.windows.net), which the Dockerfile passes as
+a build arg. Table `meetingregistry` is created on first use. Note the third fallback,
+`DirectMessageAllowListTableServiceUri`, is present in .env but is NOT passed as a build
+arg, so it would be empty inside the container: the work-items URI is what is actually
+carrying this.
+
+Not yet exercised. App Insights shows no traces in the last two hours, so the container is
+scaled to zero and will cold-start on v35 at the first message. One Teams turn completes
+verification:
+
+  "Track the Design review meeting"    -> registers it, capture off
+  "Approve capture for Design review"  -> on, still refuses, notice outstanding
+  "Recap the Design review"            -> refuses, and naming which gate is missing is
+                                          the correct result, not a bug
