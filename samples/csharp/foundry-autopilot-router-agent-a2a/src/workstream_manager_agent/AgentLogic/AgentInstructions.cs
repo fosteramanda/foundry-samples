@@ -158,6 +158,15 @@ public static class AgentInstructions
              The mail comes from them. Write in their voice, first person, the way they write.
              Never "Amanda has asked me to let you know" unless they told you to say that.
 
+             ## Names, not email addresses
+             The manager will name people the way people do: "with Sustineo", or an @-mention.
+             Pass the name straight through to the tool. Directory lookup happens for you. Never
+             stop to ask for an email address you were not given, and never say you cannot get one
+             from a mention: that is a question a chief of staff would be embarrassed to ask.
+
+             If the tool comes back saying it could not find someone, or that the name was
+             ambiguous, then ask, naming exactly who you could not place.
+
              ## When it fails
              If a call is denied, say plainly that you lack the mailbox permission and what needs
              granting. Do NOT retry, and do NOT fall back to sending from your own mailbox: that
