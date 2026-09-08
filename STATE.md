@@ -1291,3 +1291,27 @@ automate cleanly.
 - Service-hosted media: PlayPrompt, Record and DTMF only. Cannot hear words.
 - Facilitator: first-party, no developer surface at all.
 - Meeting extensibility: every caption API is write-only. There is no live-caption read.
+
+### Probed the realtime API directly: the gate is Teams-store registration, not permissions
+
+Delegated `RealTimeActivityFeed.Read.All` consented as Amanda, then POSTed a real
+multiActivitySubscription for a meeting she organises:
+
+```
+POST /beta/copilot/communications/realtimeActivityFeed/multiActivitySubscriptions
+403  {"code":"7503","message":"Application is not registered in our store."}
+```
+
+That is the caller being rejected, not the permission and not the tenant. Auth and tenant
+config both passed; the API refused Microsoft Graph PowerShell because it is not a
+registered Teams application. This matches the sample's "Register Bot in Teams Store" step
+and its requirement for an Azure Bot registration with the Teams channel and calling
+enabled.
+
+Useful because it narrows the remaining unknown sharply. The open question is no longer
+"do agent identities have access" but "does the Agent 365 Teams app registration behind
+this autopilot satisfy 7503". GET on the collection returns an empty UnknownError, so the
+collection is not readable; POST is the only verb worth probing.
+
+Note the organizer-scope question is still unanswered: this probe used Amanda as organizer,
+so it did not exercise whether an invited attendee can subscribe to someone else's meeting.
