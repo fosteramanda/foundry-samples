@@ -1076,3 +1076,77 @@ Capture ships in Phase 2; opt-in (US-058) and participant notice (US-059) are Ph
 That is two phases of ingesting meeting content without the notice US-059 says
 participants are owed. The registry above builds the Phase 4 controls now, alongside the
 capability, rather than retrofitting them.
+
+---
+
+## Transcript ingestion built; one hard platform limit found (2026-09-08)
+
+Both Teams toggles are now on in Not A Real Co (tenant confirmed by name, not just id):
+
+```
+EnableGraphTranscriptAccess : True
+EnableAttributedTranscripts : True
+```
+
+Changing the second one restarted propagation: `getAllTranscripts` had already gone green,
+then both endpoints returned GraphAccessToTranscriptsDisabled again for roughly two more
+minutes before settling. Worth expecting rather than debugging.
+
+### Agent identities cannot hold this app role
+
+The documented path for an app to read another user's transcripts is an application
+permission plus a CsApplicationAccessPolicy. The first half is not available here:
+
+```
+POST /servicePrincipals/{agentIdentity}/appRoleAssignments
+400 Request_BadRequest
+"The specified app role cannot be granted to agent identities."
+```
+
+That is a platform refusal, not a consent problem, and it applies to
+OnlineMeetingTranscript.Read.All and OnlineMeetings.Read.All alike.
+
+The delegated equivalent WAS accepted. `oauth2PermissionGrants` on Office of Amanda
+(fa259cf9) now reads:
+
+```
+User.Read.All Chat.ReadWrite Mail.ReadWrite Mail.Send Calendars.ReadWrite.Shared
+Mail.Send.Shared OnlineMeetingTranscript.Read.All OnlineMeetings.Read
+```
+
+An access policy `OfficeOfAmanda-Transcripts` was created and granted to Amanda's user
+anyway, since it is keyed on appId and costs nothing if unused.
+
+**Still unproven, and it is the real risk:** whether an agent identity token carrying a
+delegated transcript scope can read the MANAGER'S transcripts. Delegated normally means
+"the signed-in user's own meetings", and the agent is not the organizer. The mailbox tools
+work because `.Shared` scopes plus Exchange delegation cover that case, and transcripts
+have no `.Shared` variant. If this fails at runtime the fallback worth trying is
+`OnlineMeetingTranscript.Read.Chat`, which uses resource-specific consent granted when the
+app is added to the meeting chat. That is also a better fit for US-009, because RSC is
+inherently per-meeting rather than per-organizer.
+
+### The filter bug that blocked meeting resolution
+
+Resolving an onlineMeeting by join URL kept failing with "unterminated string literal at
+position 128". The join URL ends in `?context={...}`, and left raw in the request URI that
+`?` starts a new query parameter, truncating the filter before its closing quote. Encoding
+the value fixes it:
+
+```
+$filter=JoinWebUrl%20eq%20'<Uri.EscapeDataString(joinUrl)>'
+```
+
+Confirmed against the real Design review event. Only `JoinWebUrl` and `joinMeetingId` are
+filterable; `chatInfo/threadId` is rejected outright, which is why the registry stores the
+join URL alongside the thread id it uses as a key.
+
+### Added
+
+`read_meeting_transcript`, which refuses unless both gates are satisfied and says which one
+is missing. It reports "no transcript" and "tenant switch is off" as different things,
+because they are, and it detects missing speaker attribution from the absence of `<v ` in
+the VTT and tells the model not to guess owners.
+
+39 checks pass against the built assembly, including the encoding fix and that none of the
+four tools appear in the prompt when the handler is not attached.
