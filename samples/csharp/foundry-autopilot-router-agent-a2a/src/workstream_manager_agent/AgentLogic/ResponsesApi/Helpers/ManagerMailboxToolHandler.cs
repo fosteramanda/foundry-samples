@@ -75,7 +75,7 @@ public class ManagerMailboxToolHandler
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "to": { "type": "array", "items": { "type": "string" }, "description": "Recipient email addresses." },
+                        "to": { "type": "array", "items": { "type": "string" }, "description": "Recipients. Either email addresses, or just people's names as the manager said them, e.g. 'Sustineo Juarez'. Names are looked up in the directory automatically, so never stop to ask the manager for an email address you were not given." },
                         "subject": { "type": "string", "description": "Subject line. Be specific; this is what the recipient sees first." },
                         "body_html": { "type": "string", "description": "Body as HTML. Write it as the manager would, in their voice, not as a report about the manager." },
                         "cc": { "type": "array", "items": { "type": "string" }, "description": "Optional CC addresses." }
@@ -98,7 +98,7 @@ public class ManagerMailboxToolHandler
                         "start": { "type": "string", "description": "Start as local date-time with no offset, e.g. 2026-09-08T09:00:00" },
                         "end": { "type": "string", "description": "End as local date-time with no offset, e.g. 2026-09-08T09:30:00" },
                         "time_zone": { "type": "string", "description": "Windows time zone name for start/end, e.g. 'Pacific Standard Time'. Defaults to Pacific Standard Time when omitted." },
-                        "attendees": { "type": "array", "items": { "type": "string" }, "description": "Attendee email addresses. Omit for a personal time block." },
+                        "attendees": { "type": "array", "items": { "type": "string" }, "description": "Attendees. Either email addresses, or just people's names as the manager said them, e.g. 'Sustineo Juarez'. Names are looked up in the directory automatically, so never stop to ask the manager for an email address. Omit for a personal time block." },
                         "body_html": { "type": "string", "description": "Optional agenda or description, as HTML." },
                         "is_online_meeting": { "type": "boolean", "description": "Add a Teams link. Defaults to true when there are attendees." }
                     },
@@ -236,7 +236,21 @@ public class ManagerMailboxToolHandler
 
     private async Task<string> SendMailAsync(string mailbox, JsonNode? args)
     {
-        var to = ReadAddresses(args, "to");
+        var toRaw = ReadAddresses(args, "to");
+        if (toRaw.Count == 0)
+        {
+            return "At least one recipient is required.";
+        }
+
+        var (to, toFailed) = await ResolvePeopleAsync(toRaw);
+        var (cc, ccFailed) = await ResolvePeopleAsync(ReadAddresses(args, "cc"));
+        var allFailed = toFailed.Concat(ccFailed).ToList();
+        if (allFailed.Count > 0)
+        {
+            return $"I could not find {string.Join(" or ", allFailed.Select(f => $"'{f}'"))} in the directory. "
+                 + "Ask the user for that person's email address, or for a more complete name. Do not send to "
+                 + "anyone else and do not guess.";
+        }
         if (to.Count == 0)
         {
             return "At least one recipient is required.";
@@ -253,7 +267,6 @@ public class ManagerMailboxToolHandler
             ["toRecipients"] = BuildRecipients(to),
         };
 
-        var cc = ReadAddresses(args, "cc");
         if (cc.Count > 0)
         {
             message["ccRecipients"] = BuildRecipients(cc);
@@ -290,7 +303,14 @@ public class ManagerMailboxToolHandler
             timeZone = "Pacific Standard Time";
         }
 
-        var attendees = ReadAddresses(args, "attendees");
+        var attendeesRaw = ReadAddresses(args, "attendees");
+        var (attendees, attendeeFailed) = await ResolvePeopleAsync(attendeesRaw);
+        if (attendeeFailed.Count > 0)
+        {
+            return $"I could not find {string.Join(" or ", attendeeFailed.Select(f => $"'{f}'"))} in the directory. "
+                 + "Ask the user for that person's email address, or for a fuller name. Do not create the meeting "
+                 + "without them and do not invite someone else.";
+        }
 
         var body = new JsonObject
         {
@@ -454,6 +474,107 @@ public class ManagerMailboxToolHandler
             list.Add(new JsonObject { ["emailAddress"] = new JsonObject { ["address"] = a } });
         }
         return list;
+    }
+
+    /// <summary>
+    /// Turns whatever the model passed for a person into a real address.
+    ///
+    /// The model gets names, not addresses. A manager says "schedule 30 minutes with Sustineo",
+    /// or @-mentions someone in Teams, and the mention markup is stripped to a display name
+    /// before the model ever sees it. Requiring an email address means the agent has to stop and
+    /// ask for something the manager reasonably expects it to know, which is what a chief of
+    /// staff would never do.
+    ///
+    /// So: anything already shaped like an address passes through; anything else is looked up in
+    /// the directory. Names that match nothing, or match more than one person, are returned as
+    /// failures rather than guessed at, because inviting the wrong person to a meeting is worse
+    /// than asking.
+    /// </summary>
+    private async Task<(List<string> Resolved, List<string> Failed)> ResolvePeopleAsync(List<string> inputs)
+    {
+        var resolved = new List<string>();
+        var failed = new List<string>();
+
+        foreach (var raw in inputs)
+        {
+            var value = raw.Trim().Trim('<', '>');
+
+            // Already an address. Not a strict validation: an address with an apostrophe or
+            // unusual local part is still an address, and Exchange will reject anything truly
+            // malformed with a clearer error than we could produce here.
+            if (value.Contains('@') && !value.Contains(' '))
+            {
+                resolved.Add(value);
+                continue;
+            }
+
+            var match = await LookupPersonAsync(value);
+            if (match == null)
+            {
+                failed.Add(value);
+            }
+            else
+            {
+                _logger.LogInformation("Resolved attendee '{Input}' to {Address}.", value, match);
+                resolved.Add(match);
+            }
+        }
+
+        return (resolved, failed);
+    }
+
+    /// <summary>
+    /// Finds one person in the directory by display name. Returns null when there is no match or
+    /// when the name is ambiguous, so the caller can say which name it could not place.
+    /// </summary>
+    private async Task<string?> LookupPersonAsync(string name)
+    {
+        try
+        {
+            var escaped = name.Replace("'", "''");
+            var filter = Uri.EscapeDataString($"startswith(displayName,'{escaped}')");
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"https://graph.microsoft.com/v1.0/users?$filter={filter}&$select=displayName,mail,userPrincipalName&$top=5");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _graphAccessToken);
+
+            using var response = await _httpClient.SendAsync(request);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Directory lookup for '{Name}' failed: HTTP {Status}",
+                    name,
+                    (int)response.StatusCode);
+                return null;
+            }
+
+            var items = JsonNode.Parse(await response.Content.ReadAsStringAsync())?["value"] as JsonArray;
+            if (items == null || items.Count == 0)
+            {
+                return null;
+            }
+
+            // Ambiguity is a real answer, not an inconvenience: two people whose names both start
+            // with "Chris" must not be silently collapsed into whichever came back first.
+            if (items.Count > 1)
+            {
+                var exact = items.FirstOrDefault(i =>
+                    string.Equals(i?["displayName"]?.GetValue<string>(), name, StringComparison.OrdinalIgnoreCase));
+                if (exact == null)
+                {
+                    _logger.LogInformation("Directory lookup for '{Name}' was ambiguous ({Count} matches).", name, items.Count);
+                    return null;
+                }
+                return exact["mail"]?.GetValue<string>() ?? exact["userPrincipalName"]?.GetValue<string>();
+            }
+
+            return items[0]?["mail"]?.GetValue<string>() ?? items[0]?["userPrincipalName"]?.GetValue<string>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Directory lookup for '{Name}' threw.", name);
+            return null;
+        }
     }
 
     private static List<string> ReadAddresses(JsonNode? node, string name)
