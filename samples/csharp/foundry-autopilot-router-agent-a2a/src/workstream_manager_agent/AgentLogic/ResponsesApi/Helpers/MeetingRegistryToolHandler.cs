@@ -135,6 +135,22 @@ public class MeetingRegistryToolHandler
                 }
             }
             """)!,
+
+            JsonNode.Parse("""
+            {
+                "type": "function",
+                "name": "read_meeting_transcript",
+                "description": "Fetches the transcript of a tracked meeting so it can be recapped. Refuses unless capture was approved AND participants were notified. Use this when asked what was decided, what was discussed, what actions came out of a meeting, or for a recap. Returns the raw transcript text; you then extract decisions, actions with owners, blockers and unresolved items yourself.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subject": { "type": "string", "description": "Subject of a meeting already returned by list_tracked_meetings." }
+                    },
+                    "required": ["subject"],
+                    "additionalProperties": false
+                }
+            }
+            """)!,
         ];
     }
 
@@ -145,7 +161,7 @@ public class MeetingRegistryToolHandler
             return null;
         }
 
-        if (toolName is not ("track_meeting" or "list_tracked_meetings" or "set_meeting_capture" or "record_capture_notice"))
+        if (toolName is not ("track_meeting" or "list_tracked_meetings" or "set_meeting_capture" or "record_capture_notice" or "read_meeting_transcript"))
         {
             return null;
         }
@@ -174,6 +190,7 @@ public class MeetingRegistryToolHandler
             "list_tracked_meetings" => await ListTrackedAsync(mailbox),
             "set_meeting_capture" => await SetCaptureAsync(mailbox, args),
             "record_capture_notice" => await RecordNoticeAsync(mailbox, args),
+            "read_meeting_transcript" => await ReadTranscriptAsync(mailbox, args),
             _ => null,
         };
     }
@@ -373,6 +390,141 @@ public class MeetingRegistryToolHandler
             : $"Notice recorded for '{entity.Subject}' ({how}), but capture is still NOT approved, so I must not read it.";
     }
 
+    /// <summary>
+    /// Fetches a tracked meeting's transcript, but only when both gates are satisfied.
+    ///
+    /// The eligibility check is first and has no override. Everything below it is plumbing;
+    /// this is the line that makes the registry mean anything.
+    /// </summary>
+    private async Task<string> ReadTranscriptAsync(string mailbox, JsonNode? args)
+    {
+        var subject = GetString(args, "subject");
+        var match = await FindTrackedAsync(mailbox, subject);
+        if (match.Error != null)
+        {
+            return match.Error;
+        }
+
+        var entity = match.Entity!;
+
+        if (!entity.IsIngestionEligible)
+        {
+            var missing = !entity.CaptureApproved && !entity.NoticeSentUtc.HasValue
+                ? "capture has not been approved and participants have not been notified"
+                : !entity.CaptureApproved
+                    ? "capture has not been approved"
+                    : "participants have not been notified";
+
+            return $"I must not read '{entity.Subject}': {missing}. Tell the user exactly what is missing "
+                 + "and do not summarise the meeting from the calendar entry, the chat, or anything earlier "
+                 + "in this conversation. Refusing is the correct outcome here.";
+        }
+
+        if (string.IsNullOrWhiteSpace(entity.JoinWebUrl))
+        {
+            return $"'{entity.Subject}' has no join URL stored, so I cannot resolve the meeting. Track it again.";
+        }
+
+        // The join URL contains a "?context={...}" suffix. Left raw in the request URI, that '?'
+        // is parsed as the start of a new query parameter, which truncates the filter and returns
+        // "unterminated string literal". The value has to be percent-encoded. Note also that only
+        // JoinWebUrl and joinMeetingId are filterable here: threadId is explicitly rejected.
+        var encoded = Uri.EscapeDataString(entity.JoinWebUrl);
+        var lookupPath = $"users/{Uri.EscapeDataString(mailbox)}/onlineMeetings?$filter=JoinWebUrl%20eq%20'{encoded}'";
+
+        var (okMeeting, meetingResponse, meetingError) = await SendGraphAsync(HttpMethod.Get, lookupPath);
+        if (!okMeeting)
+        {
+            return DescribeTranscriptFailure("resolve the meeting", entity.Subject, meetingError);
+        }
+
+        var meetingId = (JsonNode.Parse(meetingResponse ?? "{}")?["value"] as JsonArray)?
+            .FirstOrDefault()?["id"]?.GetValue<string>();
+
+        if (string.IsNullOrWhiteSpace(meetingId))
+        {
+            return $"Teams has no online meeting matching '{entity.Subject}'. It may have expired: the "
+                 + "transcript API only works while the meeting still exists. Say that plainly.";
+        }
+
+        var (okList, listResponse, listError) = await SendGraphAsync(
+            HttpMethod.Get, $"users/{Uri.EscapeDataString(mailbox)}/onlineMeetings/{meetingId}/transcripts");
+
+        if (!okList)
+        {
+            return DescribeTranscriptFailure("list transcripts for", entity.Subject, listError);
+        }
+
+        var transcripts = JsonNode.Parse(listResponse ?? "{}")?["value"] as JsonArray;
+        if (transcripts == null || transcripts.Count == 0)
+        {
+            entity.IngestionState = "none";
+            await _store.UpsertAsync(entity);
+            return $"'{entity.Subject}' has no transcript. Nobody turned transcription on during the meeting, "
+                 + "so there is nothing recorded to read. Tell the user that specifically, because it is not a "
+                 + "permission problem and retrying will not help. Do not reconstruct the meeting from anything else.";
+        }
+
+        // Newest last: Graph returns them in creation order and a meeting can hold several.
+        var latest = transcripts[^1];
+        var transcriptId = latest?["id"]?.GetValue<string>();
+
+        var (okContent, content, contentError) = await SendGraphAsync(
+            HttpMethod.Get,
+            $"users/{Uri.EscapeDataString(mailbox)}/onlineMeetings/{meetingId}/transcripts/{transcriptId}/content?$format=text/vtt",
+            acceptRawText: true);
+
+        if (!okContent || string.IsNullOrWhiteSpace(content))
+        {
+            return DescribeTranscriptFailure("read the transcript of", entity.Subject, contentError);
+        }
+
+        entity.TranscriptId = transcriptId ?? string.Empty;
+        entity.IngestedUtc = DateTimeOffset.UtcNow;
+        entity.IngestionState = "ingested";
+        await _store.UpsertAsync(entity);
+
+        _logger.LogInformation(
+            "Transcript read for '{Subject}': {Chars} characters, transcript {TranscriptId}",
+            entity.Subject,
+            content.Length,
+            transcriptId);
+
+        var attributionNote = content.Contains("<v ", StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : "\n\nNOTE: this transcript carries no speaker names, so you cannot say who said or owns anything. "
+            + "Do not guess an owner. Say that attribution is unavailable if the user asks who.";
+
+        return $"Transcript of '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} UTC):{attributionNote}\n\n"
+             + Truncate(content, 60000);
+    }
+
+    /// <summary>
+    /// Separates the tenant-level switch from everything else. A 403 here usually is not the
+    /// agent's permissions: Teams has a tenant setting that blocks Graph transcript access for
+    /// every app at once, and the fix is in the Teams admin center, not Entra.
+    /// </summary>
+    private string DescribeTranscriptFailure(string action, string subject, string? error)
+    {
+        _logger.LogWarning("Failed to {Action} '{Subject}': {Error}", action, subject, error);
+
+        if (error != null && error.Contains("GraphAccessToTranscriptsDisabled", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"I could not {action} '{subject}': Graph access to transcripts is switched off for this "
+                 + "tenant. That is a Teams admin setting (Meetings > Meeting settings > Transcript API access), "
+                 + "not an app permission, and no permission change will work around it. Say that plainly.";
+        }
+
+        if (error != null && error.Contains("403"))
+        {
+            return $"I could not {action} '{subject}': access was denied. Tell the user I need permission to read "
+                 + "their meeting artifacts, and that it is granted by a Teams administrator. Do not retry.";
+        }
+
+        return $"I could not {action} '{subject}': {error}. Say plainly that it failed and do not summarise the "
+             + "meeting from any other source.";
+    }
+
     private async Task<(TrackedMeetingEntity? Entity, string? Error)> FindTrackedAsync(string mailbox, string subject)
     {
         if (string.IsNullOrWhiteSpace(subject))
@@ -435,12 +587,20 @@ public class MeetingRegistryToolHandler
         return _managerMailbox;
     }
 
-    private async Task<(bool Ok, string? Response, string? Error)> SendGraphAsync(HttpMethod method, string path)
+    private async Task<(bool Ok, string? Response, string? Error)> SendGraphAsync(
+        HttpMethod method,
+        string path,
+        bool acceptRawText = false)
     {
         try
         {
             using var request = new HttpRequestMessage(method, $"https://graph.microsoft.com/v1.0/{path}");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _graphAccessToken);
+
+            if (acceptRawText)
+            {
+                request.Headers.TryAddWithoutValidation("Accept", "text/vtt");
+            }
 
             using var response = await _httpClient.SendAsync(request);
             var text = await response.Content.ReadAsStringAsync();

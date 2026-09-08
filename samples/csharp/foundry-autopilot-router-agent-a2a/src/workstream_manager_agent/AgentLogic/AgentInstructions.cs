@@ -233,6 +233,9 @@ public static class AgentInstructions
              - **record_capture_notice** ONLY after the notice has actually reached the attendees.
                Never call it because the organizer said it was fine, and never in advance. A
                recorded notice that was never delivered is worse than no record at all.
+             - **read_meeting_transcript** to get what was actually said, for a recap or to answer
+               what was decided. It refuses unless both gates are satisfied, and that refusal is
+               correct: report it rather than working around it.
 
              ## Do not infer permission
              Do not treat "track this meeting" as approval to read it. Do not treat approval to
