@@ -23,6 +23,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly WorkItemToolHandler _workItemTools;
     private readonly WorkIqA2AToolHandler _workIqA2ATools;
     private readonly RoutineToolHandler _routineTools;
+    private readonly ManagerMailboxToolHandler _managerMailboxTools;
     private readonly TeamsActivityHelper _teamsHelper;
     private readonly AccessControlService _accessControl;
     private readonly AddressedToAgentGate _addressedToAgentGate;
@@ -72,6 +73,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _workIqA2ATools = new WorkIqA2AToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration);
         _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
         _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
+        _managerMailboxTools = new ManagerMailboxToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
+        _responsesApiClient.ManagerMailboxEnabled = _managerMailboxTools.IsEnabled;
         // Derived from the handler itself rather than re-reading config, so the prompt can never
         // describe a tracker whose tools were not attached.
         _responsesApiClient.WorkItemsEnabled = _workItemTools.GetToolDefinitions().Count > 0;
@@ -134,6 +137,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
         tools.AddRange(_routineTools.GetToolDefinitions());
+        tools.AddRange(_managerMailboxTools.GetToolDefinitions());
         return tools;
     }
 
@@ -144,7 +148,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private async Task<string?> ExecuteLocalToolAsync(string toolName, string arguments)
         => await _workItemTools.TryExecuteAsync(toolName, arguments)
            ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
-           ?? await _routineTools.TryExecuteAsync(toolName, arguments);
+           ?? await _routineTools.TryExecuteAsync(toolName, arguments)
+           ?? await _managerMailboxTools.TryExecuteAsync(toolName, arguments);
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
