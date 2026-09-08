@@ -52,6 +52,12 @@ internal class ResponsesApiClient
     /// </summary>
     internal bool WorkItemsEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Whether the manager-mailbox tools are attached this turn. Set from the handler's real
+    /// state so the prompt never offers to send mail or book meetings the agent cannot send.
+    /// </summary>
+    internal bool ManagerMailboxEnabled { get; set; }
+
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
         ILogger logger,
@@ -95,7 +101,8 @@ internal class ResponsesApiClient
             _configuration["SourceOfTruthAgentName"],
             _configuration["ToolboxName"],
             RoutinesEnabled,
-            WorkItemsEnabled);
+            WorkItemsEnabled,
+            ManagerMailboxEnabled);
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.
