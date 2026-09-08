@@ -1213,3 +1213,81 @@ under this model. Neither was removed, but neither should be assumed load-bearin
 
 Deployed v36, 58/58 preflight. Three new assertions guard the corrected model, including
 that ResolveManagerMailboxAsync does not come back.
+
+---
+
+## Live meeting participation IS possible: Copilot Realtime Activity Feed (2026-09-08)
+
+Amanda pushed back on "real-time is impossible". She was right to. There is a shipping
+path, and it is not any of the ones ruled out earlier.
+
+**Microsoft Graph beta: `/copilot/communications/realtimeActivityFeed/multiActivitySubscriptions`**
+
+It returns a WebSocket URL that streams **speaker-attributed live captions mid-meeting**.
+This is a different surface from the `callTranscript` API, which is post-meeting only. The
+payload type is literally `liveCaptionDataV2`, carrying `speaker.displayName`, `text` and
+`audioCaptureTime`, so "Amanda said X" is available while the meeting is running.
+
+Verified present in the live Graph beta `$metadata`. Official sample:
+`microsoftgraph/copilot-realtime-activity-subscription-samples`. Entirely ASP.NET Core and
+`ClientWebSocket`, so it runs on the existing Linux container. No Windows requirement.
+
+Flow: subscribe to `getCallEvents(organizers=[...])` -> on `TranscriptionStarted`, POST a
+multiActivitySubscription -> read `activities.transcript.transport.url` -> open the socket.
+
+### The app-role refusal is PER-ROLE, not a ban on agent identities
+
+Earlier this session an app role was refused with "The specified app role cannot be granted
+to agent identities", and that was generalised into "agent identities cannot hold
+application permissions". **That generalisation was wrong.** Measured on the same identity:
+
+```
+OnlineMeetingTranscript.Read.All  -> 400, cannot be granted to agent identities
+RealTimeActivityFeed.Read.All     -> GRANTED, and it persisted
+```
+
+Office of Amanda (fa259cf9) now holds `RealTimeActivityFeed.Read.All` as an application
+permission and also as a delegated scope. So the realtime path needs no separate app
+registration, which was the workaround the research assumed would be necessary. That one
+role being allow-listed where the transcript role is refused reads as deliberate: this
+looks like the sanctioned way for an agent to be present in a live meeting.
+
+### Already satisfied by work done earlier today
+
+Both tenant toggles this API depends on were switched on this morning for the post-meeting
+work, and they gate this too:
+
+```
+EnableGraphTranscriptAccess : True
+EnableAttributedTranscripts : True   <- without this the stream has no speaker names
+```
+
+### Still to establish before building
+
+- Subscriptions are organizer-scoped, `getCallEvents(organizers=[...])`. Whether an agent
+  invited as an ATTENDEE can subscribe to a meeting someone else organised is unproven and
+  is the first thing to test. If it cannot, the invited-attendee model and the realtime
+  model do not compose.
+- Certificate auth is required, not a client secret, and on Linux the cert must be loaded
+  from file rather than the Windows certificate store.
+- A Copilot licence is listed as a prerequisite.
+- Requires a public HTTPS webhook that echoes `validationToken` and RSA-decrypts payloads.
+- No Learn conceptual page exists. Graph beta plus one sample repo. Treat as preview.
+
+### Output side
+
+Replying in meeting chat is the ordinary Teams proactive-message path. Separately, the CART
+captions endpoint (`api.captions.office.microsoft.com/cartcaption`) injects text into the
+live caption stream, so the agent can appear on screen mid-meeting. Plain HTTPS POST, Linux
+fine, but the URL is obtained by hand per meeting from Meeting options, so it does not
+automate cleanly.
+
+### Confirmed dead ends, do not revisit
+
+- ACS Call Automation: `ConnectCall` takes Server/Group/Room locators only, no Teams
+  locator. Teams interop marks speech-to-text unsupported and needs a Teams Phone licence.
+- Application-hosted media: Windows Server only, and Microsoft now explicitly says
+  "Real-time Media bots are not recommended for AI agent scenarios."
+- Service-hosted media: PlayPrompt, Record and DTMF only. Cannot hear words.
+- Facilitator: first-party, no developer surface at all.
+- Meeting extensibility: every caption API is write-only. There is no live-caption read.
