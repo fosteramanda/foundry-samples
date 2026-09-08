@@ -1,4 +1,0 @@
-name: Developer Boundary agent
-description: Provisions Foundry resources and deploys a Python Activity protocol agent.
-build: python -m pip install -r requirements.txt
-validate: python -m compileall -q . && python -c "import agent.app"
