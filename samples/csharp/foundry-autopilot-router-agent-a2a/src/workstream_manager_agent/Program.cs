@@ -56,6 +56,7 @@ builder.Services.AddSingleton<ConversationStateStore>();
 // breaks a promise it already made to the user. The poller collects those answers and delivers
 // them proactively into the original conversation.
 builder.Services.AddSingleton<PendingDelegationStore>();
+builder.Services.AddSingleton<MeetingRegistryStore>();
 builder.Services.AddHostedService<DelegationFollowUpService>();
 
 // Register OpenAPI for external agents
