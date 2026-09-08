@@ -178,6 +178,29 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var sender = turnContext.Activity.From;
         var rawUserMessage = incomingText ?? string.Empty;
 
+        // Teams delivers meeting lifecycle events (meeting started, recording started, someone
+        // joined) into the meeting chat as message activities carrying no text. Without this
+        // guard each one was wrapped into "Respond to this chat message... Message: " and handed
+        // to the model, which answered "I can't respond to an empty message" - three times in a
+        // 65 second meeting, visible to everyone in the chat.
+        //
+        // Silence is the only correct response to a message with nothing in it. Attachments and
+        // card actions are checked too, because those are messages with real content and an
+        // empty Text field.
+        if (turnContext.Activity.Type == ActivityTypes.Message
+            && string.IsNullOrWhiteSpace(rawUserMessage)
+            && (turnContext.Activity.Attachments is null || turnContext.Activity.Attachments.Count == 0)
+            && turnContext.Activity.Value is null)
+        {
+            _logger.LogInformation(
+                "Skipping reply: message activity has no text, attachments or value. " +
+                "channelId={ChannelId} conversationId={ConversationId} activityId={ActivityId}",
+                turnContext.Activity.ChannelId,
+                turnContext.Activity.Conversation?.Id,
+                turnContext.Activity.Id);
+            return;
+        }
+
         // Global AP tenant guard: if we can determine that the sender is from outside this
         // digital worker's tenant, return a deterministic canned response and skip LLM work.
         if (await _accessControl.TryHandleCrossTenantActivityAsync(turnContext, cancellationToken))

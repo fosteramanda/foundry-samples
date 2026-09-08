@@ -1315,3 +1315,29 @@ collection is not readable; POST is the only verb worth probing.
 
 Note the organizer-scope question is still unanswered: this probe used Amanda as organizer,
 so it did not exercise whether an invited attendee can subscribe to someone else's meeting.
+
+### v37: stop answering empty messages in meeting chats
+
+Measured in a real meeting. The autopilot was added to a meeting chat and posted three
+visible junk replies during a 65 second meeting:
+
+  "I can't respond to that chat because the message content is empty."
+  "I can't respond meaningfully because the chat message content is blank."
+  "I can't respond to an empty message."
+
+Cause: `NewActivityReceived` had no empty-text guard. Teams delivers meeting lifecycle
+events (meeting started, recording started, participant joined) into the meeting chat as
+message activities carrying no text. Each one was wrapped into "Respond to this chat
+message... Message: " and handed to the model, which answered honestly that there was
+nothing there. In a 1:1 or a chat the agent is a member of, the addressed-to-agent gate
+passes by definition, so nothing stopped it.
+
+Fixed: message activities with no text, no attachments and no value return silently.
+Silence is the only correct response to a message with nothing in it.
+
+Worth noting this only surfaced because the agent was added to a meeting for the first
+time. Every prior test was a 1:1 chat where lifecycle events never appear.
+
+Also confirmed from the same meeting: a transcript now exists (1 speaker, 43 seconds), so
+the tenant toggles enabled earlier today are producing real artifacts and the end to end
+recap path is finally testable.
