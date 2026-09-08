@@ -1002,11 +1002,26 @@ Remediation is a Teams admin action, NOT an app permission:
 Teams admin center > Meetings > Meeting settings > Transcript API access, or
 `Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true -Identity Global`.
 
-A second toggle, `-EnableAttributedTranscripts`, is also off by default and controls
-whether the API returns speaker names. Without it a recap cannot attribute a decision or
-an action to anyone, which guts most of US-017. It also means named speech records of
-every participant become readable by any app with transcript permission, tenant wide.
-Left for Amanda: she asked what it meant and had not answered when the session paused.
+DONE 2026-09-08. `EnableGraphTranscriptAccess` False -> True on the Global policy.
+Verified: `getAllTranscripts` went from 403 GraphAccessToTranscriptsDisabled to HTTP 200
+after roughly two minutes of propagation. It returns 0 transcripts, which is correct
+rather than a failure: no meeting in this tenant has ever had transcription switched on.
+
+Note for anyone repeating this: `Connect-MicrosoftTeams` interactive auth fails in a
+non-interactive host ("A window handle must be configured"), and the device-code flow
+expires quickly. What worked was passing access tokens straight from the Azure CLI:
+
+```powershell
+$graph = az account get-access-token --resource "https://graph.microsoft.com" --query accessToken -o tsv
+$teams = az account get-access-token --resource "48ac35b8-9aa8-4d74-927d-1f4a14a0b239" --query accessToken -o tsv
+Connect-MicrosoftTeams -AccessTokens @($graph, $teams)
+```
+
+`EnableAttributedTranscripts` remains **False**, deliberately. Amanda asked what it meant
+and had not answered. Until it is on, transcripts returned through Graph carry no speaker
+names, so a recap cannot attribute a decision or an action to a person. That is most of
+US-017. Turning it on also makes named speech records of every participant readable by any
+app holding transcript permission, tenant wide, so it is her call and not a default.
 
 ### What was built instead
 
