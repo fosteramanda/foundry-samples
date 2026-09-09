@@ -1416,3 +1416,32 @@ at 05:10:58 UTC, the same minute Amanda typed. v38 was genuinely running and gen
 produced that answer.
 
 Deployed v39, 63/63.
+
+### v40: meeting times were UTC labelled as Pacific
+
+Amanda: "im confused? are these real". They were real; the times were not.
+
+The agent listed 'meeting' as 9:30 PM PT. It is 21:30 UTC, which is 2:30 PM PT, and the
+meeting chat confirms it: "Meeting started 2:30 PM". The agent took the UTC number and
+presented it as local, a clean seven hour lie in a string that looked entirely plausible.
+
+Cause: `MeetingRegistryToolHandler.SendGraphAsync` never sent the `Prefer:
+outlook.timezone` header, so Graph returned UTC. `ManagerMailboxToolHandler` has always
+sent it. Same codebase, two calendar readers, one of them wrong.
+
+Worth recording that I made the identical mistake in the verification script while checking
+this, double converting an already-UTC value and getting 4:30 AM. It is an easy error to
+make twice in five minutes, which is the argument for asking Graph for the right zone
+rather than converting anywhere downstream.
+
+Fixed:
+- Both calendar reads now send `Prefer: outlook.timezone`, defaulting to Pacific Standard
+  Time and overridable with `MeetingDisplayTimeZone`.
+- Every displayed time carries the zone name, so a bare number can no longer be read as
+  local by whoever sees it.
+
+Known wart left in place: the entity field is still called `StartUtc` while now holding a
+zoned local time. Renaming it touches the stored schema, so it is labelled at the display
+boundary instead. Flagged rather than hidden.
+
+Deployed v40, 65/65.

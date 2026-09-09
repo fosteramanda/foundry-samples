@@ -224,7 +224,7 @@ public class MeetingRegistryToolHandler
         }
 
         var already = wasAlreadyTracked ? " It was already being tracked." : string.Empty;
-        return $"Now tracking '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} UTC).{already} "
+        return $"Now tracking '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} {DisplayTimeZone}).{already} "
              + $"Capture is {(entity.CaptureApproved ? "APPROVED" : "NOT approved")} and participants have "
              + $"{(entity.NoticeSentUtc.HasValue ? "been notified" : "NOT been notified")}. "
              + "Tell the user tracking alone does not let me read what was said, and ask whether they want to approve capture.";
@@ -251,7 +251,7 @@ public class MeetingRegistryToolHandler
                  + $"?startDateTime={from:yyyy-MM-ddTHH:mm:ssZ}&endDateTime={to:yyyy-MM-ddTHH:mm:ssZ}"
                  + "&$select=subject,start,end,organizer,isOnlineMeeting,onlineMeeting&$orderby=start/dateTime&$top=100";
 
-        var (ok, response, error) = await SendGraphAsync(HttpMethod.Get, path);
+        var (ok, response, error) = await SendGraphAsync(HttpMethod.Get, path, preferTimeZone: DisplayTimeZone);
         if (!ok)
         {
             return (null, DescribeFailure("read my own calendar", mailbox, error), false);
@@ -353,7 +353,7 @@ public class MeetingRegistryToolHandler
                  + $"?startDateTime={from:yyyy-MM-ddTHH:mm:ssZ}&endDateTime={to:yyyy-MM-ddTHH:mm:ssZ}"
                  + "&$select=subject,start,isOnlineMeeting&$orderby=start/dateTime&$top=100";
 
-        var (ok, response, _) = await SendGraphAsync(HttpMethod.Get, path);
+        var (ok, response, _) = await SendGraphAsync(HttpMethod.Get, path, preferTimeZone: DisplayTimeZone);
         if (ok)
         {
             var items = JsonNode.Parse(response ?? "{}")?["value"] as JsonArray;
@@ -375,7 +375,7 @@ public class MeetingRegistryToolHandler
         }
 
         var lines = all.Select(m =>
-            $"- '{m.Subject}' {m.StartUtc:yyyy-MM-dd HH:mm} UTC | capture={(m.CaptureApproved ? "approved" : "not approved")}"
+            $"- '{m.Subject}' {m.StartUtc:yyyy-MM-dd HH:mm} {DisplayTimeZone} | capture={(m.CaptureApproved ? "approved" : "not approved")}"
             + $" | notice={(m.NoticeSentUtc.HasValue ? m.NoticeSentUtc.Value.ToString("yyyy-MM-dd") : "not sent")}"
             + $" | readable={(m.IsIngestionEligible ? "yes" : "NO")}"
             + $" | retention={(m.RetentionApproved ? "approved" : "not approved")}"
@@ -607,7 +607,7 @@ public class MeetingRegistryToolHandler
             : "\n\nNOTE: this transcript carries no speaker names, so you cannot say who said or owns anything. "
             + "Do not guess an owner. Say that attribution is unavailable if the user asks who.";
 
-        return $"Transcript of '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} UTC):{attributionNote}\n\n"
+        return $"Transcript of '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} {DisplayTimeZone}):{attributionNote}\n\n"
              + Truncate(content, 60000);
     }
 
@@ -709,12 +709,22 @@ public class MeetingRegistryToolHandler
     private async Task<(bool Ok, string? Response, string? Error)> SendGraphAsync(
         HttpMethod method,
         string path,
-        bool acceptRawText = false)
+        bool acceptRawText = false,
+        string? preferTimeZone = null)
     {
         try
         {
             using var request = new HttpRequestMessage(method, $"https://graph.microsoft.com/v1.0/{path}");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _graphAccessToken);
+
+            // Without this Graph returns calendar times in UTC. They then get shown to the user
+            // as-is and read as local, so a 2:30pm meeting was reported as 9:30pm. Asking Graph
+            // for the target zone is the fix; formatting the number afterwards is not, because
+            // nothing downstream knows what zone it was in.
+            if (!string.IsNullOrWhiteSpace(preferTimeZone))
+            {
+                request.Headers.TryAddWithoutValidation("Prefer", $"outlook.timezone=\"{preferTimeZone}\"");
+            }
 
             if (acceptRawText)
             {
@@ -734,6 +744,13 @@ public class MeetingRegistryToolHandler
             return (false, null, ex.Message);
         }
     }
+
+    /// <summary>
+    /// Windows time zone id the agent reports meeting times in. Defaults to the manager's zone
+    /// rather than UTC, because every consumer of these strings is a human reading chat.
+    /// </summary>
+    private string DisplayTimeZone =>
+        _configuration["MeetingDisplayTimeZone"] ?? "Pacific Standard Time";
 
     private string DescribeFailure(string action, string mailbox, string? error)
     {
@@ -778,3 +795,5 @@ public class MeetingRegistryToolHandler
     private static string Truncate(string value, int max) =>
         string.IsNullOrEmpty(value) || value.Length <= max ? value ?? string.Empty : value[..max];
 }
+
+
