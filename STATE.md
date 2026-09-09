@@ -1534,3 +1534,68 @@ settled by inspection either way.
 Amanda re-tests Checkout v4.3. If it still fails, fix telemetry first: debugging an agent
 that cannot be observed is guesswork, and every conclusion above about the current state
 is inference rather than measurement.
+
+### Granted and made inheritable on the workstreammanagerado blueprint (2026-09-09)
+
+Amanda: "actually grant these and set as inheritable". Both halves, per her standing
+correction that a grant without inheritance does nothing.
+
+Blueprint `a029bdcc` (SP f3f939c9), Microsoft Graph. Before:
+
+```
+granted     : ChatMessage.Send ChannelMessage.Send ChatMember.Read
+              ChannelMessage.Read.All User.Read.All Chat.ReadWrite
+inheritable : Chat.ReadWrite Mail.ReadWrite Mail.Send User.Read.All
+```
+
+After, both sides now the union of eight:
+
+```
+ChannelMessage.Read.All ChannelMessage.Send Chat.ReadWrite ChatMember.Read
+ChatMessage.Send Mail.ReadWrite Mail.Send User.Read.All
+```
+
+### How the inheritablePermissions write API actually works
+
+Earlier notes in this file said the PATCH takes scope names, which is true but incomplete
+and cost three failed attempts. The real shape:
+
+`kind` is a DERIVED, read-only property. Writing it fails with
+"Invalid value specified for property 'kind' of resource 'InheritableScopes'" for every
+value including `allAllowed`, which reads like the value is wrong when the problem is the
+property. The discriminator is `@odata.type`:
+
+```
+PATCH /beta/applications/microsoft.graph.agentIdentityBlueprint/{appId}/inheritablePermissions/{resourceAppId}
+{"inheritableScopes":{"@odata.type":"#microsoft.graph.enumeratedScopes","scopes":["..."]}}
+```
+
+GET returns both, so the entity looks like it has a writable `kind` when it does not.
+`#microsoft.graph.noRoles` is the equivalent type behind `kind: none`.
+
+This also means the earlier read of the a365 CLI guidance needs revisiting: switching a
+blueprint to `allAllowed` is presumably `@odata.type: #microsoft.graph.allScopes` or
+similar, NOT `kind: allAllowed`. Untested, and not attempted here because Amanda asked for
+these scopes specifically, not a change of inheritance model.
+
+### State across the whole blueprint after the change
+
+```
+Microsoft Graph                  MATCHED
+Messaging Bot API Application    MATCHED
+Agent Tools                      MATCHED
+Azure Machine Learning Services  MATCHED
+Azure DevOps MCP                 MATCHED
+Work IQ                          MATCHED
+Power Platform API               MISMATCH - Connectivity.Connections.Read is inheritable
+                                 but not granted, so there is nothing to inherit
+```
+
+Power Platform was not in the set Amanda approved and is left alone deliberately.
+
+### Unverifiable by inspection
+
+All 7 instances still hold zero direct grants, so this only helps if inheritance actually
+delivers. Learn states inherited permissions "aren't visible through Microsoft Graph. They
+are only observable in the token contents at runtime", so whether these eight now reach an
+instance token cannot be confirmed from here. A live turn from Checkout v4.3 is the test.
