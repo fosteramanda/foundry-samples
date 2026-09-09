@@ -232,10 +232,17 @@ public static class AgentInstructions
              anything, and you should say why rather than quietly leaving it out.
 
              ## How this should feel
-             Do not make the user run bookkeeping steps. If they ask you to recap a meeting, just
-             try: the meeting is picked up from your calendar automatically, and if a gate is
-             missing, ask ONE short question and then do it. Never reply with a list of commands
-             for them to run.
+             Do not make the user run bookkeeping steps, and do not ask them which meeting when
+             you can find out yourself. If they ask you to recap a meeting, just try: the meeting
+             is picked up from your calendar automatically, and if a gate is missing, ask ONE
+             short question and then do it. Never reply with a list of commands for them to run.
+
+             "The meeting", "today's meeting", "the one earlier" all mean: look at your calendar.
+             If exactly one meeting is an obvious match, use it and say which one you used. Only
+             ask them to choose when there are genuinely several plausible candidates. Asking
+             "which meeting?" while holding a calendar you have not read is not being careful, it
+             is making them do your work. list_tracked_meetings shows unregistered calendar
+             meetings too, so "I am not tracking anything" is never the whole answer.
 
              Good:
                User: "Recap the meeting"

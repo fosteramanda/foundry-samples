@@ -1392,3 +1392,27 @@ open question; v38 is what makes that testable in two messages instead of four.
 Preflight caught a real regression during this deploy: the "asks for invite" assertion
 failed because the wording changed. The rule held, the regex was stale, and the check
 saying what it defends is what made that distinguishable in seconds.
+
+### v39: the agent asked "which meeting?" while holding an unread calendar
+
+v38 auto-registers a meeting from the calendar, but the agent never got that far. Given
+"recap the meeting" it called `list_tracked_meetings`, got "no meetings are being tracked",
+and replied "Which meeting should I recap? I'm not currently tracking any meetings, so
+I'll need to be on the invite before I can read a transcript."
+
+Every clause of that is wrong in a different way. It WAS on the invite. There WAS a meeting
+with a transcript. And asking the user which meeting is useless when the tool that answers
+"which meetings exist" only reports registered ones, so the user's answer lands in the same
+empty registry.
+
+Root cause was the listing tool, not the auto-track. `list_tracked_meetings` reported the
+registry only. Fixed: it now also lists meetings on the agent's own calendar that are not
+registered yet, marked as such, with an explicit note that they can be recapped straight
+away. Prompt now says "the meeting" and "today's meeting" mean read your calendar, and that
+asking which meeting while holding an unread calendar is making the user do your work.
+
+Confirmed from App Insights that this was NOT a stale container: `Application starting...`
+at 05:10:58 UTC, the same minute Amanda typed. v38 was genuinely running and genuinely
+produced that answer.
+
+Deployed v39, 63/63.
