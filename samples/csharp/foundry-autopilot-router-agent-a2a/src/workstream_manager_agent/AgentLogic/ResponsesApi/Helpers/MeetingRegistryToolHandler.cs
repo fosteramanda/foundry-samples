@@ -341,9 +341,37 @@ public class MeetingRegistryToolHandler
     private async Task<string> ListTrackedAsync(string mailbox)
     {
         var all = await _store.ListAsync(mailbox);
-        if (all.Count == 0)
+
+        // Also show meetings sitting on the agent's own calendar that are not registered yet.
+        // Without this the agent answers "I am not tracking anything" and then asks the user
+        // which meeting they mean, which it cannot do anything with: the user names a meeting,
+        // the agent still has no list. It has a calendar. It should read it.
+        var candidates = new List<string>();
+        var from = DateTimeOffset.UtcNow.AddDays(-30);
+        var to = DateTimeOffset.UtcNow.AddDays(30);
+        var path = $"users/{Uri.EscapeDataString(mailbox)}/calendarView"
+                 + $"?startDateTime={from:yyyy-MM-ddTHH:mm:ssZ}&endDateTime={to:yyyy-MM-ddTHH:mm:ssZ}"
+                 + "&$select=subject,start,isOnlineMeeting&$orderby=start/dateTime&$top=100";
+
+        var (ok, response, _) = await SendGraphAsync(HttpMethod.Get, path);
+        if (ok)
         {
-            return $"No meetings are being tracked for {mailbox}.";
+            var items = JsonNode.Parse(response ?? "{}")?["value"] as JsonArray;
+            foreach (var e in items ?? [])
+            {
+                if (e?["isOnlineMeeting"]?.GetValue<bool>() != true) { continue; }
+                var subj = e?["subject"]?.GetValue<string>() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(subj)) { continue; }
+                if (all.Any(t => string.Equals(t.Subject, subj, StringComparison.OrdinalIgnoreCase))) { continue; }
+                candidates.Add($"- '{subj}' {e?["start"]?["dateTime"]?.GetValue<string>()} (on my calendar, not registered yet)");
+            }
+        }
+
+        if (all.Count == 0 && candidates.Count == 0)
+        {
+            return "I am not tracking any meetings, and there are none on my calendar either. Nobody has "
+                 + "invited me to a Teams meeting. Tell the user to add me to the invite the way they would "
+                 + "add a colleague.";
         }
 
         var lines = all.Select(m =>
@@ -351,10 +379,25 @@ public class MeetingRegistryToolHandler
             + $" | notice={(m.NoticeSentUtc.HasValue ? m.NoticeSentUtc.Value.ToString("yyyy-MM-dd") : "not sent")}"
             + $" | readable={(m.IsIngestionEligible ? "yes" : "NO")}"
             + $" | retention={(m.RetentionApproved ? "approved" : "not approved")}"
-            + $" | state={m.IngestionState}");
+            + $" | state={m.IngestionState}").ToList();
 
-        return $"Tracked meetings for {mailbox}:\n{string.Join("\n", lines)}\n"
-             + "'readable=NO' means I must not use that meeting's content, whatever else is set.";
+        var sb = new System.Text.StringBuilder();
+        if (lines.Count > 0)
+        {
+            sb.AppendLine("Registered meetings:");
+            sb.AppendLine(string.Join("\n", lines));
+            sb.AppendLine("'readable=NO' means I must not use that meeting's content, whatever else is set.");
+        }
+        if (candidates.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("On my calendar but not registered yet:");
+            sb.AppendLine(string.Join("\n", candidates));
+            sb.AppendLine("These can be recapped straight away: just call read_meeting_transcript with the "
+                        + "subject. Registering happens automatically. If exactly one of these is an obvious "
+                        + "match for what the user asked, use it rather than asking them to choose.");
+        }
+        return sb.ToString().TrimEnd();
     }
 
     private async Task<string> SetCaptureAsync(string mailbox, JsonNode? args)
