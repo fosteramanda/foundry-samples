@@ -115,12 +115,13 @@ public class MeetingRegistryToolHandler
             {
                 "type": "function",
                 "name": "set_meeting_capture",
-                "description": "Turns permission to use a tracked meeting's content on or off. Only the organizer should be doing this. Approving does NOT by itself make the meeting readable: participants must also have been notified, which is recorded with record_capture_notice. Say plainly which meeting is being changed and read the subject back.",
+                "description": "Turns permission to use a meeting's content on or off. Only the organizer should be doing this. If the meeting is not registered yet it is picked up from your calendar automatically. If the user says in the same breath that attendees were told (for example 'yes, I told everyone' or 'they know it's being captured'), set attendees_notified true so they are not asked twice. Read the meeting subject back so a wrong one is caught immediately.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "subject": { "type": "string", "description": "Subject of a meeting already returned by list_tracked_meetings." },
+                        "subject": { "type": "string", "description": "Subject of the meeting, as it appears on the calendar invite." },
                         "approved": { "type": "boolean", "description": "true to permit using this meeting's content, false to withdraw permission." },
+                        "attendees_notified": { "type": "boolean", "description": "Set true ONLY when the user has actually confirmed the other attendees were told the meeting may be captured. Never assume it from approval alone." },
                         "approve_retention": { "type": "boolean", "description": "Optional. true if the user also agreed the meeting may be kept beyond the immediate recap. Only set this when they said so explicitly; do not infer it from approving capture." }
                     },
                     "required": ["subject", "approved"],
@@ -216,6 +217,36 @@ public class MeetingRegistryToolHandler
         var from = ParseDateOrDefault(GetString(args, "on_or_after"), DateTimeOffset.UtcNow.AddDays(-30));
         var to = ParseDateOrDefault(GetString(args, "on_or_before"), DateTimeOffset.UtcNow.AddDays(30));
 
+        var (entity, error, wasAlreadyTracked) = await TrackFromCalendarAsync(mailbox, subject, from, to);
+        if (entity == null)
+        {
+            return error!;
+        }
+
+        var already = wasAlreadyTracked ? " It was already being tracked." : string.Empty;
+        return $"Now tracking '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} UTC).{already} "
+             + $"Capture is {(entity.CaptureApproved ? "APPROVED" : "NOT approved")} and participants have "
+             + $"{(entity.NoticeSentUtc.HasValue ? "been notified" : "NOT been notified")}. "
+             + "Tell the user tracking alone does not let me read what was said, and ask whether they want to approve capture.";
+    }
+
+    /// <summary>
+    /// Registers a meeting from the agent's own calendar, or returns the existing record.
+    ///
+    /// Separated out so the other tools can call it. Requiring the user to run track_meeting as a
+    /// distinct step before anything else was pure bookkeeping: the meeting is already on the
+    /// agent's calendar because someone invited it, so asking a human to announce that fact adds
+    /// nothing. Registering is not a permission, so doing it automatically grants nothing.
+    /// </summary>
+    private async Task<(TrackedMeetingEntity? Entity, string? Error, bool WasAlreadyTracked)> TrackFromCalendarAsync(
+        string mailbox,
+        string subject,
+        DateTimeOffset? fromUtc = null,
+        DateTimeOffset? toUtc = null)
+    {
+        var from = fromUtc ?? DateTimeOffset.UtcNow.AddDays(-30);
+        var to = toUtc ?? DateTimeOffset.UtcNow.AddDays(30);
+
         var path = $"users/{Uri.EscapeDataString(mailbox)}/calendarView"
                  + $"?startDateTime={from:yyyy-MM-ddTHH:mm:ssZ}&endDateTime={to:yyyy-MM-ddTHH:mm:ssZ}"
                  + "&$select=subject,start,end,organizer,isOnlineMeeting,onlineMeeting&$orderby=start/dateTime&$top=100";
@@ -223,7 +254,7 @@ public class MeetingRegistryToolHandler
         var (ok, response, error) = await SendGraphAsync(HttpMethod.Get, path);
         if (!ok)
         {
-            return DescribeFailure("read the calendar of", mailbox, error);
+            return (null, DescribeFailure("read my own calendar", mailbox, error), false);
         }
 
         var items = JsonNode.Parse(response ?? "{}")?["value"] as JsonArray;
@@ -235,17 +266,31 @@ public class MeetingRegistryToolHandler
 
         if (matches.Count == 0)
         {
-            return $"No Teams meeting matching '{subject}' is on my calendar between "
-                 + $"{from:yyyy-MM-dd} and {to:yyyy-MM-dd}. I can only recap meetings I was invited to. "
-                 + "Tell the user to add me to the meeting invite, the same way they would add a colleague, "
-                 + "and then ask again. Do not invent a meeting and do not look at anyone else's calendar.";
+            var visible = (items ?? [])
+                .Where(e => e?["isOnlineMeeting"]?.GetValue<bool>() == true)
+                .Select(e => $"'{e?["subject"]?.GetValue<string>()}'")
+                .Distinct()
+                .Take(5)
+                .ToList();
+
+            // Naming what IS on the calendar turns "I cannot find it" into something the user can
+            // act on: usually they used a different word than the actual subject.
+            var alternatives = visible.Count > 0
+                ? $" Meetings I was invited to in that window: {string.Join(", ", visible)}."
+                : " I have no Teams meetings on my calendar in that window at all, so nobody has invited me to one.";
+
+            return (null,
+                $"No Teams meeting matching '{subject}' is on my calendar between {from:yyyy-MM-dd} and "
+                + $"{to:yyyy-MM-dd}.{alternatives} I can only recap meetings I was invited to. If it is missing, "
+                + "the fix is to add me to the invite the way you would add a colleague. Do not invent a meeting "
+                + "and do not look at anyone else's calendar.", false);
         }
 
         if (matches.Count > 1)
         {
             var list = string.Join("; ", matches.Take(5).Select(m =>
                 $"'{m?["subject"]?.GetValue<string>()}' on {m?["start"]?["dateTime"]?.GetValue<string>()}"));
-            return $"'{subject}' matched {matches.Count} meetings: {list}. Ask the user which one before tracking anything.";
+            return (null, $"'{subject}' matched {matches.Count} meetings: {list}. Ask the user which one before going further.", false);
         }
 
         var ev = matches[0];
@@ -254,8 +299,8 @@ public class MeetingRegistryToolHandler
 
         if (string.IsNullOrWhiteSpace(threadId))
         {
-            return "That meeting has no Teams thread id on the calendar entry, so there is nothing stable to "
-                 + "track it by. Tell the user it cannot be tracked rather than storing a partial record.";
+            return (null, "That meeting has no Teams thread id on the calendar entry, so there is nothing stable "
+                        + "to track it by. Tell the user it cannot be tracked rather than storing a partial record.", false);
         }
 
         // Partitioned by the agent's own mailbox, because that is whose calendar these meetings are
@@ -287,14 +332,10 @@ public class MeetingRegistryToolHandler
 
         if (!await _store.UpsertAsync(entity))
         {
-            return "I could not save that meeting to the registry, so it is NOT being tracked. Say so plainly.";
+            return (null, "I could not save that meeting to the registry, so it is NOT being tracked. Say so plainly.", false);
         }
 
-        var already = existing != null ? " It was already being tracked." : string.Empty;
-        return $"Now tracking '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} UTC).{already} "
-             + $"Capture is {(entity.CaptureApproved ? "APPROVED" : "NOT approved")} and participants have "
-             + $"{(entity.NoticeSentUtc.HasValue ? "been notified" : "NOT been notified")}. "
-             + "Tell the user tracking alone does not let me read what was said, and ask whether they want to approve capture.";
+        return (entity, null, existing != null);
     }
 
     private async Task<string> ListTrackedAsync(string mailbox)
@@ -321,6 +362,7 @@ public class MeetingRegistryToolHandler
         var subject = GetString(args, "subject");
         var approved = args?["approved"]?.GetValue<bool>() ?? false;
         var approveRetention = args?["approve_retention"]?.GetValue<bool>();
+        var attendeesNotified = args?["attendees_notified"]?.GetValue<bool>();
 
         var match = await FindTrackedAsync(mailbox, subject);
         if (match.Error != null)
@@ -354,6 +396,17 @@ public class MeetingRegistryToolHandler
             entity.RetentionApproved = approveRetention.Value;
         }
 
+        // Recorded here only when the user actually said the attendees were told. It is still a
+        // separate field and a separate assertion; this just avoids making them say it twice in
+        // the same conversation.
+        if (approved && attendeesNotified == true && !entity.NoticeSentUtc.HasValue)
+        {
+            entity.NoticeSentUtc = DateTimeOffset.UtcNow;
+            _logger.LogInformation(
+                "Capture notice recorded alongside approval for '{Subject}' ({ThreadId})",
+                entity.Subject, entity.ThreadId);
+        }
+
         if (!await _store.UpsertAsync(entity))
         {
             return "I could not save that change, so the previous setting still stands. Say so plainly.";
@@ -365,9 +418,10 @@ public class MeetingRegistryToolHandler
         }
 
         return entity.NoticeSentUtc.HasValue
-            ? $"Capture is now ON for '{entity.Subject}' and participants were notified on {entity.NoticeSentUtc:yyyy-MM-dd}. It is eligible to be read."
+            ? $"Capture is now ON for '{entity.Subject}' and participants were notified on {entity.NoticeSentUtc:yyyy-MM-dd}. It is eligible to be read, so go ahead and answer what the user originally asked."
             : $"Capture is now ON for '{entity.Subject}', but participants have NOT been notified yet, so I still must not read it. "
-              + "Tell the user the notice has to go to the attendees first, then call record_capture_notice once it has actually been sent.";
+              + "Ask the user one short question: have the attendees been told the meeting may be captured? If they confirm, "
+              + "call set_meeting_capture again with attendees_notified true.";
     }
 
     private async Task<string> RecordNoticeAsync(string mailbox, JsonNode? args)
@@ -554,7 +608,13 @@ public class MeetingRegistryToolHandler
 
         if (matches.Count == 0)
         {
-            return (null, $"'{subject}' is not being tracked. Track it first; do not assume a permission that was never recorded.");
+            // Not in the registry yet. Rather than telling the user to go and run a separate
+            // tracking command, look on the agent's own calendar and register it. Registering is
+            // not permission: the entry is created with capture off, so the gates still apply
+            // unchanged. This exists because making a human run bookkeeping steps before the agent
+            // will answer a question is the agent failing to do its job.
+            var (entity, error, _) = await TrackFromCalendarAsync(mailbox, subject);
+            return entity != null ? (entity, null) : (null, error);
         }
 
         if (matches.Count > 1)

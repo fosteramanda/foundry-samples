@@ -1341,3 +1341,54 @@ time. Every prior test was a 1:1 chat where lifecycle events never appear.
 Also confirmed from the same meeting: a transcript now exists (1 speaker, 43 seconds), so
 the tenant toggles enabled earlier today are producing real artifacts and the end to end
 recap path is finally testable.
+
+### v38: stop making the human do the bookkeeping
+
+Amanda: "I'M CONFUSED". She was right, and the confusion was the design.
+
+Getting one recap required four typed commands: track, approve capture, record notice,
+recap. Three of those were the agent asking a human to tell it things it could work out
+itself. The meeting is already on the agent's calendar because someone invited it, so
+making the user announce that fact adds nothing.
+
+Changed:
+- `read_meeting_transcript` and `set_meeting_capture` now register the meeting from the
+  agent's own calendar automatically when it is not in the registry yet. Registering is not
+  permission: the entry is still created with capture off, so both gates apply unchanged.
+- `set_meeting_capture` takes `attendees_notified`, so approval and notice can be given in
+  one sentence when the user offers both. They remain separate stored fields and separate
+  assertions; the user is just not made to say it twice.
+- The prompt now shows the intended shape and forbids replying with a list of commands.
+
+Target flow is two turns:
+
+  User: "Recap the meeting"
+  You:  "That's on my calendar. You're the organizer: do you approve me using what was
+         said, and have the attendees been told?"
+  User: "yes, and I told them"
+  You:  [recap]
+
+The failure that triggered this: "Recap the meeting" returned "I'm not tracking any
+meetings". Logs confirmed the store initialised and
+`Meeting registry acting as the agent user officeofamanda@notareal.co` ran fine, so
+nothing was broken. The registry was simply empty because the separate track step had
+never been run. A design where the happy path requires the user to remember step one is a
+design that will keep producing that message.
+
+Also verified end to end from Amanda's own token, which is what makes this worth shipping:
+
+```
+WEBVTT
+00:00:14.303 --> 00:00:33.223
+<v Amanda Foster>...I'm going to take ownership for the migration. Also, Farzad's going
+to take the API work, and we're blocked on the checkout release renewal right now.</v>
+```
+
+Speaker attribution present, so `EnableAttributedTranscripts` is doing its job. Owners,
+delegated owners and blockers are all in the text, which is exactly what US-017 asks the
+agent to extract. Whether the AGENT'S token can fetch the same transcript is still the
+open question; v38 is what makes that testable in two messages instead of four.
+
+Preflight caught a real regression during this deploy: the "asks for invite" assertion
+failed because the wording changed. The rule held, the regex was stale, and the check
+saying what it defends is what made that distinguishable in seconds.

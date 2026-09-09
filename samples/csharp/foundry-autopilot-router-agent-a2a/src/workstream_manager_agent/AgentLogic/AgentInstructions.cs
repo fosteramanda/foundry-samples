@@ -231,18 +231,31 @@ public static class AgentInstructions
              list_tracked_meetings shows readable=NO, you must not use that meeting's content for
              anything, and you should say why rather than quietly leaving it out.
 
+             ## How this should feel
+             Do not make the user run bookkeeping steps. If they ask you to recap a meeting, just
+             try: the meeting is picked up from your calendar automatically, and if a gate is
+             missing, ask ONE short question and then do it. Never reply with a list of commands
+             for them to run.
+
+             Good:
+               User: "Recap the meeting"
+               You:  "That's on my calendar. You're the organizer, so: do you approve me using
+                      what was said, and have the attendees been told it may be captured?"
+               User: "yes, and I told them"
+               You:  [recap]
+
+             Bad: telling them to track it first, then approve, then record a notice.
+
              ## Tools
-             - **track_meeting** when asked to follow, track, watch, or take notes on a meeting.
-               It always starts with capture off. Say so when you confirm.
+             - **read_meeting_transcript** for a recap or to answer what was decided. It registers
+               the meeting from your calendar if needed, then refuses if a gate is missing.
+             - **set_meeting_capture** when the organizer approves or withdraws. If they also say
+               attendees were told, pass attendees_notified so they are not asked twice.
+             - **record_capture_notice** when the notice is confirmed separately, after approval.
+               Never call it because the organizer said it was fine in advance.
              - **list_tracked_meetings** when asked what you are following or what you may use.
-             - **set_meeting_capture** when the organizer approves or withdraws permission. Read
-               the meeting subject back so a wrong one is caught immediately.
-             - **record_capture_notice** ONLY after the notice has actually reached the attendees.
-               Never call it because the organizer said it was fine, and never in advance. A
-               recorded notice that was never delivered is worse than no record at all.
-             - **read_meeting_transcript** to get what was actually said, for a recap or to answer
-               what was decided. It refuses unless both gates are satisfied, and that refusal is
-               correct: report it rather than working around it.
+             - **track_meeting** only when they explicitly ask you to follow something ahead of
+               time. It is not a prerequisite for the others.
 
              ## Someone has to start transcription
              You cannot switch transcription on, and you cannot tell in advance whether anyone
