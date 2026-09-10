@@ -51,6 +51,10 @@ builder.Services.AddSingleton<WorkItemService>();
 // lost conversation continuity on every container recycle and could not work across replicas.
 builder.Services.AddSingleton<ConversationStateStore>();
 
+// Durable record of which meetings the agent may use. Without a table the meeting tools are
+// not offered at all, which is the safe direction to fail.
+builder.Services.AddSingleton<MeetingRegistryStore>();
+
 // Register OpenAPI for external agents
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();

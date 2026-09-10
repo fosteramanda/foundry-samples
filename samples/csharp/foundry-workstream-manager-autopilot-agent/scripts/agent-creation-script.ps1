@@ -49,6 +49,11 @@
   # here changes the pin without rebuilding the image (appsettings.json holds the baked default).
   if (-not [string]::IsNullOrWhiteSpace($env:TOOLBOX_VERSION)) {
       $environmentVariables.ToolboxVersion = $env:TOOLBOX_VERSION
+# Routine tools disable themselves without these two: RoutineToolHandler.IsEnabled requires a
+# project endpoint and an agent name, and appsettings ships them empty so the env var is what
+# actually supplies them. Without this the scheduling tools vanish with no error at all.
+$environmentVariables.FoundryProjectEndpoint = $env:AZURE_AI_PROJECT_ENDPOINT
+$environmentVariables.FoundryAgentName = $env:AGENT_NAME
   }
 
   $agentUrl = "$($AzureAIProjectEndpoint)/agents/$($AgentName)/versions?api-version=2025-11-15-preview"

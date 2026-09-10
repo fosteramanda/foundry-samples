@@ -37,6 +37,22 @@ internal class ResponsesApiClient
     // but tool sources also get fixed out from under us, so the quarantine must expire by itself.
     private static readonly ConcurrentDictionary<string, (DateTime ExpiresUtc, string Reason)> _quarantinedMcpServers = new();
 
+    /// <summary>
+    /// Whether the routine tools are attached this turn. Set from the handler's real state so
+    /// the prompt never offers to schedule standing work the agent cannot create.
+    /// </summary>
+    internal bool RoutinesEnabled { get; set; }
+
+    /// <summary>
+    /// Whether the meeting registry tools are attached. Requires durable storage: without a
+    /// table there is nowhere to record a capture decision, and the prompt must not describe a
+    /// permission the agent cannot persist.
+    /// </summary>
+    internal bool MeetingRegistryEnabled { get; set; }
+
+    /// <summary>Whether the chat work-item tracker is attached.</summary>
+    internal bool WorkItemsEnabled { get; set; } = true;
+
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
         ILogger logger,
@@ -77,7 +93,11 @@ internal class ResponsesApiClient
         var instructions = instructionsOverride ?? AgentInstructions.GetInstructions(
             _agentMetadata,
             _configuration["SourceOfTruthAgentId"],
-            _configuration["SourceOfTruthAgentName"]);
+            _configuration["SourceOfTruthAgentName"],
+            _configuration["ToolboxName"],
+            RoutinesEnabled,
+            WorkItemsEnabled,
+            MeetingRegistryEnabled);
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.
@@ -882,4 +902,5 @@ internal class ResponsesApiClient
 }
 
 internal record ResponsesApiFunctionCall(string CallId, string Name, string Arguments);
+
 
