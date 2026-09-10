@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and fill in. Never commit real values.
+
+platform_subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id                = "00000000-0000-0000-0000-000000000000"
+
+# Match hub-base.
+# name_prefix        = "contoso-byom"
+# hub_base_state_path = "../01-hub-base/terraform.tfstate"
+
+# APIM publisher (required by APIM at create time).
+apim_publisher_email = "platform-admins@contoso.example"
+
+# Provider keys — bring your own.
+gemini_api_key = "REPLACE-GOOGLE-AI-STUDIO-KEY"
+groq_api_key   = "REPLACE-GROQ-KEY"

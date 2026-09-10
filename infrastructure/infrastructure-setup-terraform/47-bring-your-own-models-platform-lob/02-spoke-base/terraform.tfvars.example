@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and fill in.
+
+spoke_subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id             = "00000000-0000-0000-0000-000000000000"
+
+# Optional overrides.
+# location    = "swedencentral"
+# name_prefix = "contoso-byom-lob"
+# lob_name    = "alpha"
+
+# hub_base_state_path = "../01-hub-base/terraform.tfstate"

@@ -1,0 +1,9 @@
+# The one and only file spokes edit via PR.
+# Copy to allowlist.auto.tfvars and add one OID per spoke project MI.
+# Terraform auto-loads any file ending in .auto.tfvars, so no CLI flag is
+# needed.
+
+project_oid_allowlist = [
+  # "11111111-2222-3333-4444-555555555555", # lob-hr / dev
+  # "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", # lob-finance / dev
+]

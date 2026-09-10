@@ -1,0 +1,5 @@
+spoke_subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id             = "00000000-0000-0000-0000-000000000000"
+
+# If empty, listener host header defaults to the AGW's public *.cloudapp.azure.com FQDN.
+# agent_endpoint_hostname = ""

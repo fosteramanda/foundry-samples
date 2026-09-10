@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in.
+
+platform_subscription_id = "00000000-0000-0000-0000-000000000000"
+spoke_subscription_id    = "00000000-0000-0000-0000-000000000000"
+
+# hub_base_state_path   = "../01-hub-base/terraform.tfstate"
+# spoke_base_state_path = "../02-spoke-base/terraform.tfstate"

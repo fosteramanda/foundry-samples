@@ -1,0 +1,5 @@
+platform_subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id                = "00000000-0000-0000-0000-000000000000"
+
+# Do NOT edit project_oid_allowlist here. It lives in allowlist.auto.tfvars —
+# that is the file the step-4 PR edits. See allowlist.auto.tfvars.example.

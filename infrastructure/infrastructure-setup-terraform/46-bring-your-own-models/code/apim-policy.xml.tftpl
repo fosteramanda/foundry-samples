@@ -1,0 +1,169 @@
+<!--
+    Multi-vendor AI Gateway policy.
+
+    This policy is rendered by Terraform (`templatefile`) and attached to
+    the /inference API. It performs, in order:
+
+      1. Validate the caller's Entra ID token and confirm its `appid` claim
+         matches an allow-listed Foundry project managed identity.
+      2. Extract the requested deployment name (the model alias) and the
+         calling project ID (JWT `appid`) into policy variables.
+      3. Enforce a token budget per project via `llm-token-limit`, keyed on
+         the calling project's client ID.
+      4. Dispatch to the correct upstream vendor based on the alias, using
+         a distinct auth + backend strategy per vendor:
+             * Foundry alias → managed-identity auth to the Foundry account
+             * Gemini alias  → Bearer-key auth via APIM named value
+             * Groq alias    → Bearer-key auth via APIM named value
+      5. Emit trace headers (project id, alias, vendor) to make Log
+         Analytics queryable across every vendor and every project.
+      6. Return a governed 404 when the alias is not in the approved
+         catalog (the "negative-path" governance demo).
+
+    APIM policy syntax uses `@(...)` for expressions and `{{named-value}}`
+    for named values; only Terraform's `$${...}` interpolation is applied to
+    this file, so the two are non-overlapping.
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <!-- 1. Validate Entra ID token and gate on the oid (project MI object ID) allowlist.
+             We use `oid` (not `appid`) so no Graph lookup is required at deploy time.
+             `output-token-variable-name` stashes the parsed JWT into a context
+             variable so downstream steps can read claims without re-parsing. -->
+        <validate-azure-ad-token
+            tenant-id="${tenant_id}"
+            output-token-variable-name="validatedJwt"
+            failed-validation-httpcode="401"
+            failed-validation-error-message="Unauthorized: token missing, invalid, or not from an approved Foundry project.">
+            <audiences>
+                <audience>${token_audience}</audience>
+            </audiences>
+            <required-claims>
+                <claim name="oid" match="any">
+                    <value>${project_alpha_oid}</value>
+                    <value>${project_beta_oid}</value>
+                </claim>
+            </required-claims>
+        </validate-azure-ad-token>
+
+        <!-- 2. Extract routing key (alias) and per-caller quota key (project oid).
+             `jwt.Claims["oid"]` returns string[], so use FirstOrDefault(). -->
+        <set-variable name="modelAlias" value="@((string)context.Request.MatchedParameters.GetValueOrDefault("deploymentName", ""))" />
+        <set-variable name="callerProjectId" value="@{
+            var jwt = (Jwt)context.Variables["validatedJwt"];
+            if (jwt == null || !jwt.Claims.ContainsKey("oid")) { return "unknown"; }
+            return jwt.Claims["oid"].FirstOrDefault() ?? "unknown";
+        }" />
+
+        <!-- 3. Per-project token budget. `counter-key` binds the quota to the
+             calling project's managed-identity appid, so Project Alpha and
+             Project Beta are metered independently even though they share
+             one gateway. -->
+        <llm-token-limit
+            counter-key="@((string)context.Variables["callerProjectId"])"
+            tokens-per-minute="${quota_tokens_per_minute}"
+            estimate-prompt-tokens="true"
+            tokens-consumed-header-name="x-aigw-tokens-consumed"
+            remaining-tokens-header-name="x-aigw-tokens-remaining" />
+
+        <!-- 4. Route on alias to the correct vendor branch. -->
+        <choose>
+            <!-- Foundry (Microsoft) branch: managed-identity auth to the
+                 Foundry model account. The incoming path is
+                 /deployments/{alias}/chat/completions; Foundry expects
+                 /openai/deployments/{alias}/chat/completions, so we
+                 prepend /openai via rewrite-uri. -->
+            <when condition="@(((string)context.Variables["modelAlias"]) == "${foundry_alias}")">
+                <set-variable name="vendor" value="microsoft-foundry" />
+                <set-backend-service base-url="${foundry_endpoint}/openai" />
+                <authentication-managed-identity resource="${foundry_managed_id_res}" />
+            </when>
+
+            <!-- Google Gemini (OpenAI-compatible endpoint). Uses a Bearer
+                 API key retrieved from Key Vault via an APIM named value.
+                 Rewrite the URL to Google's flat /chat/completions path
+                 and inject the upstream model name into the request body
+                 because Google routes by body.model, not by URL. -->
+            <when condition="@(((string)context.Variables["modelAlias"]) == "${gemini_alias}")">
+                <set-variable name="vendor" value="google-gemini" />
+                <set-backend-service base-url="${gemini_upstream}" />
+                <rewrite-uri template="/chat/completions" />
+                <set-header name="Authorization" exists-action="override">
+                    <value>@("Bearer " + "{{gemini-api-key}}")</value>
+                </set-header>
+                <set-body>@{
+                    var body = context.Request.Body.As<JObject>(preserveContent: true);
+                    body["model"] = "${gemini_model}";
+                    return body.ToString();
+                }</set-body>
+            </when>
+
+            <!-- Groq (Llama, OpenAI-compatible). Same shape as Gemini. -->
+            <when condition="@(((string)context.Variables["modelAlias"]) == "${groq_alias}")">
+                <set-variable name="vendor" value="groq-llama" />
+                <set-backend-service base-url="${groq_upstream}" />
+                <rewrite-uri template="/chat/completions" />
+                <set-header name="Authorization" exists-action="override">
+                    <value>@("Bearer " + "{{groq-api-key}}")</value>
+                </set-header>
+                <set-body>@{
+                    var body = context.Request.Body.As<JObject>(preserveContent: true);
+                    body["model"] = "${groq_model}";
+                    return body.ToString();
+                }</set-body>
+            </when>
+
+            <!-- Governance negative path: alias is not in the approved
+                 catalog. Return a friendly 404 and short-circuit routing. -->
+            <otherwise>
+                <set-variable name="vendor" value="unknown" />
+                <return-response>
+                    <set-status code="404" reason="Model alias not in approved catalog" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>@{
+                        var alias = (string)context.Variables["modelAlias"];
+                        return "{\"error\":{\"code\":\"model_not_approved\",\"message\":\"Model alias '" + alias + "' is not in the approved Contoso catalog. Contact the Platform team.\"}}";
+                    }</set-body>
+                </return-response>
+            </otherwise>
+        </choose>
+
+        <!-- 5. Stamp correlating trace headers for unified telemetry. -->
+        <set-header name="x-aigw-project-id" exists-action="override">
+            <value>@((string)context.Variables["callerProjectId"])</value>
+        </set-header>
+        <set-header name="x-aigw-model-alias" exists-action="override">
+            <value>@((string)context.Variables["modelAlias"])</value>
+        </set-header>
+        <set-header name="x-aigw-vendor" exists-action="override">
+            <value>@((string)context.Variables["vendor"])</value>
+        </set-header>
+    </inbound>
+
+    <backend>
+        <base />
+    </backend>
+
+    <outbound>
+        <base />
+        <!-- Echo trace headers on the response so callers/log pipelines
+             can correlate without parsing the request. -->
+        <set-header name="x-aigw-project-id" exists-action="override">
+            <value>@((string)context.Variables["callerProjectId"])</value>
+        </set-header>
+        <set-header name="x-aigw-model-alias" exists-action="override">
+            <value>@((string)context.Variables["modelAlias"])</value>
+        </set-header>
+        <set-header name="x-aigw-vendor" exists-action="override">
+            <value>@((string)context.Variables["vendor"])</value>
+        </set-header>
+    </outbound>
+
+    <on-error>
+        <base />
+    </on-error>
+</policies>
