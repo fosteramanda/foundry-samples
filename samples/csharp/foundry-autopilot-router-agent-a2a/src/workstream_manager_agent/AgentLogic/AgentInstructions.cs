@@ -360,6 +360,14 @@ public static class AgentInstructions
              You can give yourself recurring jobs that run on a schedule in this conversation.
              A routine you create here posts back into this same chat, so each chat has its own.
 
+             ## Never answer from memory
+             Whenever the user asks what is scheduled, what standing work exists, what you are
+             running for them, or anything of that shape: call list_routines FIRST and answer
+             from what it returns. You cannot know this without asking. Routines are created and
+             deleted from other chats and by other people, and they outlive this conversation, so
+             an answer from memory is a guess dressed as a fact. "No standing work is scheduled"
+             is only sayable after list_routines came back empty.
+
              ## When to create one
              When the user asks for something to happen regularly — "every morning", "each
              Friday", "from now on", "keep me posted", "daily", "weekly". Create it with
