@@ -1686,3 +1686,49 @@ container telemetry in 90 days. Build args and Dockerfile are identical to the a
 does log, and the App Insights connection matches, so the container appears never to have
 started. If v17 produces logs on first use, that resolves itself; if it does not, the
 messages are not reaching the container and no amount of code change will show up.
+
+### Runtime-verified, and one real defect found (v18, 2026-09-10)
+
+Amanda asked "did you test this". Honest answer at the time was no: build, preflight and
+25 in-process assertions had passed, but nothing had run. She tested. Results:
+
+**Test 1, meetings — PASS, and it proves the whole port.** The agent answered "I'm not
+tracking any meetings, and I don't have any meeting invites on my calendar. Add me to the
+invite the same way you'd add a colleague." Telemetry confirms it was real work, not a
+plausible sentence:
+
+```
+07:07:53  Application starting...
+07:07:55  MeetingRegistryStore initialized with table meetingregistry
+07:07:59  "You are a Workstream Manager autopilot."
+07:10:21  Meeting registry acting as the agent user
+          checkout-workstream-manager@notareal.co, reading its own calendar.
+```
+
+That single line settles four separate open questions: the container starts, the store
+resolves a table (the fallback chain was inference until now), the persona survived the
+port, and the handler resolves ITS OWN mailbox rather than the manager's.
+
+**Test 3, ADO — PASS, no regression.** Real data: Epic #61, all 8 launch gates Active, 5
+Active features, 7 open bugs, named blockers. The port did not break what this agent
+existed for, which was the largest risk in taking instructions from a sibling sample.
+
+**The 90-day telemetry mystery is closed.** It was not broken. The container had simply
+never been invoked in the retention window. Nothing to fix.
+
+**Test 2, routines — FAIL, and Amanda spotted it.** Asked what standing work was scheduled,
+the agent replied "No standing work is scheduled." That is a true statement it had no way
+to know. Dependency telemetry shows no call to the routines API, and all prompt sections
+including the routines one were present, so the tools were attached and simply never
+called. It guessed, and was right by luck.
+
+Worth being precise about why this was nearly missed: the answer was correct, brief and
+confident. Only the absence of an outbound call gave it away. A wiring bug would have been
+obvious; a model answering from nothing looks like success.
+
+Fixed by making the obligation explicit rather than implied, the same way the calendar
+tools already say to read every time: routines questions must call list_routines first, and
+"no standing work is scheduled" is only sayable after an empty result. Applied to both this
+sample and the router sample, which had the identical gap. Preflight now asserts it.
+
+Deployed v18, 25/25.
