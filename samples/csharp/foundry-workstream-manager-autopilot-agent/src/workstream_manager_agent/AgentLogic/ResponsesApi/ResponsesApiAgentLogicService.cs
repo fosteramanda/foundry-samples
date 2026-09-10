@@ -2,6 +2,7 @@ namespace WorkstreamManager.AgentLogic.ResponsesApi;
 
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using WorkstreamManager.Models;
 using WorkstreamManager.Services;
 using WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
@@ -24,6 +25,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly AccessControlService _accessControl;
     private readonly AddressedToAgentGate _addressedToAgentGate;
     private readonly ReactionService _reactionService;
+    private readonly RoutineToolHandler _routineTools;
+    private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -32,7 +35,9 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         string accessToken,
         List<McpServerConfig> mcpServers,
         string? graphAccessToken = null,
-        ConversationStateStore? conversationState = null)
+        ConversationStateStore? conversationState = null,
+        AgentTokenHelper? tokenHelper = null,
+        MeetingRegistryStore? meetingRegistry = null)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -60,10 +65,55 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             workItemService = new WorkItemService(configuration, new LoggerFactory().CreateLogger<WorkItemService>());
         }
         _workItemTools = new WorkItemToolHandler(agentMetadata, _logger, graphAccessToken, httpClient, workItemService, _reactionService);
+
+        // Standing scheduled work. Disables itself when the project endpoint or agent name is
+        // missing rather than advertising a tool that cannot create anything.
+        _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
+        _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
+
+        // Meeting capture. Only constructed when durable storage exists: a capture decision
+        // that cannot be written down must not be offered, because the agent would report a
+        // permission it has no record of and cannot honour on the next turn.
+        if (meetingRegistry != null)
+        {
+            _meetingRegistryTools = new MeetingRegistryToolHandler(
+                agentMetadata, _logger, httpClient, _configuration, graphAccessToken, meetingRegistry);
+            _responsesApiClient.MeetingRegistryEnabled = _meetingRegistryTools.IsEnabled;
+        }
+
+        // Derived from the handler itself rather than re-reading config, so the prompt can
+        // never describe a tracker whose tools were not attached.
+        _responsesApiClient.WorkItemsEnabled = _workItemTools.GetToolDefinitions().Count > 0;
         _teamsHelper = new TeamsActivityHelper(_logger);
         _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken, httpClient, _teamsHelper, _workItemTools);
         _addressedToAgentGate = new AddressedToAgentGate(_logger, _configuration, _responsesApiClient, _teamsHelper, httpClient, graphAccessToken);
     }
+
+    /// <summary>
+    /// Every locally-executed tool the model may call this turn. Handlers that are disabled
+    /// contribute nothing, so the model is never offered a tool the agent cannot run.
+    /// </summary>
+    private List<JsonNode> BuildLocalToolDefinitions()
+    {
+        var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
+        tools.AddRange(_routineTools.GetToolDefinitions());
+        if (_meetingRegistryTools != null)
+        {
+            tools.AddRange(_meetingRegistryTools.GetToolDefinitions());
+        }
+        return tools;
+    }
+
+    /// <summary>
+    /// Dispatches a local tool call to whichever handler owns it. Returns null when no handler
+    /// recognises the name, which the caller reports back to the model.
+    /// </summary>
+    private async Task<string?> ExecuteLocalToolAsync(string toolName, string arguments)
+        => await _workItemTools.TryExecuteAsync(toolName, arguments)
+           ?? await _routineTools.TryExecuteAsync(toolName, arguments)
+           ?? (_meetingRegistryTools != null
+                ? await _meetingRegistryTools.TryExecuteAsync(toolName, arguments)
+                : null);
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
@@ -142,11 +192,15 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // Capture activity context for 📌 reaction on work item creation
         _workItemTools.SetCurrentActivityContext(turnContext.Activity);
 
+        // A routine created this turn must post into THIS conversation when it fires, so the
+        // routine tools need the activity that addresses it.
+        _routineTools.SetCurrentActivityContext(turnContext.Activity);
+
         var response = await _responsesApiClient.InvokeAsync(
             input: incomingText ?? string.Empty,
             conversationId: conversationId,
-            additionalTools: _workItemTools.GetToolDefinitions(),
-            localToolExecutor: _workItemTools.TryExecuteAsync);
+            additionalTools: BuildLocalToolDefinitions(),
+            localToolExecutor: ExecuteLocalToolAsync);
 
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse

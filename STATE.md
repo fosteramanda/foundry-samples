@@ -1599,3 +1599,90 @@ All 7 instances still hold zero direct grants, so this only helps if inheritance
 delivers. Learn states inherited permissions "aren't visible through Microsoft Graph. They
 are only observable in the token contents at runtime", so whether these eight now reach an
 instance token cannot be confirmed from here. A live turn from Checkout v4.3 is the test.
+
+---
+
+## workstreammanagerado v17: meetings + routines ported to the ADO agent (2026-09-09)
+
+Amanda asked for a new agent version of the WORKSTREAM MANAGER agent, implementing what a
+customer backlog asks for and what we are confident in. Her instance
+`Checkout v4.3 Workstream Manager` is what should see the change.
+
+Critical routing fact, easy to get wrong: `Checkout v4.3` is an instance of the
+`workstreammanagerado` Foundry agent, which builds from
+`samples/csharp/foundry-workstream-manager-autopilot-agent`. It is NOT the agent Office of
+Amanda runs (`autopilotroutera2a`, from `foundry-autopilot-router-agent-a2a`). All the
+meeting and routine work this session landed in the latter, so it had to be ported.
+
+### What was ported, and what deliberately was not
+
+Ported: `RoutineToolHandler`, `MeetingRegistryToolHandler`, `MeetingRegistryStore`, plus the
+prompt sections and the DI/factory/client wiring.
+
+NOT ported, on purpose:
+- `ManagerMailboxToolHandler` — sends mail and books meetings AS the manager. That is a
+  different trust decision for a team agent than for a personal one, and it needs an
+  Exchange delegation this agent user does not have.
+- `WorkIqA2AToolHandler`, `PendingDelegationStore`, `DelegationFollowUpService` — this agent
+  already has its own source-of-truth delegation path.
+
+### Surgical port, not a tree sync
+
+The first instinct was to copy the newer tree wholesale, since the target is 24 files and
+all of them exist in the source. That was wrong. Diffing what the copy would REMOVE showed
+the target has content of its own:
+
+```
+"You are a helpful agent named Workstream Manager Autopilot"   <- its identity
+DefaultAgentName = "Workstream Manager Autopilot"              <- addressed-to-agent gate
+ComputeMcpFingerprint(...)                                     <- MCP fingerprinting
+```
+
+So only the three genuinely new files were copied, `AgentInstructions.cs` was taken and its
+persona restored, and everything else was edited in place.
+
+### The silent failure that would have shipped
+
+`RoutineToolHandler.IsEnabled` needs `FoundryProjectEndpoint` and `FoundryAgentName`.
+`appsettings.json` ships both empty, and empty is not null, so the `?? Environment.
+GetEnvironmentVariable(...)` fallback never fires. The values come from the agent's
+`environment_variables`, set in `agent-creation-script.ps1` — and the workstream manager
+copy of that script never set them. Routines would have deployed, advertised nothing, and
+raised no error. Both are now set, confirmed on the deployed v17.
+
+### Phantom capability caught by its own test
+
+Copying `AgentInstructions.cs` brought `BuildManagerMailboxSection` with it while the
+handler was deliberately left behind. The prompt would have described `send_email_as_manager`
+if the flag were ever set. Removed the section and the parameter entirely, so it cannot be
+switched on. Preflight now asserts its absence.
+
+### Backlog coverage claimed
+
+Meeting capture, opt-in and participant notice, transcript use, and scheduled recurring work
+are covered by the ported handlers. Answer-quality behaviour (separating evidence from
+recommendation, and naming the missing source rather than answering unsupported) is covered
+by prompt language rather than new code. Deliberately NOT attempted: shared memory, the
+kanban board, cross-source state reconstruction, redaction and retention. Those are
+subsystems, not prompt changes, and claiming them would be dishonest.
+
+Story-by-story mapping is deliberately kept out of the sample: AGENTS.md forbids customer
+names under samples, and the sample now contains none.
+
+### Deployed
+
+v17, 24/24 preflight, traffic repinned to 100% and verified. A new deploy wrapper lives at
+`%TEMP%\deploy_wsm.ps1`; the target's `agent-creation-script.ps1` does not repin traffic on
+its own, so without the wrapper a new version is built and live nowhere.
+
+25 behavioural checks pass against the built assembly, including that the agent kept its own
+identity, that the ADO guidance survived the port, and that every new tool is absent from the
+prompt when its handler is not attached.
+
+### Open
+
+Still unverified at runtime, and the same blocker as this morning: this agent has no
+container telemetry in 90 days. Build args and Dockerfile are identical to the agent that
+does log, and the App Insights connection matches, so the container appears never to have
+started. If v17 produces logs on first use, that resolves itself; if it does not, the
+messages are not reaching the container and no amount of code change will show up.
