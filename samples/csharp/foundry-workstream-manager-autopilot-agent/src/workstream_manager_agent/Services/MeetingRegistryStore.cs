@@ -47,11 +47,19 @@ public class TrackedMeetingEntity : ITableEntity
     public DateTimeOffset? ApprovedUtc { get; set; }
 
     /// <summary>
-    /// When participants were told the meeting may be captured. Separate from approval on
-    /// purpose: the organizer approving is not the same event as the room being told, and the
-    /// second is the one that is owed to people who are not the organizer.
+    /// When participants were told the meeting may be captured.
+    ///
+    /// This is recorded for audit, NOT gated on. Teams shows every participant a recording and
+    /// transcription banner the moment transcription starts, so the notice is enforced by the
+    /// platform rather than by this agent. An earlier version required a human to separately
+    /// attest that attendees had been told, which reimplemented a platform guarantee as a
+    /// checkbox and left users stuck in a loop being asked to confirm something Teams had
+    /// already done.
     /// </summary>
     public DateTimeOffset? NoticeSentUtc { get; set; }
+
+    /// <summary>How the notice was delivered. Normally the platform's own banner.</summary>
+    public string NoticeSource { get; set; } = string.Empty;
 
     /// <summary>
     /// Records whether this meeting was also approved for retention beyond the immediate recap.
@@ -73,11 +81,16 @@ public class TrackedMeetingEntity : ITableEntity
     public DateTimeOffset CreatedUtc { get; set; }
 
     /// <summary>
-    /// The single gate every future ingestion path must consult. Both conditions are required:
-    /// approval alone is not enough, because a participant who was never told cannot have
-    /// consented by someone else's approval.
+    /// The single gate every ingestion path must consult: has the organizer opted this meeting
+    /// in.
+    ///
+    /// Participant notice is deliberately NOT part of this. The requirement it comes from says
+    /// the notice is "enforced by platform", and Teams does enforce it: nobody can start
+    /// transcription without every participant seeing the banner. Gating on a human separately
+    /// asserting it added no protection and produced a dead end where the user was asked to
+    /// confirm something the platform had already guaranteed.
     /// </summary>
-    public bool IsIngestionEligible => CaptureApproved && NoticeSentUtc.HasValue;
+    public bool IsIngestionEligible => CaptureApproved;
 }
 
 /// <summary>
