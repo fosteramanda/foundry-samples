@@ -90,6 +90,49 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     }
 
     /// <summary>
+    /// True when a message activity is Teams machinery rather than something a person said.
+    ///
+    /// Measured in a real meeting, all of these arrive as ordinary message activities in the
+    /// meeting chat and none is addressed to anybody:
+    ///   - no text at all (meeting started, someone joined)
+    ///   - &lt;URIObject type="Video.2/CallRecording.1"&gt;&lt;RecordingStatus .../&gt;
+    ///   - {"scopeId":"...","storageId":"...","callId":"..."}
+    ///
+    /// Answering them is never right. The failure is loud and public: the model reads recording
+    /// XML, finds nothing to reply to, and says so in front of the meeting.
+    /// </summary>
+    private static bool IsTeamsSystemPayload(string text, IActivity activity)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            // A person can send a file with no caption, but the agent has nothing to answer
+            // there either, and staying quiet is the safe failure.
+            return true;
+        }
+
+        var t = text.TrimStart();
+
+        if (t.StartsWith("<URIObject", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("RecordingStatus", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Video.2/CallRecording", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // Call metadata. Matched on the pair, not on either id alone, so a person quoting one
+        // of these words is not silenced.
+        if (t.StartsWith('{')
+            && t.Contains("\"callId\"", StringComparison.OrdinalIgnoreCase)
+            && (t.Contains("\"scopeId\"", StringComparison.OrdinalIgnoreCase)
+                || t.Contains("\"storageId\"", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Every locally-executed tool the model may call this turn. Handlers that are disabled
     /// contribute nothing, so the model is never offered a tool the agent cannot run.
     /// </summary>
@@ -123,26 +166,26 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var sender = turnContext.Activity.From;
         var rawUserMessage = incomingText ?? string.Empty;
 
-        // Teams delivers meeting lifecycle events (meeting started, recording started, someone
-        // joined) into the meeting chat as message activities carrying no text. Without this
-        // guard each one is wrapped into "Respond to this chat message... Message: " and handed
-        // to the model, which answers "I can't respond to an empty message" in front of everyone
-        // in the meeting.
+        // Teams posts machinery into a meeting chat as ordinary message activities: lifecycle
+        // events with no text at all, recording-status XML (<URIObject type="Video.2/
+        // CallRecording.1"><RecordingStatus .../>), and call metadata JSON carrying callId and
+        // scopeId. None of it is addressed to anyone. Answering it put
+        // "I can't respond because the message content is empty" into a live meeting chat in
+        // front of everyone, twice.
         //
-        // Silence is the only correct response to a message with nothing in it. Attachments and
-        // card actions are checked too, because those are messages with real content and an
-        // empty Text field.
+        // An earlier version of this guard only checked for blank text AND no attachments, which
+        // caught almost none of it: the recording payloads have text, and the blank ones carry
+        // attachments. Recognise the payloads themselves.
         if (turnContext.Activity.Type == ActivityTypes.Message
-            && string.IsNullOrWhiteSpace(rawUserMessage)
-            && (turnContext.Activity.Attachments is null || turnContext.Activity.Attachments.Count == 0)
-            && turnContext.Activity.Value is null)
+            && IsTeamsSystemPayload(rawUserMessage, turnContext.Activity))
         {
             _logger.LogInformation(
-                "Skipping reply: message activity has no text, attachments or value. " +
-                "channelId={ChannelId} conversationId={ConversationId} activityId={ActivityId}",
+                "Skipping reply: Teams system payload, not a user message. " +
+                "channelId={ChannelId} conversationId={ConversationId} activityId={ActivityId} preview={Preview}",
                 turnContext.Activity.ChannelId,
                 turnContext.Activity.Conversation?.Id,
-                turnContext.Activity.Id);
+                turnContext.Activity.Id,
+                rawUserMessage.Length > 60 ? rawUserMessage[..60] : rawUserMessage);
             return;
         }
 

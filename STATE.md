@@ -1833,3 +1833,52 @@ it with a trailing `Z`, which labels local time as UTC without converting. The w
 wrong by the offset and the meeting appeared to not exist. That is the identical bug fixed in
 the agent at v40, made again in a diagnostic script an hour later. When a time looks absent or
 impossible, suspect the query before the data.
+
+### v21: the empty-message guard was wrong, and the calendar scope was missing
+
+Amanda ran a second meeting on v20 and the chat noise came back. It was NOT a stale
+container: the container started 11:57:32 UTC and v20 was created 11:40:59, so v20 really
+did produce it. The guard was simply wrong.
+
+**What Teams actually posts into a meeting chat**, from the activity log:
+
+```
+New activity received: (null)
+New activity received: <URIObject format_version="1.1" type="Video.2/CallRecording.1">
+                         <RecordingStatus status="Initial" code="0" ...
+New activity received: {"scopeId":"...","storageId":"...","callId":"..."}
+```
+
+The v20 guard required blank text AND no attachments AND no value. That caught almost none
+of it: the recording payloads HAVE text, and the blank ones carry attachments. So the model
+was handed recording XML, found nothing to answer, and said so in front of the meeting.
+
+Replaced with `IsTeamsSystemPayload`, which recognises the payloads themselves: blank text,
+anything starting `<URIObject` or containing `RecordingStatus` or `Video.2/CallRecording`,
+and JSON carrying `callId` together with `scopeId` or `storageId`. The JSON case matches on
+the pair rather than either id alone so a person quoting one of those words is not silenced.
+
+Worth naming the mistake: v20 was written from a guess about what an "empty" activity looks
+like, and shipped without ever reading one. The activity log had the answer the whole time.
+A guard against a category should be written from a sample of the category.
+
+**Second bug, same test.** "I can't recap Team huddle: Exchange denied access to my calendar
+mailbox. I need calendar delegate access granted in Outlook..."
+
+Two things wrong. The blueprint had no calendar scope at all, and the error text was written
+for reading the MANAGER'S mailbox, so it asked Amanda to delegate her calendar to the agent.
+The agent was reading its OWN calendar. Nobody delegates a mailbox to its own owner, so
+following that advice could never have fixed it.
+
+Granted and made inheritable on the blueprint:
+
+```
+Calendars.Read  OnlineMeetings.Read  OnlineMeetingTranscript.Read.All
+```
+
+joining the eight already there. Both sides verified after the PATCH.
+
+The 403 message now names the missing Graph scopes and says explicitly not to ask for
+delegate access to the user's own calendar.
+
+Deployed v21, 30/30. Both fixes applied to the router sample too.
