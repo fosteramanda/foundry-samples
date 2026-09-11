@@ -2010,3 +2010,42 @@ the three that bit, but the general risk remains for any future divergence, and 
 statement is that the two samples are not automatically kept in step.
 
 Deployed v24, 31/31.
+
+### The stale container trap, which wasted several rounds
+
+Amanda asked whether the approval message at 06:02 was intentional. It was not: v23 removed
+approval entirely and was deployed at 12:50 UTC. But:
+
+```
+v22 created 12:44   v23 created 12:50   v24 created 13:00
+container starts in the last 40 minutes: NONE
+prompt at 13:02 contains "do you approve", not "Consent is the invitation"
+```
+
+So the container had been running continuously since before 12:44 and was still serving a
+pre-v23 image. Every version deployed in that window went live nowhere.
+
+This is the gotcha already recorded earlier in this file, met again and not recognised: a
+traffic repin does not restart a running container. What was NOT understood before is the
+feedback loop it creates.
+
+**Testing a fix keeps the container warm, which prevents the fix from loading.** The more
+promptly a fix is tested, the longer it takes to arrive. Amanda was testing continuously and
+in good faith, and each test both kept the old code alive and produced a symptom I then
+diagnosed as though it came from the code I had just written. Some of that diagnosis was
+real and some was chasing behaviour already replaced.
+
+The honest accounting: v22, v23 and v24 were deployed and verified as "serving 100%" by
+checking the traffic pin, which was true and meaningless. The pin is not evidence the code
+is running. Only a container start after the version was created is.
+
+Fixed in the deploy wrapper. After repinning it now queries recent trace volume and, when
+the container is warm, prints a warning rather than a success:
+
+  WARNING: the container has been active in the last 15 minutes.
+  It is still running the PREVIOUS image and will not pick up vN
+  until it has been idle for roughly 11-15 minutes.
+  Do not test immediately: wait for the idle timeout, THEN send the first message.
+
+That turns a silent trap into an instruction. "Deployed and serving" was never a lie, but it
+was the wrong thing to report.
