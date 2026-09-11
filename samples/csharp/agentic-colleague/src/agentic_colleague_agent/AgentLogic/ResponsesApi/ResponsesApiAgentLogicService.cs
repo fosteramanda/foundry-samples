@@ -27,6 +27,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly ReactionService _reactionService;
     private readonly RoutineToolHandler _routineTools;
     private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
+    private static readonly HttpClient MeetingHttpClient = new(new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    });
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -71,13 +76,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
         _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
 
-        // Meeting capture. Only constructed when durable storage exists: a capture decision
-        // that cannot be written down must not be offered, because the agent would report a
-        // permission it has no record of and cannot honour on the next turn.
+        // Existing transcript retrieval requires a readable exclusion store.
         if (meetingRegistry != null)
         {
             _meetingRegistryTools = new MeetingRegistryToolHandler(
-                agentMetadata, _logger, httpClient, _configuration, graphAccessToken, meetingRegistry);
+                agentMetadata, _logger, MeetingHttpClient, _configuration, graphAccessToken, meetingRegistry);
             _responsesApiClient.MeetingRegistryEnabled = _meetingRegistryTools.IsEnabled;
         }
 
@@ -117,6 +120,12 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
+        if (IncomingMessagePolicy.ShouldIgnore(turnContext.Activity))
+        {
+            _logger.LogInformation("Ignored empty or system Teams message. ActivityId={ActivityId}", turnContext.Activity.Id);
+            return;
+        }
+        _meetingRegistryTools?.SetCurrentActor(turnContext.Activity.From?.AadObjectId);
         var incomingText = turnContext.Activity.Text;
         _logger.LogInformation("New activity received (Responses API): {IncomingText}", incomingText);
 
@@ -699,4 +708,3 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     }
 
 }
-

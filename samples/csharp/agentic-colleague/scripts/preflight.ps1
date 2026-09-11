@@ -17,8 +17,8 @@
     are JSON string literals that only exist as data inside method bodies.
 
 .PARAMETER SkipBuild
-    Reuse the existing binaries instead of rebuilding first. Faster, but it means the
-    assembly you are asserting on may not match the source you are reading.
+    Skip the separate solution build. Behavioral tests still build their project references,
+    so the assembly assertions continue to describe the current source.
 
 .EXAMPLE
     ./preflight.ps1
@@ -108,6 +108,25 @@ if (-not $SkipBuild) {
 
 $dllPath = Join-Path $projectDir "bin/Debug/net9.0/$projectName.dll"
 
+Write-Host 'Meeting behavior regressions...' -ForegroundColor Cyan
+$testProject = Join-Path $sampleRoot 'tests\AgenticColleague.Tests\AgenticColleague.Tests.csproj'
+Push-Location $sampleRoot
+try {
+    $testOutput = & dotnet test $testProject --nologo -v quiet 2>&1
+    $testsOk = ($LASTEXITCODE -eq 0)
+}
+finally { Pop-Location }
+Assert-That -Name 'Meeting behavior regressions pass' -Condition $testsOk `
+    -Detail ($testOutput | Select-Object -Last 20 | Out-String) `
+    -Defends 'HTTP/store fixtures exercise the compiled calendar, occurrence, transcript, exclusion and message paths. A source regex or successful build cannot establish this behavior.'
+if (-not $testsOk) { exit 1 }
+
+$scriptTestOutput = & pwsh -NoProfile -File (Join-Path $sampleRoot 'tests\ProvisioningScriptTests.ps1') 2>&1
+Assert-That -Name 'Provisioning script regressions pass' -Condition ($LASTEXITCODE -eq 0) `
+    -Detail ($scriptTestOutput | Out-String) `
+    -Defends 'A failed preflight must stop before cleanup, publishing or cloud calls; provisioned monitoring must reach the runtime. These checks execute isolated script fixtures without deploying.'
+if ($script:Failures -gt 0) { exit 1 }
+
 Assert-That -Name 'Built assembly is present' -Condition (Test-Path $dllPath) `
     -Detail "Expected: $dllPath" `
     -Defends 'The deploy copies this DLL into the container image. If it is missing the image ships stale or empty.'
@@ -168,6 +187,10 @@ foreach ($file in $handlerFiles) {
     # Tool parameter names, so the prompt may mention them without being accused of
     # naming a tool that does not exist.
     foreach ($m in [regex]::Matches($text, '"([a-z][a-z0-9_]*)"\s*:\s*\{\s*"type"')) {
+        [void]$paramNames.Add($m.Groups[1].Value)
+    }
+    # Returned JSON fields may be named in the prompt without being mistaken for tools.
+    foreach ($m in [regex]::Matches($text, '\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\s*=')) {
         [void]$paramNames.Add($m.Groups[1].Value)
     }
 
