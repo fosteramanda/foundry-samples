@@ -1,6 +1,12 @@
 # Build Docker image using Azure Container Registry (ACR) Build
 # This script uses ACR Tasks to build the image in the cloud instead of locally
 
+$ErrorActionPreference = "Stop"
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'preflight.ps1')
+if ($LASTEXITCODE -ne 0) {
+    throw "Preflight failed; no image build was started."
+}
+
 Set-Location "$($PSScriptRoot)/../src/agentic_colleague_agent"
 
 Remove-Item "./publish" -Recurse -Force -ErrorAction SilentlyContinue
@@ -9,6 +15,9 @@ Remove-Item "./bin" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "./obj" -Recurse -Force -ErrorAction SilentlyContinue
 
 dotnet publish "./AgenticColleagueAgent.csproj" -c Release -o "./publish"
+if ($LASTEXITCODE -ne 0) {
+    throw "Local publish failed; no image build was started."
+}
 
 $authorityEndpoint = "https://login.microsoftonline.com/$($env:TENANT_ID)"
 $azureOpenAIEndpoint = "https://$($env:ACCOUNT_NAME).openai.azure.com/"
@@ -43,6 +52,7 @@ Write-Host "Building image using ACR Build in registry: $registryName"
 # this resolves on every later provision, and agent-creation-script.ps1 also injects it
 # through the agent version's environment variables, which override the image.
 az acr build `
+    --no-logs `
     --registry $registryName `
     --subscription $env:SUBSCRIPTION_ID `
     --image $imageName `
@@ -63,4 +73,3 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Image built and pushed successfully: $acrLoginServer/$imageName"
 
 Remove-Item "./publish" -Recurse -Force -ErrorAction SilentlyContinue
-

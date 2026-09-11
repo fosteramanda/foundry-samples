@@ -106,6 +106,12 @@ public class A365AgentApplication : AgentApplication
         
         OnActivity(ActivityTypes.Message, async (turnContext, turnState, cancellationToken) =>
         {
+            if (IncomingMessagePolicy.ShouldIgnore(turnContext.Activity))
+            {
+                _logger.LogInformation("Ignored empty or system Teams message. ActivityId={ActivityId}", turnContext.Activity.Id);
+                return;
+            }
+
             // Suppress duplicate deliveries of the same activity (see _processedActivityIds).
             var activityId = turnContext.Activity.Id;
             if (!string.IsNullOrEmpty(activityId))
@@ -320,4 +326,3 @@ public class A365AgentApplication : AgentApplication
         };
     }
 }
-

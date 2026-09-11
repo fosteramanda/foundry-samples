@@ -44,9 +44,7 @@ internal class ResponsesApiClient
     internal bool RoutinesEnabled { get; set; }
 
     /// <summary>
-    /// Whether the meeting registry tools are attached. Requires durable storage: without a
-    /// table there is nowhere to record a capture decision, and the prompt must not describe a
-    /// permission the agent cannot persist.
+    /// Whether meeting tools are attached. Retrieval requires a readable exclusion store.
     /// </summary>
     internal bool MeetingRegistryEnabled { get; set; }
 
@@ -148,14 +146,9 @@ internal class ResponsesApiClient
             deployment,
             usePreviousResponseId);
 
-        // Fingerprint the attached MCP servers. A Responses API chain captures its tool
-        // inventory when the chain STARTS: continuing with previous_response_id does not
-        // re-enumerate, so a conversation begun before a tool existed never sees that tool and
-        // the model correctly reports it as unavailable - indefinitely. Changing the server set
-        // therefore has to start a fresh chain. Only MCP servers are fingerprinted, and only
-        // when they are attached at all, so the tool-less judge and passive-detection passes
-        // keep their conversation context.
-        var toolFingerprint = includeMcpTools ? ComputeMcpFingerprint(activeServers) : null;
+        // Restart old chains when local contracts change too, including the retired notice tool.
+        // Tool-less judge/passive passes keep their existing context behavior.
+        var toolFingerprint = includeMcpTools ? ComputeToolFingerprint(activeServers, localTools) : null;
 
         string? previousResponseId = null;
         if (usePreviousResponseId)
@@ -675,7 +668,7 @@ internal class ResponsesApiClient
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         });
 
-        _logger.LogInformation("Responses API request ({Bytes} bytes): {Request}", json.Length, json);
+        _logger.LogInformation("Responses API request ({Characters} characters); body omitted.", json.Length);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -694,11 +687,14 @@ internal class ResponsesApiClient
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("Responses API call failed with status {StatusCode}: {Response}", response.StatusCode, responseContent);
+            _logger.LogError("Responses API call failed. Status={StatusCode} RequestId={RequestId} Characters={Characters}",
+                response.StatusCode,
+                response.Headers.TryGetValues("x-request-id", out var ids) ? ids.FirstOrDefault() : null,
+                responseContent.Length);
             return (false, BuildFailureMessage(response.StatusCode, responseContent), responseContent);
         }
 
-        _logger.LogInformation("Responses API response ({Bytes} bytes): {Response}", responseContent.Length, responseContent);
+        _logger.LogInformation("Responses API response ({Characters} characters); body omitted.", responseContent.Length);
         return (true, responseContent, null);
     }
 
@@ -797,15 +793,14 @@ internal class ResponsesApiClient
     }
 
     /// <summary>
-    /// Stable short hash of the attached MCP server set. Used to detect that a conversation's
-    /// stored response chain predates the current tools, so the chain can be restarted rather
-    /// than pinning an inventory the model can no longer act on.
+    /// Invalidates stored chains when MCP sources or local function contracts change.
     /// </summary>
-    private static string ComputeMcpFingerprint(IEnumerable<McpServerConfig> servers)
+    internal static string ComputeToolFingerprint(IEnumerable<McpServerConfig> servers, IEnumerable<JsonNode> localTools)
     {
         var canonical = string.Join("|", servers
             .Select(s => $"{s.McpServerName}@{s.Url}")
-            .OrderBy(s => s, StringComparer.Ordinal));
+            .OrderBy(s => s, StringComparer.Ordinal))
+            + "|local:" + string.Join("|", localTools.Select(t => t.ToJsonString()).OrderBy(t => t, StringComparer.Ordinal));
 
         var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
@@ -902,5 +897,4 @@ internal class ResponsesApiClient
 }
 
 internal record ResponsesApiFunctionCall(string CallId, string Name, string Arguments);
-
 

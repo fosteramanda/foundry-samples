@@ -1,6 +1,10 @@
-# 🤖 Workstream Manager Agent
+# 🤖 Team autopilot sample
 
-> A Foundry A365 agent that tracks work items, provides workstream summaries, and operates in manager-only direct message mode.
+> A separate Foundry A365 sample with occurrence-specific meeting retrieval and manager-controlled access.
+
+**Status:** the meeting path below has deterministic local coverage, not a demonstrated
+authenticated Teams deployment. Other capability sections describe the inherited scaffold;
+they are not evidence that a toolbox, hired instance, or end-to-end workflow is configured.
 
 **Note:** This agent will currently only respond in group chats if you @mention it.
 
@@ -27,6 +31,67 @@ Ensure you have the following installed:
 ---
 
 ## 🤖 Agent Functionality
+
+### Existing meeting transcripts
+
+For a recap, the application reads its own agent user account's calendar and retrieves an
+existing transcript. It does not ask the organizer to approve capture or confirm that
+attendees were notified. It does not start recording or transcription, send notifications,
+change Graph permissions, or treat invitation as consent to retain content.
+
+- `list_tracked_meetings` pages the calendar and returns a stable `event_id` for each
+  occurrence, including untitled meetings. `on_date` and date ranges use
+  `MeetingDisplayTimeZone`, defaulting to `Pacific Standard Time`; stored timestamps are UTC.
+- `read_meeting_transcript` rechecks the exact calendar occurrence, resolves its join URL,
+  and pages the per-meeting transcript list through the same agent user account. Recurring
+  occurrences are distinguished by their timing. A segment overlapping multiple occurrences
+  using the same join URL is rejected rather than attributed to the wrong meeting.
+- When several segments belong to an occurrence, the longest is selected, with the latest
+  start breaking equal-duration ties. The result discloses the available segment count,
+  selected interval, source link, speaker availability, and truncation at 60,000 characters.
+  The prompt requires partial coverage to be disclosed and prohibits invented attribution.
+- `track_meeting` is an optional metadata bookmark, not a prerequisite.
+  `set_meeting_capture` is manager-only: `approved=false` excludes the selected occurrence;
+  `approved=true` removes its local exclusion. Existing legacy restrictions remain blocked
+  until explicitly changed. The retired notice tool is not advertised or executed.
+- Unavailable storage fails closed. Missing transcripts, Graph denial, throttling,
+  invalid content, ambiguous matches and network failures are distinct from success.
+  An empty result does not establish why a transcript is missing.
+
+The registry stores metadata and exclusion preferences, not raw transcript text. Transcript
+content is sent to the configured model; this change does not define provider retention or
+implement shared-memory retention. The prompt requires human review before turning a recap
+into shared-memory, board or official-record updates. Broader review/write workflows remain
+separate work.
+
+Empty Teams messages and structured meeting lifecycle messages are ignored before token
+acquisition, typing indicators and model processing. Meaningful text, file/card attachments,
+card submissions and other activity routes are preserved. Tool-contract changes invalidate
+old response-chain fingerprints so the retired approval workflow is not carried forward.
+
+### Local gate and runtime diagnostics
+
+From this sample folder:
+
+```powershell
+pwsh -NoProfile -File .\scripts\preflight.ps1
+dotnet test .\src\agentic_colleague_agent\AgenticColleagueAgent.sln
+```
+
+The preflight builds the solution, runs HTTP/store and incoming-activity regressions, checks
+isolated provisioning-script fixtures, and checks wiring. It exits nonzero on failure.
+Both the azd preprovision hook and the ACR image-build entrypoint require it. The fixtures
+make no live Graph or model calls and cannot prove that a hired instance has access.
+
+The agent-creation script now propagates the provisioned
+`APPLICATIONINSIGHTS_CONNECTION_STRING` into each new hosted version. It does not update
+existing versions. Responses API request/response bodies and hosted configuration values
+are omitted from routine logs; Graph calls log stage, status and request ID instead of
+transcript content.
+
+A live check still needs a configured, authorized agent user account with an invitation
+and an accessible transcript. Verify the actual calendar and transcript calls for that
+account. Neither an `active` hosted version nor success using a human's token is that proof.
 
 ### Overview
 
@@ -442,4 +507,3 @@ requests
 ## 🤝 Support
 
 For issues or questions, please refer to the official documentation or contact your Azure administrator.
-

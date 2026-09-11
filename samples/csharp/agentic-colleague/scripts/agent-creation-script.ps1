@@ -28,6 +28,9 @@
   $AzureContainerRegistryEndpoint = $env:AZURE_CONTAINER_REGISTRY_ENDPOINT
 
   $environmentVariables = @{}
+  if (-not [string]::IsNullOrWhiteSpace($env:APPLICATIONINSIGHTS_CONNECTION_STRING)) {
+      $environmentVariables.APPLICATIONINSIGHTS_CONNECTION_STRING = $env:APPLICATIONINSIGHTS_CONNECTION_STRING
+  }
   # The blueprint is no longer pre-created in infra, so its client id does not exist at image
   # build time any more. It is injected here instead, from the value the previous provision
   # persisted. Environment variables override appsettings.json, which is how the platform
@@ -116,8 +119,7 @@ $environmentVariables.FoundryAgentName = $env:AGENT_NAME
   }
 
   Write-Host "Creating agent version at: $agentUrl"
-  Write-Host "JSON Body:"
-  Write-Host $jsonBody
+  Write-Host "Hosted configuration values omitted from logs."
 
   $response = Invoke-RestMethod -Uri $agentUrl `
       -Method Post `
@@ -126,9 +128,6 @@ $environmentVariables.FoundryAgentName = $env:AGENT_NAME
       -ErrorAction Stop
 
   Write-Host ""
-  Write-Host "Response:"
-  $response | ConvertTo-Json -Depth 100 | Write-Host
-
   # Output the agent version
   $agentVersion = $response.version
   $agentGuid = $response.agent_guid
@@ -261,4 +260,3 @@ $environmentVariables.FoundryAgentName = $env:AGENT_NAME
       AgentGuid         = $agentGuid
       BlueprintClientId = $blueprintClientId
   }
-
