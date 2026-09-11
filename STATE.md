@@ -1775,3 +1775,10 @@ Preflight now asserts both directions — no phantom A2A tool names, and the rea
 source-of-truth delegation still present, so the fix cannot be over-applied later.
 
 Deployed v19, 27/27.
+
+**v19 verified at runtime.** Cold start 07:32:32, routines API called 07:32:43 (200), and the
+reply came back as a clean "No standing work is scheduled." with no delivery preamble. Both
+the v18 obligation-to-check fix and the v19 phantom-delegation removal are confirmed working
+against the deployed container, by outbound call rather than by reading the answer text.
+
+Still untested on this agent: creating an actual routine, and meeting capture end to end.
