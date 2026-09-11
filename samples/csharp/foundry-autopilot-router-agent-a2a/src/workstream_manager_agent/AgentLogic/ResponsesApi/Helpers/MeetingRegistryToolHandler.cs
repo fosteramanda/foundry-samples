@@ -258,11 +258,23 @@ public class MeetingRegistryToolHandler
         }
 
         var items = JsonNode.Parse(response ?? "{}")?["value"] as JsonArray;
-        var matches = (items ?? [])
+        var online = (items ?? [])
             .Where(e => e?["isOnlineMeeting"]?.GetValue<bool>() == true)
-            .Where(e => (e?["subject"]?.GetValue<string>() ?? string.Empty)
+            .ToList();
+
+        var matches = online
+            .Where(e => DescribeSubject(e?["subject"]?.GetValue<string>(), e?["start"]?["dateTime"]?.GetValue<string>())
                 .Contains(subject, StringComparison.OrdinalIgnoreCase))
             .ToList();
+
+        // An untitled meeting matches no subject the user can type, so a strict subject search
+        // can never find the very meeting they just sat in. When exactly one online meeting is on
+        // the calendar, use it rather than insisting on a name that does not exist. Say which one
+        // was used; never do this when several could be meant.
+        if (matches.Count == 0 && online.Count == 1)
+        {
+            matches = online;
+        }
 
         if (matches.Count == 0)
         {
@@ -315,7 +327,7 @@ public class MeetingRegistryToolHandler
             RowKey = MeetingRegistryStore.ToRowKey(threadId),
         };
 
-        entity.Subject = ev?["subject"]?.GetValue<string>() ?? subject;
+        entity.Subject = DescribeSubject(ev?["subject"]?.GetValue<string>(), ev?["start"]?["dateTime"]?.GetValue<string>());
         entity.OrganizerAddress = organizer;
         entity.ThreadId = threadId;
         entity.JoinWebUrl = joinUrl;
@@ -360,8 +372,11 @@ public class MeetingRegistryToolHandler
             foreach (var e in items ?? [])
             {
                 if (e?["isOnlineMeeting"]?.GetValue<bool>() != true) { continue; }
-                var subj = e?["subject"]?.GetValue<string>() ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(subj)) { continue; }
+                // A meeting started with "Meet now", or renamed only in the chat, has a BLANK
+                // calendar subject. Skipping those made the agent report "no meeting invites on
+                // my calendar" while looking straight at one, which is worse than unhelpful: it
+                // sent the user to fix an invite that was already correct.
+                var subj = DescribeSubject(e?["subject"]?.GetValue<string>(), e?["start"]?["dateTime"]?.GetValue<string>());
                 if (all.Any(t => string.Equals(t.Subject, subj, StringComparison.OrdinalIgnoreCase))) { continue; }
                 candidates.Add($"- '{subj}' {e?["start"]?["dateTime"]?.GetValue<string>()} (on my calendar, not registered yet)");
             }
@@ -783,6 +798,25 @@ public class MeetingRegistryToolHandler
         return m.Success ? Uri.UnescapeDataString(m.Groups[1].Value) : string.Empty;
     }
 
+    /// <summary>
+    /// A displayable name for a meeting, including ones with no subject at all.
+    ///
+    /// "Meet now" meetings, and meetings renamed only inside the chat, arrive with a BLANK
+    /// calendar subject. The chat shows a name; the calendar entry has none. Treating blank as
+    /// "no meeting" made the agent tell the user to fix an invite that was already correct.
+    /// </summary>
+    private static string DescribeSubject(string? subject, string? startIso)
+    {
+        if (!string.IsNullOrWhiteSpace(subject))
+        {
+            return subject.Trim();
+        }
+
+        return DateTimeOffset.TryParse(startIso, out var start)
+            ? $"(untitled meeting {start:yyyy-MM-dd HH:mm})"
+            : "(untitled meeting)";
+    }
+
     private static DateTimeOffset ParseDateOrDefault(string value, DateTimeOffset fallback) =>
         DateTimeOffset.TryParse(value, out var parsed) ? parsed : fallback;
 
@@ -795,5 +829,6 @@ public class MeetingRegistryToolHandler
     private static string Truncate(string value, int max) =>
         string.IsNullOrEmpty(value) || value.Length <= max ? value ?? string.Empty : value[..max];
 }
+
 
 

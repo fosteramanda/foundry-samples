@@ -1782,3 +1782,54 @@ the v18 obligation-to-check fix and the v19 phantom-delegation removal are confi
 against the deployed container, by outbound call rather than by reading the answer text.
 
 Still untested on this agent: creating an actual routine, and meeting capture end to end.
+
+### v20: two bugs from the first real meeting test
+
+Amanda invited the agent to a Teams meeting, ran it with transcription on, and hit two
+things. Both were mine.
+
+**1. The empty-message guard was never ported.** It was fixed on the router sample as v37 and
+the fix simply did not come across, because the port copied three capability files and edited
+the service by hand. Result, in front of everyone in the meeting chat:
+
+```
+4:23 AM  I can't respond because the message content is empty, and I don't have a
+         Teams send-message tool attached in this turn.
+4:24 AM  I can't respond because the message content is empty.
+```
+
+Now ported. Preflight asserts it in this sample too, which is what should have happened the
+first time: a fix worth a guard in one sample is worth the same guard in its sibling.
+
+**2. A "Meet now" meeting has a BLANK calendar subject.** The chat shows a name, the calendar
+entry has none:
+
+```
+subject   : ''
+online    : True
+attendees : checkout-workstream-manager@notareal.co
+```
+
+The agent was correctly invited and the meeting was genuinely on its calendar, but the code
+skipped blank-subject meetings when listing and could never match one by name. So it answered
+"there are no Teams meeting invites on my calendar" while looking straight at one, and sent
+Amanda off to fix an invite that was already correct. That is worse than an error: it
+misdirects.
+
+Fixed three ways:
+- `DescribeSubject` gives untitled meetings a real label, `(untitled meeting 2026-09-11 11:00)`,
+  used for listing, matching and storage.
+- Blank subjects are no longer skipped in the listing.
+- When the subject matches nothing but exactly ONE online meeting is on the calendar, that one
+  is used. A name the user cannot type must not be the only way in. Never applied when several
+  could be meant.
+
+Applied to both samples. Deployed v20 on workstreammanagerado, 30/30.
+
+### Worth remembering about my own tooling
+
+While diagnosing this I wrote a calendar query using `(Get-Date).AddHours(-6)` and formatted
+it with a trailing `Z`, which labels local time as UTC without converting. The window was
+wrong by the offset and the meeting appeared to not exist. That is the identical bug fixed in
+the agent at v40, made again in a diagnostic script an hour later. When a time looks absent or
+impossible, suspect the query before the data.
