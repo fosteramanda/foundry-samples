@@ -57,6 +57,28 @@ function Assert-That {
     }
 }
 
+function Remove-Comments {
+    <#
+        Assertions below test what the code does, not what the comments say about it.
+        Without this, documenting a change ("we no longer send publishAsDigitalWorker")
+        trips the very assertion that forbids it, and the honest fix looks like a
+        regression.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][ValidateSet('ps', 'bicep')][string]$Kind
+    )
+    if ($Kind -eq 'ps') {
+        $Text = [regex]::Replace($Text, '(?s)<#.*?#>', '')
+        $Text = [regex]::Replace($Text, '(?m)^\s*#.*$', '')
+    }
+    else {
+        $Text = [regex]::Replace($Text, '(?s)/\*.*?\*/', '')
+        $Text = [regex]::Replace($Text, '(?m)^\s*//.*$', '')
+    }
+    return $Text
+}
+
 Write-Host ''
 Write-Host 'Preflight gate: agentic-colleague autopilot' -ForegroundColor Cyan
 Write-Host ''
@@ -245,6 +267,48 @@ $siblingRefs = @(
 Assert-That -Name 'No reference to the sibling autopilot Foundry account' -Condition ($siblingRefs.Count -eq 0) `
     -Detail (($siblingRefs | ForEach-Object { "$($_.Filename):$($_.LineNumber)" }) -join ', ') `
     -Defends 'The create-toolbox example in this sample originally hardcoded the sibling autopilot live Foundry account and project. Running it as written would have created a toolbox in a different agent environment.'
+
+# ---------------------------------------------------------------------------
+# Provisioning model. These lock in the shape agreed on 2026-09-11: no bot service,
+# no blueprint created in infra, and the new publish schema.
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host 'Provisioning model' -ForegroundColor Cyan
+
+$infraDir   = Join-Path $sampleRoot 'infra'
+$mainBicep  = Remove-Comments -Kind bicep -Text (Get-Content (Join-Path $infraDir 'main.bicep') -Raw)
+$creationPs = Remove-Comments -Kind ps -Text (Get-Content (Join-Path $PSScriptRoot 'agent-creation-script.ps1') -Raw)
+$publishPs  = Remove-Comments -Kind ps -Text (Get-Content (Join-Path $PSScriptRoot 'publish-digital-worker.ps1') -Raw)
+
+Assert-That -Name 'No bot service module in infra' -Condition (($mainBicep -notmatch 'botservice') -and (-not (Test-Path (Join-Path $infraDir 'modules/botservice.bicep')))) `
+    -Defends 'The bot service was deliberately cut. The agent endpoint is authorized with the BotServiceRbac scheme instead. Re-adding one means the endpoint is being secured two different ways at once.'
+
+Assert-That -Name 'No blueprint created in infra' -Condition (($mainBicep -notmatch 'maib-creation-script|maibName') -and (-not (Test-Path (Join-Path $infraDir 'modules/maib-creation-script.bicep')))) `
+    -Defends 'The blueprint is created by the platform during agent creation, which is the only place its client id is returned. Creating one in infra produces a second, unused blueprint and an id that does not match the running agent.'
+
+Assert-That -Name 'main.bicep does not output AGENT_IDENTITY_BLUEPRINT_ID' -Condition ($mainBicep -notmatch 'output AGENT_IDENTITY_BLUEPRINT_ID') `
+    -Defends 'Infra cannot know the blueprint id under this model. An output that claims to supply it would resolve empty and be baked into the image as an empty string, which the null-coalescing fallback in config will not rescue.'
+
+Assert-That -Name 'main.bicep outputs RESOURCE_GROUP' -Condition ($mainBicep -match 'output RESOURCE_GROUP') `
+    -Defends 'agent-creation-script.ps1 builds the role assignment scope from RESOURCE_GROUP. Without it the scope string is malformed and the Cognitive Services User grant silently targets nothing.'
+
+Assert-That -Name 'Agent creation sets digital_worker_type m365' -Condition ($creationPs -match 'digital_worker_type\s*=\s*"m365"') `
+    -Defends 'The m365 type is what makes the platform handle the Microsoft 365 setup path. Without it the agent is created as a different kind of thing.'
+
+Assert-That -Name 'Agent creation does not reference a pre-created blueprint' -Condition ($creationPs -notmatch 'blueprint_reference') `
+    -Defends 'blueprint_reference pointed at a blueprint built in infra. Nothing creates that now, so the reference would name a blueprint that does not exist.'
+
+Assert-That -Name 'Agent endpoint auth scheme defaults to BotServiceRbac' -Condition ($creationPs -match 'authScheme\s*=\s*"BotServiceRbac"') `
+    -Defends 'This PATCH overwrites the endpoint authorization outright. With the bot service gone, defaulting to the old BotServiceTenant scheme would leave the endpoint expecting a resource that was never created.'
+
+Assert-That -Name 'Publish uses the new autopilot schema' -Condition (($publishPs -match 'publishAsAutopilot') -and ($publishPs -notmatch 'publishAsDigitalWorker')) `
+    -Defends 'The publish contract changed and the two calls are not interchangeable. The old flag goes with a different endpoint and body shape, so mixing them fails in a way that reads as a permissions problem.'
+
+Assert-That -Name 'Publish targets the project endpoint, not agent-asset' -Condition (($publishPs -match 'microsoft365/publish\?api-version=2025-11-15-preview') -and ($publishPs -notmatch 'agent-asset')) `
+    -Defends 'The old publish path was a different service entirely (azureml.ms/agent-asset). Calling it now returns errors that look like an auth failure rather than a wrong endpoint.'
+
+Assert-That -Name 'Publish still sends a real bearer token' -Condition ($publishPs -match 'Bearer \$\(?\$?aiAzureToken') `
+    -Defends 'Editors and log scrubbers render this header as asterisks. Retyping it from what is displayed writes a literal mask into the script, and every publish then fails 401 for a reason nothing in the diff explains.'
 
 # ---------------------------------------------------------------------------
 Write-Host ''
