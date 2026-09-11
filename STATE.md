@@ -2189,3 +2189,43 @@ identity model is correct: the workstream manager acts as itself, not as Amanda.
 purely the URL form, because Graph compares the token subject to the id in the path and a UPN
 does not match a GUID textually. `/me` sidesteps the comparison entirely, which is what v25
 does and what produced the working recap.
+
+### The keep-alive deadlock, and prioritising the workstream manager
+
+Amanda: "lets prioritise workstream manager and make it great first." Parking the Office of
+Amanda meeting-scope work. First step is getting this agent into a known-good state, and an
+audit found it is not in one:
+
+```
+token requests, last 45 min:  9 x ALL-ZERO tenant -> 400     (routine still failing)
+                             13 x real tenant     -> 200
+container starts, last 45 min: NONE
+```
+
+The v24 tenant fix has never reached a running container. Worse, the reason is circular:
+
+**The 5-minute routine was keeping the containers alive, which prevented them from loading
+the fix that would make the routine work.** Every fire kept the idle timer from expiring, so
+the pre-v24 image stayed resident, so the routine kept failing, so it fired again.
+
+Deleted the test routine to break it. With nothing keeping them warm the replicas can idle
+out and the next message will cold-start v25 on a clean slate.
+
+This is the sharpest form of the staleness problem seen so far. It is not merely that a
+repin does not restart a container: anything that generates periodic traffic, including a
+feature under test, indefinitely pins the old image. A scheduled routine is the worst case
+because it needs no human present to keep the deadlock going.
+
+### Known state going into the workstream manager work
+
+Working and verified by outbound call:
+- ADO answers with real launch data
+- Meeting recap end to end, transcript fetched and summarised with named owners
+- Routine create and list
+
+Deployed but never confirmed on a running container:
+- v24 routine tenant fallback
+- v25 /me endpoints and the no-delivery-talk framing
+
+Two replicas were alive on different versions, so a single good answer proves nothing about
+the fleet. Everything above needs re-confirming once the containers have cycled.
