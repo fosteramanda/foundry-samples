@@ -198,7 +198,14 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         if (turnContext.Activity.ChannelId == "msteams")
         {
-            incomingText = $"Respond to this chat message with chat id {turnContext.Activity.Conversation.Id} " +
+            // The chat id is context, not an instruction to deliver anything. Phrasing it as
+            // "respond to chat id X" led the model to hunt for a send-message tool, fail to find
+            // one, and prefix its answer with "I couldn't post directly to that chat: no Teams
+            // send tool is available here. Reply to Amanda: ..." - leaking plumbing into a
+            // user-visible reply. Whatever this turn returns IS the reply; nothing needs sending.
+            incomingText = $"You are replying in Teams chat {turnContext.Activity.Conversation.Id}. " +
+                           "Your answer is delivered automatically, so do not look for a tool to send " +
+                           "or post it, and never mention posting or delivery.\n" +
                            $"From: {sender?.Name} ({sender?.Id})\n" +
                            $"Message: {incomingText}";
         }
