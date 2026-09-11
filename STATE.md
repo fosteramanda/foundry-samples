@@ -2049,3 +2049,42 @@ the container is warm, prints a warning rather than a success:
 
 That turns a silent trap into an instruction. "Deployed and serving" was never a lie, but it
 was the wrong thing to report.
+
+### v25: /me is mandatory for onlineMeetings, and the turn framing leaked plumbing
+
+v24 finally reached the container and the consent change worked: no approval question. Two
+things behind it surfaced.
+
+**1. Graph rejects the user-scoped onlineMeetings form on a delegated token.**
+
+```
+I can't recap Team huddle because I couldn't read the transcript. The lookup failed due to
+a delegated calendar access mismatch: only /me is supported, but the request resolved
+against checkout-workstream-manager@notareal.co
+```
+
+The code used `/users/{mailbox}/onlineMeetings?$filter=...`. Graph requires `/me/...` here and
+refuses the user-scoped form EVEN WHEN the id it resolves is the caller's own. The agent only
+ever reads its own mailbox, so every path in the handler is now `/me/...`: calendarView,
+onlineMeetings, transcripts, transcript content, and the self lookup.
+
+Worth noting why this survived so long: the user-scoped form is correct for the mailbox tools
+on the sibling agent, which act on the MANAGER'S mailbox with .Shared scopes. Copying that
+shape into a handler that reads its own mailbox looked right and is not.
+
+**2. The turn framing invited the model to go looking for a send tool.**
+
+```
+I couldn't post directly to that chat: no Teams send tool is available here.
+Reply to Amanda: I can't recap Team huddle because...
+```
+
+The Teams branch built the prompt as "Respond to this chat message with chat id {id}". The
+model read that as an instruction to deliver something somewhere, hunted for a tool, failed,
+and narrated the failure before its actual answer. The chat id was only ever context.
+
+Reframed: the turn now says the answer is delivered automatically, not to look for a tool to
+send or post it, and never to mention delivery. Preflight asserts both.
+
+Deployed v25, 33/33. The new stale-container check fired correctly on this deploy and warned
+that the running container is warm, which is exactly what it exists to say.

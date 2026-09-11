@@ -227,7 +227,7 @@ public class MeetingRegistryToolHandler
         var from = fromUtc ?? DateTimeOffset.UtcNow.AddDays(-30);
         var to = toUtc ?? DateTimeOffset.UtcNow.AddDays(30);
 
-        var path = $"users/{Uri.EscapeDataString(mailbox)}/calendarView"
+        var path = $"me/calendarView"
                  + $"?startDateTime={from:yyyy-MM-ddTHH:mm:ssZ}&endDateTime={to:yyyy-MM-ddTHH:mm:ssZ}"
                  + "&$select=subject,start,end,organizer,isOnlineMeeting,onlineMeeting&$orderby=start/dateTime&$top=100";
 
@@ -342,7 +342,7 @@ public class MeetingRegistryToolHandler
         var candidates = new List<string>();
         var from = DateTimeOffset.UtcNow.AddDays(-30);
         var to = DateTimeOffset.UtcNow.AddDays(30);
-        var path = $"users/{Uri.EscapeDataString(mailbox)}/calendarView"
+        var path = $"me/calendarView"
                  + $"?startDateTime={from:yyyy-MM-ddTHH:mm:ssZ}&endDateTime={to:yyyy-MM-ddTHH:mm:ssZ}"
                  + "&$select=subject,start,isOnlineMeeting&$orderby=start/dateTime&$top=100";
 
@@ -485,7 +485,7 @@ public class MeetingRegistryToolHandler
         // "unterminated string literal". The value has to be percent-encoded. Note also that only
         // JoinWebUrl and joinMeetingId are filterable here: threadId is explicitly rejected.
         var encoded = Uri.EscapeDataString(entity.JoinWebUrl);
-        var lookupPath = $"users/{Uri.EscapeDataString(mailbox)}/onlineMeetings?$filter=JoinWebUrl%20eq%20'{encoded}'";
+        var lookupPath = $"me/onlineMeetings?$filter=JoinWebUrl%20eq%20'{encoded}'";
 
         var (okMeeting, meetingResponse, meetingError) = await SendGraphAsync(HttpMethod.Get, lookupPath);
         if (!okMeeting)
@@ -503,7 +503,7 @@ public class MeetingRegistryToolHandler
         }
 
         var (okList, listResponse, listError) = await SendGraphAsync(
-            HttpMethod.Get, $"users/{Uri.EscapeDataString(mailbox)}/onlineMeetings/{meetingId}/transcripts");
+            HttpMethod.Get, $"me/onlineMeetings/{meetingId}/transcripts");
 
         if (!okList)
         {
@@ -526,7 +526,7 @@ public class MeetingRegistryToolHandler
 
         var (okContent, content, contentError) = await SendGraphAsync(
             HttpMethod.Get,
-            $"users/{Uri.EscapeDataString(mailbox)}/onlineMeetings/{meetingId}/transcripts/{transcriptId}/content?$format=text/vtt",
+            $"me/onlineMeetings/{meetingId}/transcripts/{transcriptId}/content?$format=text/vtt",
             acceptRawText: true);
 
         if (!okContent || string.IsNullOrWhiteSpace(content))
@@ -638,7 +638,7 @@ public class MeetingRegistryToolHandler
 
         var (ok, response, error) = await SendGraphAsync(
             HttpMethod.Get,
-            $"users/{_agentUserId}?$select=mail,userPrincipalName,displayName");
+            "me?$select=mail,userPrincipalName,displayName");
 
         if (!ok)
         {
@@ -663,6 +663,12 @@ public class MeetingRegistryToolHandler
         bool acceptRawText = false,
         string? preferTimeZone = null)
     {
+        // Every call here is against the agent's OWN mailbox, so all paths are /me/... rather
+        // than /users/{id}/... Graph's onlineMeetings endpoint REQUIRES this on a delegated
+        // token and rejects the user-scoped form with
+        //   "only /me is supported, but the request resolved against <upn>"
+        // even when the id resolved is the caller's own. Measured: the user-scoped form failed
+        // transcript lookup after every other part of the chain was working.
         try
         {
             using var request = new HttpRequestMessage(method, $"https://graph.microsoft.com/v1.0/{path}");
@@ -771,6 +777,7 @@ public class MeetingRegistryToolHandler
     private static string Truncate(string value, int max) =>
         string.IsNullOrEmpty(value) || value.Length <= max ? value ?? string.Empty : value[..max];
 }
+
 
 
 
