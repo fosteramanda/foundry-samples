@@ -29,7 +29,7 @@
 
   $environmentVariables = @{}
   if (-not [string]::IsNullOrWhiteSpace($env:APPLICATIONINSIGHTS_CONNECTION_STRING)) {
-      $environmentVariables.APPLICATIONINSIGHTS_CONNECTION_STRING = $env:APPLICATIONINSIGHTS_CONNECTION_STRING
+      $environmentVariables."ApplicationInsights__ConnectionString" = $env:APPLICATIONINSIGHTS_CONNECTION_STRING
   }
   # The blueprint is no longer pre-created in infra, so its client id does not exist at image
   # build time any more. It is injected here instead, from the value the previous provision

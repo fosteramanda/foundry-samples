@@ -31,7 +31,7 @@ $creationAst = [System.Management.Automation.Language.Parser]::ParseFile(
 $settingBlock = $creationAst.Find({
     param($node)
     $node -is [System.Management.Automation.Language.IfStatementAst] -and
-        $node.Extent.Text.Contains('$environmentVariables.APPLICATIONINSIGHTS_CONNECTION_STRING')
+        $node.Extent.Text.Contains('$env:APPLICATIONINSIGHTS_CONNECTION_STRING')
 }, $true)
 if ($null -eq $settingBlock) { throw 'No runtime App Insights configuration block found.' }
 if ($null -ne $settingBlock.Find({
@@ -45,10 +45,13 @@ try {
         $env:APPLICATIONINSIGHTS_CONNECTION_STRING = if ($configured) { 'test-instrumentation-setting' } else { '' }
         $environmentVariables = @{}
         & ([scriptblock]::Create($settingBlock.Extent.Text))
-        if ($environmentVariables.ContainsKey('APPLICATIONINSIGHTS_CONNECTION_STRING') -ne $configured) {
+        if ($environmentVariables.ContainsKey('ApplicationInsights__ConnectionString') -ne $configured) {
             throw 'Runtime monitoring configuration does not follow the provisioned setting.'
         }
-        if ($configured -and $environmentVariables.APPLICATIONINSIGHTS_CONNECTION_STRING -ne 'test-instrumentation-setting') {
+        if ($environmentVariables.ContainsKey('APPLICATIONINSIGHTS_CONNECTION_STRING')) {
+            throw 'The hosted API reserves APPLICATIONINSIGHTS_CONNECTION_STRING for platform use.'
+        }
+        if ($configured -and $environmentVariables.ApplicationInsights__ConnectionString -ne 'test-instrumentation-setting') {
             throw 'Runtime monitoring configuration was not propagated exactly.'
         }
     }

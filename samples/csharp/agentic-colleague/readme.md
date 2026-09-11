@@ -83,9 +83,11 @@ isolated provisioning-script fixtures, and checks wiring. It exits nonzero on fa
 Both the azd preprovision hook and the ACR image-build entrypoint require it. The fixtures
 make no live Graph or model calls and cannot prove that a hired instance has access.
 
-The agent-creation script now propagates the provisioned
-`APPLICATIONINSIGHTS_CONNECTION_STRING` into each new hosted version. It does not update
-existing versions. Responses API request/response bodies and hosted configuration values
+The agent-creation script propagates the provisioned
+`APPLICATIONINSIGHTS_CONNECTION_STRING` as the application-owned
+`ApplicationInsights__ConnectionString` setting in each new hosted version. The hosted API
+reserves the uppercase name for platform use. This does not update existing versions.
+Responses API request/response bodies and hosted configuration values
 are omitted from routine logs; Graph calls log stage, status and request ID instead of
 transcript content.
 
