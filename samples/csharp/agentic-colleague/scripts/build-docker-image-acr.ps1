@@ -22,7 +22,7 @@ if ([string]::IsNullOrWhiteSpace($modelDeploymentName)) {
     }
 }
 if ([string]::IsNullOrWhiteSpace($modelDeploymentName)) {
-    $modelDeploymentName = "gpt-5-chat"
+    $modelDeploymentName = "gpt-5.6-sol"
 }
 
 
