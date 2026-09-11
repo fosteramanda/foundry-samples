@@ -33,11 +33,11 @@ param cognitiveServicesSku string = 'S0'
 @allowed(['Basic', 'Standard', 'Premium'])
 param containerRegistrySku string = 'Basic'
 
-@description('Name of the model to deploy')
-param modelName string = 'gpt-5-chat'
+@description('Name of the model to deploy. Also the deployment name, so appsettings ModelDeployment must match.')
+param modelName string = 'gpt-5.6-sol'
 
 @description('Version of the model to deploy')
-param modelVersion string = '2025-10-03'
+param modelVersion string = '2026-07-09'
 
 @description('GlobalStandard capacity (1000 TPM per unit) for the model deployment')
 param modelCapacity int = 100

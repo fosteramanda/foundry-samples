@@ -277,11 +277,16 @@ Write-Host 'Provisioning model' -ForegroundColor Cyan
 
 $infraDir   = Join-Path $sampleRoot 'infra'
 $mainBicep  = Remove-Comments -Kind bicep -Text (Get-Content (Join-Path $infraDir 'main.bicep') -Raw)
+$bicepModelName = if ($mainBicep -match "param modelName string = '([^']+)'") { $Matches[1] } else { '' }
 $creationPs = Remove-Comments -Kind ps -Text (Get-Content (Join-Path $PSScriptRoot 'agent-creation-script.ps1') -Raw)
 $publishPs  = Remove-Comments -Kind ps -Text (Get-Content (Join-Path $PSScriptRoot 'publish-digital-worker.ps1') -Raw)
 
 Assert-That -Name 'No bot service module in infra' -Condition (($mainBicep -notmatch 'botservice') -and (-not (Test-Path (Join-Path $infraDir 'modules/botservice.bicep')))) `
     -Defends 'The bot service was deliberately cut. The agent endpoint is authorized with the BotServiceRbac scheme instead. Re-adding one means the endpoint is being secured two different ways at once.'
+
+Assert-That -Name 'appsettings ModelDeployment matches the bicep model name' -Condition (($bicepModelName -ne '') -and ($bicepModelName -eq $appSettingsJson.ModelDeployment)) `
+    -Detail "bicep modelName='$bicepModelName' appsettings ModelDeployment='$($appSettingsJson.ModelDeployment)'" `
+    -Defends 'project.bicep names the model deployment after the model itself, so this is one value living in two files. If they drift the agent calls a deployment that does not exist, and every turn fails at the model call rather than at startup.'
 
 Assert-That -Name 'No blueprint created in infra' -Condition (($mainBicep -notmatch 'maib-creation-script|maibName') -and (-not (Test-Path (Join-Path $infraDir 'modules/maib-creation-script.bicep')))) `
     -Defends 'The blueprint is created by the platform during agent creation, which is the only place its client id is returned. Creating one in infra produces a second, unused blueprint and an id that does not match the running agent.'
