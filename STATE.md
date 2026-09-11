@@ -2088,3 +2088,62 @@ send or post it, and never to mention delivery. Preflight asserts both.
 
 Deployed v25, 33/33. The new stale-container check fired correctly on this deploy and warned
 that the running container is warm, which is exactly what it exists to say.
+
+### MEETING CAPTURE WORKS END TO END (2026-09-11, v25)
+
+Verified by outbound call, not by reading the answer:
+
+```
+13:52:19  Application starting...                                  <- v25 cold start
+13:53:35  Meeting registry acting as the agent user
+          checkout-workstream-manager@notareal.co, reading its own calendar
+13:53:35  GET /v1.0/me/onlineMeetings                          200
+13:53:36  GET /v1.0/me/onlineMeetings/{id}/transcripts         200
+13:53:40  GET .../transcripts/{tid}/content                    200
+13:53:44  Transcript read for 'Team huddle': 669 characters
+```
+
+669 characters of real transcript, fetched from Graph and summarised. What Amanda saw:
+
+```
+Team huddle recap - 2026-09-11
+  Decision/ask: Amanda asked for clear owners on unresolved blockers by end of day.
+  Blockers called out:
+    Payments gateway - owner unclear.
+    Friday release RAI check - owner unclear.
+    Latency bug - assigned to Farzad; scope has grown.
+    PII blocker - owner unclear.
+  Action needed: Assign owners for payments gateway, RAI check, and PII today.
+```
+
+That output covers more of the backlog than the meeting stories alone: decisions with
+rationale, blockers, a named owner, and explicitly flagged OWNER GAPS, which is the "identify
+owner gaps" story falling out of the extraction rather than being built separately.
+
+### The full chain, and what each step cost
+
+```
+invited like a colleague          v20  untitled meetings, blank calendar subject
+reads its OWN calendar            v19  was reading the manager's
+calendar permission               v21  Calendars.Read granted AND inheritable
+finds the meeting                 v21  join URL percent-encoded in the OData filter
+consent                           v23  the invitation IS the consent, no approval step
+transcript fetch                  v25  /me is mandatory; /users/{id} is refused
+quiet in meeting chats            v21  recording XML and call metadata are not messages
+scheduled runs authenticate       v24  fall back to the conversation tenant
+```
+
+Eight fixes, six of them found by Amanda hitting the failure rather than by testing. Three
+were fixes that already existed in the sibling sample and were never ported.
+
+The single most useful habit: verify by outbound call. Twice an answer looked correct and had
+no API call behind it, and once a correct-looking refusal was produced by code three versions
+old because the container never restarted.
+
+### Still open
+
+- The 5-minute routine should now authenticate with the v24 tenant fallback. Unverified.
+- Office of Amanda (autopilotroutera2a) has several of these fixes committed but NOT deployed;
+  it is still on v40.
+- The second autopilot build (agenticcolleague) has a brief at C:\src\agentic-colleague\BRIEF.md
+  and has not been started.
