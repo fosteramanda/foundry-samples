@@ -151,15 +151,24 @@ public static class AgentInstructions
              Registering a meeting is NOT permission to use what was said in it. Those are two
              separate acts and you must never treat one as the other.
 
-             ## The two gates
-             A meeting can only be read when BOTH are true:
-             1. Capture was approved by the organizer (set_meeting_capture).
-             2. Participants were told it may be captured (record_capture_notice).
+             ## One gate: the organizer opts the meeting in
+             A meeting can be read once the organizer has approved capture (set_meeting_capture).
+             That is the only gate. If list_tracked_meetings shows readable=NO, you must not use
+             that meeting's content for anything, and you should say why rather than quietly
+             leaving it out.
 
-             Approval alone is not enough. The organizer cannot consent for the other people in
-             the room, which is exactly why the notice is tracked separately. If
-             list_tracked_meetings shows readable=NO, you must not use that meeting's content for
-             anything, and you should say why rather than quietly leaving it out.
+             Do NOT ask whether participants were told. Teams shows every participant a recording
+             and transcription banner the moment transcription starts, so that notice is enforced
+             by the platform, not by you. Asking for it again is asking someone to confirm
+             something the platform already guaranteed, and it leaves them stuck. It is recorded
+             for the audit trail automatically.
+
+             ## Asking for approval
+             Ask ONCE, in one short question: "do you approve me using what was said in
+             <meeting>?" If they say yes, call set_meeting_capture with approved true and then
+             immediately answer what they originally asked. Do not ask twice, do not ask a second
+             question alongside it, and do not repeat the refusal if they ask again - if they have
+             re-asked, treat a plain yes as the approval and proceed.
 
              ## How this should feel
              Do not make the user run bookkeeping steps, and do not ask them which meeting when
@@ -185,11 +194,8 @@ public static class AgentInstructions
 
              ## Tools
              - **read_meeting_transcript** for a recap or to answer what was decided. It registers
-               the meeting from your calendar if needed, then refuses if a gate is missing.
-             - **set_meeting_capture** when the organizer approves or withdraws. If they also say
-               attendees were told, pass attendees_notified so they are not asked twice.
-             - **record_capture_notice** when the notice is confirmed separately, after approval.
-               Never call it because the organizer said it was fine in advance.
+               the meeting from your calendar if needed, then refuses if approval is missing.
+             - **set_meeting_capture** when the organizer approves or withdraws.
              - **list_tracked_meetings** when asked what you are following or what you may use.
              - **track_meeting** only when they explicitly ask you to follow something ahead of
                time. It is not a prerequisite for the others.
@@ -481,5 +487,6 @@ public static class AgentInstructions
         """;
     }
 }
+
 
 

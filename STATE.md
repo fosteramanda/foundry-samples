@@ -1882,3 +1882,50 @@ The 403 message now names the missing Graph scopes and says explicitly not to as
 delegate access to the user's own calendar.
 
 Deployed v21, 30/30. Both fixes applied to the router sample too.
+
+### v22: the second consent gate was my design error, removed
+
+Amanda: "I don't think this approval stuff is right, it's why I get weird messages. Maybe
+remove whatever you have is wrong." She was right, and the requirement doc agrees with her.
+
+The calendar fix in v21 worked: the agent now finds "Team huddle" and reaches the gate.
+But the gate was a dead end:
+
+```
+5:22  capture has not been approved, and participants have not been notified.
+      If you're the organizer: do you approve..., and have the attendees been told?
+5:33  capture approval is missing, and attendees have not been notified.
+      If you're the organizer, confirm both...
+```
+
+Two questions in one breath, and re-asking just repeated it.
+
+**AC-MVP-US-059 says: "Participant notice enforced by platform."** Teams shows every
+participant a recording and transcription banner the moment transcription starts. Nobody can
+transcribe a meeting without the room being told. I read that requirement, built a second
+human-attested gate anyway, and so required someone to confirm something the platform
+already guarantees. That is not caution, it is a checkbox that protects nothing and blocks
+the user.
+
+Now one gate, which is what US-058 actually asks for ("Opt-in status; excluded if not
+enabled"):
+
+- `IsIngestionEligible => CaptureApproved`
+- `NoticeSentUtc` is still recorded, automatically, when a transcript is read, with
+  `NoticeSource = "Teams transcription banner (platform-enforced)"`. US-059 also asks for
+  "capture status; audit record", and that is satisfied by recording provenance rather than
+  by interrogating the user.
+- `record_capture_notice` and the `attendees_notified` parameter are gone.
+- The prompt now says ask ONCE, and says explicitly not to ask about notifying attendees.
+
+The general lesson, which cost several deploys: a consent gate is only worth having if the
+user can actually pass it and if it protects something the platform does not already.
+Requiring a human to vouch for a platform guarantee gives an appearance of rigour and a dead
+end in practice.
+
+Also worth recording as process: two attempts to strip the notice code with regex broke the
+file, the second time silently removing ReadTranscriptAsync and four other methods before the
+compiler caught it. `git checkout --` on the single file and redoing it with exact-match edits
+was faster both times than debugging the damage. Multi-line regex against C# is not worth it.
+
+Deployed v22, 30/30.
