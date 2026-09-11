@@ -773,9 +773,15 @@ public class MeetingRegistryToolHandler
 
         if (error != null && (error.Contains("403") || error.Contains("ErrorAccessDenied", StringComparison.OrdinalIgnoreCase)))
         {
-            return $"I could not {action} {mailbox}: Exchange denied access. That is a mailbox permission, not a "
-                 + "Graph one. Tell the user I need delegate access to their calendar, granted in Outlook or the "
-                 + "Microsoft 365 admin center.";
+            // This reads the agent's OWN mailbox, so a 403 is a missing Graph scope on the
+            // blueprint, NOT an Exchange delegation problem. The earlier wording sent the user to
+            // grant delegate access in Outlook, which could never have fixed it: nobody delegates
+            // a mailbox to its own owner.
+            return $"I could not {action} {mailbox}: access was denied reading my own mailbox. That is a "
+                 + "missing Microsoft Graph permission on my blueprint (Calendars.Read for the calendar, "
+                 + "OnlineMeetingTranscript.Read.All for transcripts), not a mailbox delegation. Tell the "
+                 + "user it needs granting AND marking inheritable on the blueprint. Do not ask them for "
+                 + "delegate access to their own calendar.";
         }
 
         return $"I could not {action} {mailbox}: {error}. Tell the user plainly that it failed.";
