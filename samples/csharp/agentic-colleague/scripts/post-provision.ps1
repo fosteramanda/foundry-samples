@@ -82,7 +82,21 @@ else {
     & "$PSScriptRoot/create-blueprintsp-oauth2-grants.ps1"
 
     Write-Host "===============Publishing autopilot==============="
-    & "$PSScriptRoot/publish-digital-worker.ps1" -BlueprintClientId $blueprintClientId
+    # Publish declares the maximum audience, and the body sends publishScope = "Tenant".
+    # Canon item 5 makes that a hard ceiling: a tenant admin can narrow it later but can
+    # never widen it. SKIP_PUBLISH exists so an environment can be provisioned and an agent
+    # version created without committing to that ceiling. It defaults to OFF, so normal
+    # runs publish as before; set it only when the audience decision is still open.
+    $skipPublish = & azd env get-value SKIP_PUBLISH 2>$null
+    if ($LASTEXITCODE -ne 0 -or $null -eq $skipPublish) { $skipPublish = "" }
+
+    if ($skipPublish.Trim() -eq "true") {
+        Write-Host "SKIP_PUBLISH=true, so the autopilot was NOT published and no audience ceiling was declared."
+        Write-Host "To publish later: azd env set SKIP_PUBLISH `"`" ; azd env set DIGITAL_WORKER_SETUP_DONE `"`" ; azd provision"
+    }
+    else {
+        & "$PSScriptRoot/publish-digital-worker.ps1" -BlueprintClientId $blueprintClientId
+    }
 
     # Mark one-time setup complete so subsequent re-provisions skip these steps.
     & azd env set DIGITAL_WORKER_SETUP_DONE true | Out-Null
