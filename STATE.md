@@ -1929,3 +1929,45 @@ compiler caught it. `git checkout --` on the single file and redoing it with exa
 was faster both times than debugging the damage. Multi-line regex against C# is not worth it.
 
 Deployed v22, 30/30.
+
+### v23: "there is no approval" - the invitation IS the consent
+
+Amanda, after v22 still asked her to approve: "there is no approval."
+
+She is right, and v22 only went half way. By the time a meeting is on the agent's own
+calendar with a transcript, the organizer has already performed two deliberate acts:
+
+1. They added the agent to the invite, the same way they would add a colleague.
+2. Someone started transcription, which Teams announced to every participant.
+
+A third confirmation adds no protection. It just blocks the person who already said yes
+twice. The gate was ceremony.
+
+Now:
+- `CaptureApproved` defaults to **true**, because a meeting only reaches the registry by
+  being on the agent's own calendar, which means it was invited.
+- `set_meeting_capture` is now an **exclusion** control, not a prerequisite. Its description
+  says so, and the refusal path only fires for a meeting explicitly excluded.
+- The prompt says consent is the invitation, and lists asking for approval as a Bad example
+  rather than a Good one. The worked example it used to carry was literally the exchange
+  Amanda saw and objected to.
+- Re-tracking never resets an explicit exclusion.
+
+US-058 is still satisfied: "control whether the agent uses my meeting content. Opt-in
+status; excluded if not enabled; registry updated." The control exists and the registry
+records it. What changed is the default, and the default follows from the invitation.
+
+### On how this went wrong three times
+
+v21 added a calendar scope and the gate became reachable. v22 removed the notice half of it.
+v23 removed the rest. Each step was driven by Amanda hitting the same wall and saying so.
+
+The original design came from reading two requirements (US-058, US-059) and implementing
+each as a literal gate, without asking what act in the real flow already constitutes the
+consent. The requirement said "opt in"; the invitation was the opt-in all along.
+
+Preflight caught my own bad assertion on the way: I asserted the prompt does not contain
+"do you approve", but the prompt legitimately contains `Do NOT ask "do you approve"`. The
+check now matches the prohibition rather than the absence of a phrase.
+
+Deployed v23, 30/30.

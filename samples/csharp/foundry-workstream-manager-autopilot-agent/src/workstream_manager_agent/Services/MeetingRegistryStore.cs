@@ -38,10 +38,19 @@ public class TrackedMeetingEntity : ITableEntity
     public string JoinWebUrl { get; set; } = string.Empty;
 
     /// <summary>
-    /// Whether anyone has permitted the agent to use this meeting's content. Defaults false and
-    /// must be set by an explicit act. Nothing reads the meeting while this is false.
+    /// Whether this meeting's content may be used.
+    ///
+    /// Defaults to TRUE for meetings found on the agent's own calendar, because by then the
+    /// organizer has already performed two deliberate acts: they added the agent to the invite,
+    /// and someone started transcription with Teams showing every participant the banner. The
+    /// invitation IS the opt-in. Asking again afterwards is ceremony that blocks the user and
+    /// protects nothing.
+    ///
+    /// It remains settable so a meeting can be EXCLUDED. That is what "excluded if not enabled"
+    /// in the requirement needs: a way to turn a specific meeting off, not a hoop to jump before
+    /// every one.
     /// </summary>
-    public bool CaptureApproved { get; set; }
+    public bool CaptureApproved { get; set; } = true;
 
     public string ApprovedBy { get; set; } = string.Empty;
     public DateTimeOffset? ApprovedUtc { get; set; }

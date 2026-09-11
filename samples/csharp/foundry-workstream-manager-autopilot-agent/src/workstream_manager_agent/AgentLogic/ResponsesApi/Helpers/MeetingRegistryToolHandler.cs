@@ -88,7 +88,7 @@ public class MeetingRegistryToolHandler
             {
                 "type": "function",
                 "name": "track_meeting",
-                "description": "Registers a meeting YOU WERE INVITED TO so it can later be recapped. Looks at your own calendar, not anyone else's: someone must have added you to the invite first, the same way they would add a colleague. This ONLY registers the meeting. It does NOT give permission to read what was said: tracking always starts with capture switched off, and the organizer must approve it separately. Use this when the user asks you to follow, track, watch, or take notes on a meeting.",
+                "description": "Registers a meeting YOU WERE INVITED TO so it can later be recapped. Looks at your own calendar, not anyone else's: someone must have added you to the invite first, the same way they would add a colleague. You do NOT need this before recapping, because read_meeting_transcript registers it for you. Use it only when the user explicitly asks you to follow or track a meeting ahead of time.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -106,7 +106,7 @@ public class MeetingRegistryToolHandler
             {
                 "type": "function",
                 "name": "list_tracked_meetings",
-                "description": "Lists meetings currently being followed, showing for each whether capture was approved, whether participants were notified, and whether it is therefore eligible to be read. Use when the user asks what meetings you are tracking or what you are allowed to use.",
+                "description": "Lists meetings you were invited to and any that were explicitly excluded from capture. Use when the user asks what meetings you are tracking or what you are allowed to use.",
                 "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
             }
             """)!,
@@ -115,7 +115,7 @@ public class MeetingRegistryToolHandler
             {
                 "type": "function",
                 "name": "set_meeting_capture",
-                "description": "Turns permission to use a meeting's content on or off. Only the organizer should be doing this. If the meeting is not registered yet it is picked up from your calendar automatically. Read the meeting subject back so a wrong one is caught immediately. Do NOT ask whether attendees were notified: Teams shows every participant the recording banner when transcription starts, so that notice is handled by the platform.",
+                "description": "EXCLUDES a meeting from capture, or re-includes one that was excluded. Meetings you were invited to are usable by default, so you do NOT need this before recapping. Use it only when the user explicitly asks you to stop using a meeting, or to start again after excluding it. Read the meeting subject back so a wrong one is caught immediately.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -133,7 +133,7 @@ public class MeetingRegistryToolHandler
             {
                 "type": "function",
                 "name": "read_meeting_transcript",
-                "description": "Fetches the transcript of a tracked meeting so it can be recapped. Refuses unless capture was approved AND participants were notified. Use this when asked what was decided, what was discussed, what actions came out of a meeting, or for a recap. Returns the raw transcript text; you then extract decisions, actions with owners, blockers and unresolved items yourself.",
+                "description": "Fetches the transcript of a meeting you were invited to so it can be recapped. Registers the meeting from your calendar if needed and reads it. Does not require any approval step: the invitation is the opt-in. Refuses only if the meeting was explicitly excluded. Use this when asked what was decided, what was discussed, what actions came out of a meeting, or for a recap. Returns the raw transcript text; you then extract decisions, actions with owners, blockers and unresolved items yourself.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -206,8 +206,8 @@ public class MeetingRegistryToolHandler
 
         var already = wasAlreadyTracked ? " It was already being tracked." : string.Empty;
         return $"Now tracking '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} {DisplayTimeZone}).{already} "
-             + $"Capture is {(entity.CaptureApproved ? "APPROVED" : "NOT approved")}. "
-             + "Tell the user tracking alone does not let me read what was said, and ask whether they approve capture.";
+             + $"Capture is {(entity.CaptureApproved ? "on" : "EXCLUDED")}. "
+             + "Just answer what the user asked; do not ask them to approve anything.";
     }
 
     /// <summary>
@@ -315,10 +315,11 @@ public class MeetingRegistryToolHandler
         entity.EndUtc = ParseDateOrNull(ev?["end"]?["dateTime"]?.GetValue<string>());
         entity.TrackedBy = mailbox;
 
-        // Never reset an existing approval by re-tracking, and never grant one here.
+        // A meeting reaches here only because it is on the AGENT'S OWN calendar, which means the
+        // organizer put it there. That invitation is the opt-in, so a new entry starts approved.
+        // Re-tracking never resets an existing decision, so an explicit exclusion survives.
         if (existing == null)
         {
-            entity.CaptureApproved = false;
             entity.IngestionState = "none";
         }
 
@@ -468,12 +469,10 @@ public class MeetingRegistryToolHandler
 
         if (!entity.IsIngestionEligible)
         {
-            return $"I have not been approved to use '{entity.Subject}' yet. Ask the organizer ONE short "
-                 + "question: do you approve me using what was said in this meeting? If they say yes, call "
-                 + "set_meeting_capture with approved true and then immediately answer what they originally "
-                 + "asked. Do NOT ask about notifying attendees - Teams already showed everyone the recording "
-                 + "banner when transcription started. Until approval exists, do not summarise the meeting "
-                 + "from the calendar entry, the chat, or anything earlier in this conversation.";
+            return $"'{entity.Subject}' has been explicitly excluded from capture, so I must not use what "
+                 + "was said in it. Tell the user it was excluded and that they can re-enable it with "
+                 + "set_meeting_capture if they want. Do not summarise the meeting from the calendar entry, "
+                 + "the chat, or anything earlier in this conversation.";
         }
 
         if (string.IsNullOrWhiteSpace(entity.JoinWebUrl))
@@ -772,6 +771,7 @@ public class MeetingRegistryToolHandler
     private static string Truncate(string value, int max) =>
         string.IsNullOrEmpty(value) || value.Length <= max ? value ?? string.Empty : value[..max];
 }
+
 
 
 
