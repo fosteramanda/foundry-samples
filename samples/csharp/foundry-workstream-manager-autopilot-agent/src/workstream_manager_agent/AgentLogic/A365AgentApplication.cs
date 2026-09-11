@@ -304,7 +304,17 @@ public class A365AgentApplication : AgentApplication
             throw new ArgumentException("Activity must have a recipient and conversation.");
         }
 
-        var tenantId = Guid.TryParse(recipient.TenantId, out var parsedTenantId) ? parsedTenantId : Guid.Empty;
+        // A scheduled run's recipient carries no tenantId, but the conversation does. Falling
+        // back keeps the cross-tenant guard and token acquisition working on routine-driven
+        // turns; without it tenantId is Guid.Empty, the token request goes to
+        // /00000000-0000-0000-0000-000000000000/oauth2/v2.0/token and returns 400, and the
+        // routine's post to the conversation then fails 401 every single time. Measured: a
+        // 5-minute routine fired on schedule and failed silently on exactly this.
+        var tenantId = Guid.TryParse(recipient.TenantId, out var parsedTenantId)
+            ? parsedTenantId
+            : Guid.TryParse(conversation.TenantId, out var parsedConversationTenantId)
+                ? parsedConversationTenantId
+                : Guid.Empty;
 
         // AAI
         var agenticAppId = Guid.TryParse(recipient.AgenticAppId, out var parsedAgenticAppId) ? parsedAgenticAppId : Guid.Empty;
