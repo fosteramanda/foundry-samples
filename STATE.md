@@ -1732,3 +1732,46 @@ tools already say to read every time: routines questions must call list_routines
 sample and the router sample, which had the identical gap. Preflight now asserts it.
 
 Deployed v18, 25/25.
+
+### v19: the port carried a contradictory delegation model
+
+Retest of routines PASSED, verified by outbound call rather than text:
+
+```
+07:25:47  GET /api/projects/workstreammanagerado/routines  200
+```
+
+The v18 fix works: the agent now calls list_routines before saying nothing is scheduled.
+
+But the same turn exposed a regression the port introduced. The agent prefixed its answer
+with "I couldn't post directly to that chat: no Teams send tool is available here, and
+WorkIQ denied chat-message access. Reply to Amanda: ..." — it tried to find a tool to
+deliver its own reply.
+
+Cause: `AgentInstructions.cs` was taken from the router sample, which carries two sections
+built for an agent that has the A2A delegation handler. That handler was deliberately NOT
+ported, so the prompt described tools that do not exist here:
+
+```
+BuildRoutingSection      -> list_workiq_agents, ask_workiq_agent   (no such tools)
+BuildMcpDelegationGuard  -> "Delegation goes through ask_workiq_agent. Always."
+                            "never pass agentId to workiq___ask"
+```
+
+The guard is not merely describing something absent, it is backwards. This agent's ONLY
+delegation path is `workiq___ask` WITH an agentId, which is exactly what BuildDelegationSection
+tells it to do. The prompt contradicted itself, so the model went looking for a send tool.
+
+Caught the mailbox version of this mistake during the port and missed this one. The
+difference is instructive: the mailbox section named a tool that plainly did not exist, while
+this one named tools that sound like the toolbox tools that DO exist. The toolbox has 11
+`workiq___*` tools, so `workiq___ask` is real and `ask_workiq_agent` is not, and the two are
+one underscore apart.
+
+Fixed by removing both sections. `BuildDelegationSection` stays: it is the delegation model
+this agent actually has, and it was in the target before the port.
+
+Preflight now asserts both directions — no phantom A2A tool names, and the real
+source-of-truth delegation still present, so the fix cannot be over-applied later.
+
+Deployed v19, 27/27.

@@ -53,7 +53,7 @@ public static class AgentInstructions
              distinctly, and name the source when the answer came from a meeting, a work item
              or a document. When you cannot answer, say which source or access is missing
              rather than producing a plausible answer without support.
-             {BuildRoutingSection(toolboxName)}{BuildDelegationSection(sourceOfTruthAgentId, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}
+             {BuildDelegationSection(sourceOfTruthAgentId, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}
              # Onboarding
              When the manager explicitly starts onboarding in a 1:1 chat, inquire about:
              - Document to track leads
@@ -432,113 +432,6 @@ public static class AgentInstructions
     /// not exist without a toolbox, and warning about a tool the agent was never given is the
     /// same defect as advertising one.
     /// </param>
-    private static string BuildRoutingSection(string? toolboxName) =>
-        $"""
-
-
-             # Delegating to other agents
-             You are one agent among several in this tenant. Some requests are better answered
-             by a specialist than by you, and finding that specialist is your job — the manager
-             should not have to know who exists or name them.
-
-             ## When to look
-             Call list_workiq_agents when a request needs knowledge or access you do not have
-             and your own tools do not cover:
-             - It asks for authoritative product or documentation facts you would otherwise be
-               guessing at.
-             - It concerns a product, team, or system you have no tool for.
-             - The manager asks who can help with something, or names another agent.
-
-             Call it once per topic, not once per turn. The roster rarely changes mid-conversation
-             — reuse what you already retrieved.
-
-             ## When NOT to delegate
-             Answer these yourself. Handing them off is slower and worse:
-             - Anything your own tools cover: ADO work items, launches, backlog, chat commitments,
-               documents, calendar, mail, files.
-             - Anything about this conversation — what was said, decided, or promised here.
-             - General knowledge you already hold confidently.
-             - Summarising, rewriting, or formatting text already in the thread.
-
-             If you are unsure whether an agent covers it, answer yourself and say what you were
-             unsure about. A confident local answer beats a speculative hand-off.
-
-             ## How to choose
-             Match on the agent's DESCRIPTION, not its name. Names are developer-chosen and often
-             meaningless; the description states what the agent actually does. Prefer the more
-             specific agent when two plausibly fit. If none clearly fits, do not delegate — say
-             you found no agent for it and answer what you can.
-             {BuildMcpDelegationGuard(toolboxName)}
-             ## When it answers
-             - Name the agent you asked, in one short line, before the answer.
-             - Keep its citations and links. They are the reason to delegate.
-             - Do not restate its claims without the sources it gave you, and do not add product
-               facts it did not provide.
-             - Do NOT add your own footer or trailer naming the agents you consulted. The host
-               appends one automatically from the calls that actually happened; yours would
-               duplicate it, and could contradict it.
-
-             ## When it does not answer
-             Some agents accept a request and return nothing. Say plainly that the agent produced
-             no answer, and name it. Do NOT answer on its behalf, do NOT present your own
-             knowledge as if it came from that agent, and do not retry more than once. Then offer
-             what you can answer yourself, clearly marked as yours.
-
-             ## When it is still working
-             An agent may accept the request and not finish in time. That is NOT the same as
-             producing no answer, and must not be reported as one — the answer is still coming.
-             Say you have asked that agent and will follow up as soon as it replies, then end the
-             turn. The follow-up is delivered automatically as a separate message when the agent
-             finishes, so do NOT promise to check back yourself, do NOT ask the user to wait
-             before sending anything else, and do NOT attempt to answer the question meanwhile.
-             The user is free to ask you other things in the meantime.
-        """;
-
-    /// <summary>
-    /// Guard against delegating through the toolbox's Work IQ MCP `ask` tool instead of the A2A
-    /// tools. Only relevant when a toolbox is attached, because `workiq___ask` comes from the
-    /// toolbox proxy.
-    ///
-    /// Why it is needed at all: `workiq___ask` takes an OPTIONAL agentId, so it overlaps
-    /// ask_workiq_agent, and without agentId it answers as Microsoft 365 Copilot. Measured on
-    /// this sample: given a documentation question the model called workiq___ask and never
-    /// touched the A2A tools, producing a good answer from the wrong source. The two tools are
-    /// not interchangeable — one reports a silent no-answer honestly, the other substitutes a
-    /// different responder — so the prompt has to say which is for what.
-    /// </summary>
-    private static string BuildMcpDelegationGuard(string? toolboxName)
-    {
-        if (string.IsNullOrWhiteSpace(toolboxName))
-        {
-            return string.Empty;
-        }
-
-        return """
-
-
-             ## Delegation goes through ask_workiq_agent. Always.
-             You also have `workiq___ask`, which accepts an optional agentId. Do NOT use it to
-             reach another agent — never pass agentId to it. It is for asking Microsoft 365
-             Copilot itself, and only when the question is about the manager's own mail, files,
-             calendar, chats or documents.
-
-             The two are not interchangeable. `ask_workiq_agent` reaches the named agent and
-             reports honestly when that agent returns nothing. `workiq___ask` without an agentId
-             answers as Microsoft 365 Copilot — useful, but it is not the specialist, and
-             presenting its answer as a delegation would be false attribution.
-
-             So: if the request needs a specialist, use list_workiq_agents then ask_workiq_agent.
-             If it needs the manager's own M365 content, use workiq___ask with no agentId and say
-             the answer came from Microsoft Copilot.
-""";
-    }
-
-    /// <summary>
-    /// Builds the pinned-delegate section. Returns an empty string when no delegate agent id is
-    /// configured, so the base instructions are unchanged. This is narrower than
-    /// <see cref="BuildRoutingSection"/>: it names one specific agent and the topics that always
-    /// belong to it, rather than letting the model choose from the roster.
-    /// </summary>
     private static string BuildDelegationSection(string? agentId, string? agentName)
     {
         if (string.IsNullOrWhiteSpace(agentId))
@@ -588,4 +481,5 @@ public static class AgentInstructions
         """;
     }
 }
+
 
