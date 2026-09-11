@@ -53,21 +53,6 @@ param applicationInsightsName string = '${environmentName}-appi'
 
 param agentName string = '${environmentName}-agent'
 
-param maibName string = '${environmentName}-maib'
-
-// =================================================================================================
-// Bot Service module parameters
-// =================================================================================================
-
-@description('Name of the Bot Service 1')
-param botName string = '${environmentName}-bot'
-
-@description('Display name of the bot')
-param botDisplayName string = '${environmentName} Bot'
-
-@description('SKU of the Bot Service')
-param botServiceSku string = 'F0'
-
 // =================================================================================================
 // Azure Table Storage parameters
 // =================================================================================================
@@ -112,44 +97,12 @@ module project 'modules/project.bicep' = {
   }
 }
 
-// 2. Create deployment script UMI and grant roles on RG.
-module deploymentScriptUmi 'modules/deployment-script-umi.bicep' = {
-  name: 'deployment-script-umi'
-  dependsOn: [
-    project
-  ]
-}
-
-// 3. Create managed agent identity blueprint using a deployment script as that is a dataplane operation.
-module deploymentScriptAgent 'modules/maib-creation-script.bicep' = {
-  name: 'maib-creation-script'
-  params: {
-    uamiResourceId: deploymentScriptUmi.outputs.uamiResourceId
-    azureAIProjectEndpoint: project.outputs.foundryProjectEndpoint
-    maibName: maibName
-  }
-  dependsOn: [
-    deploymentScriptUmi
-  ]
-}
-
-
-// 4. Deploy the bot service module
-module botService 'modules/botservice.bicep' = {
-  name: 'botservice-deployment'
-  params: {
-    botName: botName
-    displayName: botDisplayName
-    msaAppId: deploymentScriptAgent.outputs.blueprintClientId
-    endpoint: 'https://${accountName}.services.ai.azure.com/api/projects/${projectName}/agents/${agentName}/endpoint/protocols/activityProtocol?api-version=2025-05-15-preview'
-    botServiceSku: botServiceSku
-  }
-  dependsOn: [
-    deploymentScriptAgent
-  ]
-}
-
-// 5. Deploy Azure Table Storage for agent data (allowlist + work items).
+// 2. Deploy Azure Table Storage for agent data (allowlist + work items).
+//
+// There is deliberately no bot service and no blueprint here. The agent endpoint is
+// authorized with the BotServiceRbac scheme instead of a Bot Service resource, and the
+// blueprint is created by the platform when the agent version is created, which is where
+// its client id is returned. Creating one here would produce a second, unused blueprint.
 module tables 'modules/tables.bicep' = {
   name: 'tables-deployment'
   params: {
@@ -172,10 +125,10 @@ output AZURE_CONTAINER_REGISTRY_ENDPOINT string = project.outputs.acrloginServer
 
 output AZURE_AI_PROJECT_ENDPOINT string = project.outputs.foundryProjectEndpoint
 
-@description('Agent identity blueprint ID')
-output AGENT_IDENTITY_BLUEPRINT_ID string = deploymentScriptAgent.outputs.blueprintClientId
-
 output SUBSCRIPTION_ID string = subscription().subscriptionId
+
+@description('Resource group name. Needed by agent-creation-script.ps1 to build the role assignment scope.')
+output RESOURCE_GROUP string = resourceGroup().name
 
 output LOCATION string = location
 
@@ -189,7 +142,8 @@ output TENANT_ID string = tenant().tenantId
 
 output PROJECT_PRINCIPAL_ID string = project.outputs.foundryProjectPrincipalId
 
-output MAIB_NAME string = maibName
+@description('Model deployment name, consumed by the image build and the agent version.')
+output MODEL_NAME string = modelName
 
 output PROJECT_DEFAULT_INSTANCE_CLIENT_ID string = project.outputs.foundryProjectDefaultInstanceClientId
 

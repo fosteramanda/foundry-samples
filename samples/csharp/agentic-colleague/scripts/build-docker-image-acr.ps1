@@ -36,6 +36,12 @@ $imageName = "agentic-colleague-agent1:latest"
 Write-Host "Building image using ACR Build in registry: $registryName"
 
 # Build image using ACR Build (builds in the cloud)
+#
+# BLUEPRINT_CLIENT_ID is empty on a brand new environment. The blueprint is now created by
+# the platform during agent creation, which happens after this build, so on the first
+# provision there is nothing to bake in. post-provision.ps1 persists the id afterwards, so
+# this resolves on every later provision, and agent-creation-script.ps1 also injects it
+# through the agent version's environment variables, which override the image.
 az acr build `
     --registry $registryName `
     --subscription $env:SUBSCRIPTION_ID `
