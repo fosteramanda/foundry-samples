@@ -1971,3 +1971,42 @@ Preflight caught my own bad assertion on the way: I asserted the prompt does not
 check now matches the prohibition rather than the absence of a phrase.
 
 Deployed v23, 30/30.
+
+### v24: the routine WAS firing, and failing 401 every time
+
+Checking whether v23 had been exercised turned up something unrelated and more useful. The
+5-minute routine is firing on schedule, and failing:
+
+```
+12:50:01  POST /00000000-0000-0000-0000-000000000000/oauth2/v2.0/token   400
+12:50:01  POST .../v3/conversations/19%3ac7dcc4ea-...                    401
+12:55:00  (identical)
+```
+
+An all-zero tenant id. The stored routine is correct in every respect: right instance
+(952d2b7d), right agent user, right blueprint, and `conversation.tenantId` present. But:
+
+```
+recipient   : {id, agenticUserId, agenticAppId, agenticAppBlueprintId}   <- no tenantId
+channelData : null                                                       <- Teams normally carries tenant here
+```
+
+`A365AgentApplication` read the tenant only off the recipient, got nothing, and fell to
+`Guid.Empty`. Every fire then requested a token for the all-zero tenant and could not post.
+
+**The fix already existed in the router sample and was never ported.** That is the third
+time in this build: the empty-message guard, the untitled-meeting handling, and now this.
+Each was found the same way, by a failure in front of Amanda rather than by comparing the
+two trees. The router sample even carries the explanatory comment.
+
+Ported, with the measured symptom written into the comment so the next person recognises the
+401 immediately. Preflight now asserts it here too.
+
+### Why this kept happening, and what changed
+
+The port copied three capability files and hand-edited the shared ones. Anything fixed in the
+sibling that lived in a shared file was invisible to that process. Three assertions now cover
+the three that bit, but the general risk remains for any future divergence, and the honest
+statement is that the two samples are not automatically kept in step.
+
+Deployed v24, 31/31.
