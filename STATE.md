@@ -2147,3 +2147,45 @@ old because the container never restarted.
   it is still on v40.
 - The second autopilot build (agenticcolleague) has a brief at C:\src\agentic-colleague\BRIEF.md
   and has not been started.
+
+### Multiple replicas can serve different versions at the same time
+
+Amanda got a working recap at 13:53 and, on the same agent with the same question, a 400 at
+14:22. The reason is not staleness in the sense understood so far:
+
+```
+13:32:27  container start   -> pre-v25 image, uses /users/{id}/onlineMeetings
+13:39:51  v25 created
+13:52:19  container start   -> v25 image, uses /me/onlineMeetings
+```
+
+Both replicas were alive. Requests landed on whichever, so the SAME question produced a
+working recap and a 400 twenty minutes apart with no deploy in between.
+
+This breaks the mental model used all session. "Deployed and serving" was already known to be
+weak evidence. So is "it worked once": a single good reply only proves one replica has the
+fix. The check that actually holds is that EVERY `Application starting` in the window
+postdates the version.
+
+Note `cloud_RoleInstance` does not help here. It reports the agent identity
+(f6771aa8-...), the same value for every replica, so telemetry cannot distinguish them
+directly. Container start times are the only available signal.
+
+The deploy wrapper now says this explicitly alongside the idle-timeout warning.
+
+### On the identity question Amanda raised
+
+She asked whether the recap runs as the agent user rather than delegated as her, noting that
+delegated is right for the chief of staff but not for a team agent. The Graph error answers
+it:
+
+```
+Organizer ID in token(c7dcc4ea-56e8-4085-a0c3-a05fb40cce12) does not match
+organizer ID in request url(checkout-workstream-manager@notareal.co)
+```
+
+`c7dcc4ea` is the agent USER account. So the token was already the agent user's, and the
+identity model is correct: the workstream manager acts as itself, not as Amanda. The 400 was
+purely the URL form, because Graph compares the token subject to the id in the path and a UPN
+does not match a GUID textually. `/me` sidesteps the comparison entirely, which is what v25
+does and what produced the working recap.
