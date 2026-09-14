@@ -1,0 +1,21 @@
+# Local virtualenv
+.venv/
+__pycache__/
+
+# Local secrets
+.env
+!.env.example
+
+# Local Agent Server state
+.agentserver/
+.data/
+response_store/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Temp/install logs
+*.log
+
+# In-place azd state
+.azure/
