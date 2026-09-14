@@ -2300,3 +2300,69 @@ Conversation.ConversationType: null      IsGroup: null
 Recipient.TenantId: null   AadObjectId: null
 Recipient.AgenticUserId / AgenticAppId / agenticAppBlueprintId: present
 ```
+
+### Separating the two theories: it is NOT the endpoint
+
+Probed by giving the scheduled activity a real `id`, which forces the SDK down the
+ReplyToActivity path instead of SendToConversation:
+
+```
+401  POST .../activities/1789379812139     <- ReplyToActivity, scheduled turn
+401  POST .../activities                   <- SendToConversation, scheduled turn
+201  POST .../activities/1789379812138     <- ReplyToActivity, user turn
+```
+
+Both endpoints fail on a scheduled turn; both succeed on a user turn. **Endpoint choice
+is irrelevant.** This kills the port of the a2a sibling's `Proactive.SendActivityAsync`
+before it was written -- it routes through SendToConversation and would have failed
+identically. The cheap probe was worth more than the plausible fix.
+
+### Dispatch identity: creator is not available to this agent
+
+The routines API accepts `authorization.identity` of `agent`, `creator`, or
+`connection`. Learn recommends creator identity when the agent's tools need delegated
+user access. It does not work here:
+
+```
+403  Endpoint doesn't support entra auth and no valid bot service token
+     was provided, failing authorization
+```
+
+The agent's endpoint uses `authorization_schemes: [{ type: BotServiceTenant }]`, so a
+creator (Entra user) token cannot dispatch to it at all. **Agent identity is the only
+option for an activity-protocol agent**, which puts us back on the reply 401.
+
+Also note, from Learn: `authorization` is honoured **only on create**. An update silently
+ignores it -- a PUT returns success and the value stays `agent`. Switching identity means
+delete and recreate. Measured exactly that before reading the doc.
+
+### The run-history endpoint is the diagnostic that was missing
+
+`GET /routines/{name}/runs` returns per-fire records with `status`, `error_status_code`
+and `error_message`. It is how the 403 above was found in one call. It should have been
+the first thing consulted, not App Insights.
+
+It also shows the most important operational fact:
+
+```
+10:00:00  status=Finished
+09:55:00  status=Finished
+```
+
+**The platform marks these runs successful.** The agent ran, produced an answer, and
+failed to deliver it -- and the run record still says Finished. Nothing in the portal or
+the API would tell Amanda her routine is broken. Only the agent's own telemetry shows
+the 401. Any monitoring built on run status will report healthy while every delivery is
+being dropped.
+
+### Where the reply 401 comes from
+
+On a scheduled turn there is **no MSAL token acquisition at all** before the POST. On a
+user turn there is a full managed-identity acquisition, then 201. The SDK logs
+"Anonymous access is enabled for channel: msteams." on both, but a user turn arrives
+with a Bot Service token and a scheduled turn does not. The working theory is that the
+anonymous inbound identity yields anonymous outbound credentials, so the connector sends
+the reply with no usable authorization and Bot Service returns 401.
+
+That is a platform-level gap in the routines preview for activity-protocol agents, not
+something the agent's own code has yet been shown able to fix. Unverified.
