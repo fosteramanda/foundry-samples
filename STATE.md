@@ -2229,3 +2229,74 @@ Deployed but never confirmed on a running container:
 
 Two replicas were alive on different versions, so a single good answer proves nothing about
 the fleet. Everything above needs re-confirming once the containers have cycled.
+
+## Routines: the tenant fix worked, and exposed the real blocker
+
+v26 shipped the home-tenant fallback. A routine created on 2026-09-14 09:51 fired on
+schedule and got further than anything before it:
+
+```
+09:55:01  scheduled run arrives
+09:55:13  tools/call azure-devops___wit_query      <- it really queried ADO
+09:55:18  model produced a 43KB answer
+09:55:18  401 on delivery
+```
+
+No AADSTS900021 anywhere. The tenant problem is solved: the scheduled run now
+authenticates, calls tools, and composes an answer. It fails only at the last step.
+
+### What the 401 actually is
+
+```
+201 OK    POST .../v3/conversations/{id}/activities/1789379494346   user turn
+401 FAIL  POST .../v3/conversations/{id}/activities                 scheduled run
+201 OK    POST .../v3/conversations/{id}/activities/1789379812138   user turn
+```
+
+Same conversation, same tenant in the URL, same connection, seconds apart. The only
+difference is the endpoint: a user turn replies to a known activity id
+(**ReplyToActivity**), a scheduled turn has `Id: null` and `ReplyToId: null` so the SDK
+posts proactively (**SendToConversation**), and Bot Service rejects that with 401.
+
+Two theories remain and they are NOT yet separated:
+
+- (a) proactive `SendToConversation` is simply not permitted for this agent identity
+- (b) the synthesized turn carries no appId claim, so the outbound token is wrong
+
+This matters because `AgentApplication.Proactive.SendActivityAsync` -- the obvious fix,
+already present in the a2a sibling -- also goes through SendToConversation. Under (a) the
+port fails too.
+
+### The sibling pattern is unverified
+
+`foundry-autopilot-router-agent-a2a` has `Proactive.StoreConversationAsync` +
+`Proactive.SendActivityAsync` and a `DelegationFollowUpService` that uses them. It looks
+like a solved problem. It is not: **its App Insights has no telemetry at all for 30 days
+and there has never been a single smba post from it, successful or otherwise.** The
+pattern has never executed. Porting it would repeat this session's most expensive
+mistake -- adopting a sibling's code because it exists, not because it works.
+
+### Probe design error worth remembering
+
+First attempt at separating (a) from (b) reused a real recent activity id so the
+scheduled run would take the ReplyToActivity path. It was suppressed:
+
+```
+Duplicate message activity suppressed. activityId=1789379812138
+```
+
+The id had been processed 68 minutes earlier, far beyond the 5-minute dedupe TTL. The
+dedupe is ordered wrongly: `TryAdd` fails and the method returns **before** the sweep
+runs, so a stale entry still suppresses whenever no message arrived in between to
+trigger a sweep. Minor defect, real, separate from the routine bug. The probe was
+reissued with an id the agent has never seen.
+
+### Scheduled activity, as delivered
+
+```
+Id: null          ReplyToId: null        ChannelData: null
+Conversation.TenantId: dfa98250-...      <- present, our v26 fix
+Conversation.ConversationType: null      IsGroup: null
+Recipient.TenantId: null   AadObjectId: null
+Recipient.AgenticUserId / AgenticAppId / agenticAppBlueprintId: present
+```
