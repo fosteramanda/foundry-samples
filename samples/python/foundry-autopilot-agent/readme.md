@@ -52,6 +52,17 @@ Before deploying, you can customize:
 
 #### Deploy
 
+To deploy a separate environment without reusing existing resources, create a new
+environment and set a unique agent name before provisioning.
+Use an alphanumeric environment name because it is also used in the registry name.
+
+```powershell
+azd env new mynewautopilot --subscription <subscription-id> --location eastus2
+azd env set AGENT_NAME mynewautopilot-agent
+```
+
+Then provision the environment:
+
 ```powershell
 azd provision
 ```
@@ -123,6 +134,19 @@ Publishes the agent to Microsoft 365 via Foundry
 ---
 
 ## 📜 Hosted Agent Logs
+
+For project tracing, connect an Application Insights resource. To add monitoring
+to an existing deployment without rerunning the agent-creation/publication hook,
+deploy `infra/observability.bicep` separately at the existing resource-group scope.
+Supply `environmentName`, `location`, `accountName`, `projectName`, and the
+operator's Entra object ID as `operatorPrincipalId`.
+
+The template adds a workspace-backed Application Insights component, the Foundry
+project connection, and scoped telemetry readers. It uses 30-day retention and
+a 1 GB daily workspace ingestion cap; monitoring incurs usage charges. It does
+not redeploy the hosted agent or change its protocol, identities, or licenses.
+After connecting, send a new Activity message and inspect the **Traces** tab.
+Do not treat a synthetic ingestion check as a successful agent turn.
 
 If you receive an error, the response will include a `FOUNDRY_AGENT_SESSION_ID`. Use it to stream the hosted agent's session logs:
 

@@ -21,6 +21,7 @@ Write-Host "Building image using ACR Build in registry: $registryName"
 az acr build `
     --registry $registryName `
     --image $imageName `
+    --no-logs `
     --file "./foundry-infra/Dockerfile" `
     .
 

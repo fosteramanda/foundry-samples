@@ -15,14 +15,18 @@ appropriate document- or email-specific response.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
+import math
 import os
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
+import httpx
 from azure.ai.projects.aio import AIProjectClient
 from azure.identity.aio import (
     AzureCliCredential,
@@ -118,7 +122,10 @@ class FoundryDigitalWorkerAgent(AgentInterface):
             endpoint=self._project_endpoint,
             credential=self._credential,
         )
-        self._openai_client: AsyncOpenAI = self._project_client.get_openai_client()
+        # Avoid multiplying the bounded rate-limit retries below with SDK retries.
+        self._openai_client: AsyncOpenAI = self._project_client.get_openai_client(
+            max_retries=0
+        )
 
         self._mcp_servers = self._load_mcp_servers()
 
@@ -596,18 +603,32 @@ Comment text: {comment_snippet}
         if previous_response_id is not None:
             request_args["previous_response_id"] = previous_response_id
 
-        try:
-            response = await self._openai_client.responses.create(**request_args)
-        except APIStatusError as ex:
-            logger.error(
-                "Responses API call failed with status %s: %s",
-                ex.status_code,
-                ex.response.text,
-            )
-            return (
-                "I encountered an error processing your request. "
-                f"Status: {ex.status_code}"
-            )
+        attempt = 0
+        while True:
+            try:
+                response = await self._openai_client.responses.create(**request_args)
+                break
+            except APIStatusError as ex:
+                delay = None
+                if ex.status_code == 429 and attempt < 2:
+                    delay = _rate_limit_retry_delay(ex.response, attempt)
+                if delay is None:
+                    logger.error(
+                        "Responses API call failed with status %s: %s",
+                        ex.status_code,
+                        ex.response.text,
+                    )
+                    return (
+                        "I encountered an error processing your request. "
+                        f"Status: {ex.status_code}"
+                    )
+                attempt += 1
+                logger.warning(
+                    "Model rate limit reached; retrying in %.1fs (retry %d/2)",
+                    delay,
+                    attempt,
+                )
+                await asyncio.sleep(delay)
 
         response_json = response.model_dump(mode="json")
         self._save_response_id(conversation_id, response_json)
@@ -649,11 +670,9 @@ Comment text: {comment_snippet}
                 )
             bearer = token_cache[token_scope]
             if not bearer:
-                logger.warning(
-                    "No bearer token available for MCP server %s (scope=%s); "
-                    "the server is likely to reject the request.",
-                    name,
-                    token_scope,
+                raise RuntimeError(
+                    "Cannot authenticate with the configured MCP tools. "
+                    "Check the agent's runtime consent and token-exchange configuration."
                 )
 
             tool: dict[str, Any] = {
@@ -663,8 +682,7 @@ Comment text: {comment_snippet}
                 "server_description": f"MCP server: {name}",
                 "require_approval": "never",
             }
-            if bearer:
-                tool["headers"] = {"Authorization": f"Bearer {bearer}"}
+            tool["headers"] = {"Authorization": f"Bearer {bearer}"}
             tools.append(tool)
         return tools
 
@@ -774,3 +792,29 @@ def _now_epoch() -> int:
     import time
 
     return int(time.time())
+
+
+def _rate_limit_retry_delay(response: httpx.Response, attempt: int) -> float | None:
+    fallback = float(2 ** (attempt + 1))
+    delay = fallback
+    milliseconds = response.headers.get("retry-after-ms") or response.headers.get(
+        "x-ms-retry-after-ms"
+    )
+    retry_after = response.headers.get("retry-after")
+    try:
+        if milliseconds is not None:
+            delay = float(milliseconds) / 1000
+        elif retry_after is not None:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                delay = parsedate_to_datetime(retry_after).timestamp() - _now_epoch()
+        if not math.isfinite(delay) or delay < 0:
+            raise ValueError("Invalid retry delay")
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("Model returned an invalid Retry-After value; using backoff.")
+        delay = fallback
+    if delay > 60:
+        logger.warning("Model retry delay exceeds the interactive retry limit.")
+        return None
+    return max(1.0, delay)

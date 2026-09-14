@@ -58,6 +58,10 @@ param modelName string = 'gpt-chat-latest'
 @description('Model version')
 param modelVersion string = '2026-05-28'
 
+@minValue(1)
+@description('Global Standard model deployment capacity in thousands of tokens per minute.')
+param modelCapacity int = 10
+
 // =================================================================================================
 // Common parameters
 // =================================================================================================
@@ -83,6 +87,7 @@ module project 'modules/project.bicep' = {
     containerRegistrySku: containerRegistrySku
     modelName: modelName
     modelVersion: modelVersion
+    modelCapacity: modelCapacity
     logAnalyticsName: logAnalyticsName
     applicationInsightsName: applicationInsightsName
   }

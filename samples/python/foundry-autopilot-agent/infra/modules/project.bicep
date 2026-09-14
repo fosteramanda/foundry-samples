@@ -21,6 +21,7 @@ param publicNetworkAccess string = 'Enabled'
 
 param modelName string
 param modelVersion string
+param modelCapacity int = 10
 
 @description('Name of the Log Analytics workspace')
 param logAnalyticsName string
@@ -112,7 +113,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   parent: account
   sku: {
     name: 'GlobalStandard'
-    capacity: 10
+    capacity: modelCapacity
   }
   properties: {
     model: {
