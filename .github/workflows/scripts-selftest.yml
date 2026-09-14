@@ -22,6 +22,9 @@ on:
       - '.github/scripts/**'
       - '.github/workflows/validate.yml'
       - '.github/workflows/scripts-selftest.yml'
+      - '.github/workflows/validation-report.yml'
+      - '.github/workflows/validation-pilot.yml'
+      - '.github/scripts/discover-validation-samples.py'
 
 permissions:
   contents: read
@@ -99,6 +102,28 @@ jobs:
 
       - name: Phase-1 exit gate — all 5 languages, pass(0)/fail(1)/error(2)
         run: bash .github/scripts/test/run-tests.sh
+
+  # --- Reporting consumer contract tests: fixtures only, no producer coupling ----------------------
+  report-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run normalized-artifact reporting tests
+        run: python .github/scripts/test/test-render-validation-report.py
+
+  validation-pilot-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/scripts/requirements.txt
+      - name: Install validation script dependencies
+        run: python -m pip install -r .github/scripts/requirements.txt
+      - name: Producer contract tests
+        run: python -m unittest discover -s .github/scripts/test -p 'test_validation_pilot.py'
 
   # --- Plumbing isolation proof: detector outputs cross a REAL job boundary via needs.*.outputs ---
   # Proves the $GITHUB_OUTPUT -> steps.*.outputs -> job.outputs -> downstream needs.*.outputs chain

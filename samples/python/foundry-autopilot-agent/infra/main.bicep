@@ -29,26 +29,28 @@ param containerRegistryName string = '${environmentName}acr'
 @description('SKU of Cognitive Services account')
 param cognitiveServicesSku string = 'S0'
 
+@description('Controls public network access for the Foundry account')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param publicNetworkAccess string = 'Enabled'
+
 @description('SKU of Container Registry')
 @allowed(['Basic', 'Standard', 'Premium'])
 param containerRegistrySku string = 'Basic'
 
-param agentName string = 'foundry-autopilot-agent'
+@description('Name of the Log Analytics workspace')
+param logAnalyticsName string = '${environmentName}-logs'
 
-param maibName string = '${agentName}-maib'
+@description('Name of the Application Insights component')
+param applicationInsightsName string = '${environmentName}-appi'
+
+param agentName string = '${environmentName}-autopilot-agent'
 
 // =================================================================================================
-// Bot Service module parameters
+// Model deployment parameters
 // =================================================================================================
-
-@description('Name of the Bot Service')
-param botName string = '${agentName}-bot'
-
-@description('Display name of the bot')
-param botDisplayName string = '${agentName} Bot'
-
-@description('SKU of the Bot Service')
-param botServiceSku string = 'F0'
 
 @description('Model name')
 param modelName string = 'gpt-chat-latest'
@@ -77,47 +79,13 @@ module project 'modules/project.bicep' = {
     location: location
     tags: tags
     cognitiveServicesSku: cognitiveServicesSku
+    publicNetworkAccess: publicNetworkAccess
     containerRegistrySku: containerRegistrySku
     modelName: modelName
     modelVersion: modelVersion
+    logAnalyticsName: logAnalyticsName
+    applicationInsightsName: applicationInsightsName
   }
-}
-
-// 2. Create deployment script UMI and grant roles on RG.
-module deploymentScriptUmi 'modules/deployment-script-umi.bicep' = {
-  name: 'deployment-script-umi'
-  dependsOn: [
-    project
-  ]
-}
-
-// 3. Create managed agent identity blueprint using a deployment script as that is a dataplane operation.
-module deploymentScriptAgent 'modules/maib-creation-script.bicep' = {
-  name: 'maib-creation-script'
-  params: {
-    uamiResourceId: deploymentScriptUmi.outputs.uamiResourceId
-    azureAIProjectEndpoint: project.outputs.foundryProjectEndpoint
-    maibName: maibName
-  }
-  dependsOn: [
-    deploymentScriptUmi
-  ]
-}
-
-
-// 4. Deploy the bot service module
-module botService 'modules/botservice.bicep' = {
-  name: 'botservice-deployment'
-  params: {
-    botName: botName
-    displayName: botDisplayName
-    msaAppId: deploymentScriptAgent.outputs.blueprintClientId
-    endpoint: 'https://${accountName}.services.ai.azure.com/api/projects/${projectName}/agents/${agentName}/endpoint/protocols/activityProtocol?api-version=2025-05-15-preview'
-    botServiceSku: botServiceSku
-  }
-  dependsOn: [
-    deploymentScriptAgent
-  ]
 }
 
 // =================================================================================================
@@ -128,9 +96,6 @@ module botService 'modules/botservice.bicep' = {
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = project.outputs.acrloginServer
 
 output AZURE_AI_PROJECT_ENDPOINT string = project.outputs.foundryProjectEndpoint
-
-@description('Agent identity blueprint ID')
-output AGENT_IDENTITY_BLUEPRINT_ID string = deploymentScriptAgent.outputs.blueprintClientId
 
 output SUBSCRIPTION_ID string = subscription().subscriptionId
 
@@ -148,6 +113,10 @@ output TENANT_ID string = tenant().tenantId
 
 output PROJECT_PRINCIPAL_ID string = project.outputs.foundryProjectPrincipalId
 
-output MAIB_NAME string = maibName
-
 output MODEL_NAME string = modelName
+
+output PUBLIC_NETWORK_ACCESS string = publicNetworkAccess
+
+output APPLICATIONINSIGHTS_CONNECTION_STRING string = project.outputs.applicationInsightsConnectionString
+
+output APPLICATIONINSIGHTS_RESOURCE_ID string = project.outputs.applicationInsightsResourceId

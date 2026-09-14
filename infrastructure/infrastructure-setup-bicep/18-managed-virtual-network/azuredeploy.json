@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "4387655770837576180"
+      "templateHash": "4680182353959664514"
     }
   },
   "parameters": {
@@ -812,7 +812,6 @@
                 "networkInjections": [
                   {
                     "scenario": "agent",
-                    "subnetArmId": "",
                     "useMicrosoftManagedNetwork": true
                   }
                 ],
@@ -1533,7 +1532,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.46.1.21595",
-              "templateHash": "8766616141788470069"
+              "templateHash": "4721773589020153145"
             }
           },
           "parameters": {
@@ -1592,7 +1591,9 @@
                 "sku": {
                   "name": "PerGB2018"
                 },
-                "retentionInDays": 30
+                "retentionInDays": 30,
+                "publicNetworkAccessForIngestion": "Disabled",
+                "publicNetworkAccessForQuery": "Disabled"
               }
             },
             {
@@ -1603,7 +1604,9 @@
               "kind": "web",
               "properties": {
                 "Application_Type": "web",
-                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-analytics-{0}', parameters('suffix')))]"
+                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-analytics-{0}', parameters('suffix')))]",
+                "publicNetworkAccessForIngestion": "Disabled",
+                "publicNetworkAccessForQuery": "Disabled"
               },
               "dependsOn": [
                 "[resourceId('Microsoft.OperationalInsights/workspaces', format('log-analytics-{0}', parameters('suffix')))]"
@@ -1735,8 +1738,8 @@
               },
               "dependsOn": [
                 "[resourceId('Microsoft.Network/privateEndpoints', format('ampls-pe-{0}', parameters('suffix')))]",
-                "[resourceId('Microsoft.Network/privateDnsZones', variables('amplsDnsZones')[1])]",
                 "[resourceId('Microsoft.Network/privateDnsZones', variables('amplsDnsZones')[0])]",
+                "[resourceId('Microsoft.Network/privateDnsZones', variables('amplsDnsZones')[1])]",
                 "[resourceId('Microsoft.Network/privateDnsZones', variables('amplsDnsZones')[3])]",
                 "[resourceId('Microsoft.Network/privateDnsZones', variables('amplsDnsZones')[2])]"
               ]
