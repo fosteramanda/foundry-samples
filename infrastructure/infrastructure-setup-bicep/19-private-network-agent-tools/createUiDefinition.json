@@ -6,7 +6,7 @@
     "config": {
       "isWizard": true,
       "basics": {
-        "description": "Deploy a network-isolated Microsoft Foundry account with private endpoints for AI Search, Cosmos DB, and Storage, plus a delegated subnet for tools (MCP, OpenAPI, Functions, A2A) running on a VNet.",
+        "description": "Deploy a network-isolated Microsoft Foundry account with private endpoints for AI Search, Cosmos DB, Storage, and Key Vault, plus a delegated subnet for tools (MCP, OpenAPI, Functions, A2A) running on a VNet.",
         "location": {
           "label": "Region",
           "allowedValues": [
@@ -217,7 +217,7 @@
             "type": "Microsoft.Common.InfoBox",
             "options": {
               "icon": "Info",
-              "text": "Optional. Leave any of these unselected to have the template create a brand-new resource for you."
+              "text": "Optional. Leave any of these unselected to have the template create a brand-new resource for you. Key Vault is provisioned by default for future private CA certificate trust."
             }
           },
           {
@@ -240,6 +240,12 @@
             "type": "Microsoft.Solutions.ResourceSelector",
             "label": "Existing Storage account (optional)",
             "resourceType": "Microsoft.Storage/storageAccounts"
+          },
+          {
+            "name": "keyVault",
+            "type": "Microsoft.Solutions.ResourceSelector",
+            "label": "Existing Key Vault for private CA certificates (optional)",
+            "resourceType": "Microsoft.KeyVault/vaults"
           },
           {
             "name": "fabric",
@@ -282,6 +288,7 @@
       "existingAiSearchResourceId":             "[coalesce(steps('byo').aiSearch.id, '')]",
       "existingAzureCosmosDBAccountResourceId": "[coalesce(steps('byo').cosmos.id,   '')]",
       "existingAzureStorageAccountResourceId":  "[coalesce(steps('byo').storage.id,  '')]",
+      "existingKeyVaultResourceId":              "[coalesce(steps('byo').keyVault.id, '')]",
       "existingFabricWorkspaceResourceId":      "[steps('byo').fabric]"
     }
   }
