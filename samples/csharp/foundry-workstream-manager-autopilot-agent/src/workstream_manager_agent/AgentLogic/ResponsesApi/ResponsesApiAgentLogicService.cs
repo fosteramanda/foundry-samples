@@ -198,16 +198,33 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         if (turnContext.Activity.ChannelId == "msteams")
         {
-            // The chat id is context, not an instruction to deliver anything. Phrasing it as
-            // "respond to chat id X" led the model to hunt for a send-message tool, fail to find
-            // one, and prefix its answer with "I couldn't post directly to that chat: no Teams
-            // send tool is available here. Reply to Amanda: ..." - leaking plumbing into a
-            // user-visible reply. Whatever this turn returns IS the reply; nothing needs sending.
-            incomingText = $"You are replying in Teams chat {turnContext.Activity.Conversation.Id}. " +
-                           "Your answer is delivered automatically, so do not look for a tool to send " +
-                           "or post it, and never mention posting or delivery.\n" +
-                           $"From: {sender?.Name} ({sender?.Id})\n" +
-                           $"Message: {incomingText}";
+            // A scheduled run has no activity id. It is not a live chat turn: nobody is waiting,
+            // and whatever it returns is NOT delivered — the reply to Teams is rejected 401 on
+            // the way back. So the interactive framing below is exactly wrong here. It tells the
+            // model its answer is delivered automatically and forbids it from looking for a send
+            // tool, which on a scheduled run means it composes the output, calls no mail tool,
+            // and the result reaches nobody. Measured: a routine instructed to email produced a
+            // full answer and made zero tool calls because of that sentence.
+            var isScheduledRun = string.IsNullOrEmpty(turnContext.Activity.Id);
+
+            incomingText = isScheduledRun
+                ? "This is a scheduled run, not a live chat turn. Nobody is watching this chat "
+                  + "and your reply is NOT delivered anywhere — a scheduled run cannot post into "
+                  + "Teams. If the instruction says to email the result, you MUST call your mail "
+                  + "tool to send it; that is the only way the output reaches anyone. Send it "
+                  + "once, then stop.\n"
+                  + $"Instruction: {incomingText}"
+
+                // The chat id is context, not an instruction to deliver anything. Phrasing it as
+                // "respond to chat id X" led the model to hunt for a send-message tool, fail to find
+                // one, and prefix its answer with "I couldn't post directly to that chat: no Teams
+                // send tool is available here. Reply to Amanda: ..." - leaking plumbing into a
+                // user-visible reply. Whatever this turn returns IS the reply; nothing needs sending.
+                : $"You are replying in Teams chat {turnContext.Activity.Conversation.Id}. " +
+                  "Your answer is delivered automatically, so do not look for a tool to send " +
+                  "or post it, and never mention posting or delivery.\n" +
+                  $"From: {sender?.Name} ({sender?.Id})\n" +
+                  $"Message: {incomingText}";
         }
         else if (turnContext.Activity.Type == ActivityTypes.InstallationUpdate)
         {
