@@ -18,6 +18,12 @@ Use this image to answer questions like:
 - Does `https://<customer>.azurecr.io/v2/` return `401 Unauthorized` (registry reachable) or does the request hang / get connection refused / TLS-verify-fail?
 - Can the runtime egress to public Azure endpoints (`login.microsoftonline.com`, `management.azure.com`) or only to private endpoints?
 
+For a read-only explanation of the Azure network configuration before running
+these probes, use the
+[Foundry Reachability Analyzer](../../../../../../infrastructure/infrastructure-setup-bicep/deployment-tools/reachability-analyzer/README.md).
+It complements this agent with static DNS, NSG, route, and private-endpoint
+analysis; it does not deploy a second live probe.
+
 ## Design notes
 
 - **Stdlib-only probe code.** All DNS / TCP / TLS / HTTP probes are written against `socket`, `ssl`, `urllib`, and `http.client`. The network is the very thing being diagnosed; the probes must not depend on import-time package fetches or pyca handshakes that obscure the failure mode.

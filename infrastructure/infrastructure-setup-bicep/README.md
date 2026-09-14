@@ -2,6 +2,13 @@
 
 This directory contains various Infrastructure as Code (IaC) templates for setting up Azure AI Agent Service environments. Templates are organized in order of complexity and typical deployment progression.
 
+## Deployment diagnostics
+
+Use the [Foundry Reachability Analyzer](./deployment-tools/reachability-analyzer/README.md)
+for read-only analysis of the network configuration between an agent subnet and
+an endpoint. It complements the existing diagnostic agent's live runtime probes
+and can inspect infrastructure provisioned with either Bicep or Terraform.
+
 ## Azure AI Agent Service Templates
 
 Azure AI Agent Service offers three deployment modes optimized for agent workloads:
