@@ -2428,3 +2428,72 @@ routine whose content depends on ADO is unreliable even once email delivery work
 routine over data the agent holds itself (meetings, work items) is not affected.
 
 This is the single most important open risk for the morning-email scenario.
+
+## Correction: cold scheduled runs CAN reach Azure DevOps
+
+The previous section flagged "cold scheduled runs cannot reach Azure DevOps" as the
+biggest open risk for the morning-email scenario. **That was wrong**, and it was stated
+on a single data point.
+
+Tested properly on 2026-09-14 at 20:30 UTC against a container that had been idle for
+**nine hours** — a genuinely cold start, exactly what a 07:30 email hits:
+
+```
+20:30:07  container cold start (Loading MCP servers)
+20:30:12  6 MCP servers + 12 local tools attached
+20:30:19  tools/call azure-devops___wit_query        <- worked
+20:30:28  tools/call azure-devops___wit_work_item    <- worked
+          no preflight failure, no quarantine, no exceptions
+```
+
+The 10:35 `CONNECTION_FAILED` ("requires a delegated Microsoft Entra user context") was
+**transient**, not structural. Both tool sources failed together in that one window and
+have succeeded on every cold and warm run since. Generalising one failure into a rule
+nearly cost a working scenario.
+
+The lesson is the same one this session keeps teaching from the other direction: one
+observation is not a pattern. It was right to distrust "it worked once"; it was wrong to
+trust "it failed once".
+
+### Email delivery confirmed end to end
+
+Same run, and this is the first scheduled run in the whole session that did NOT end in a
+Bot Service 401:
+
+```
+smba.trafficmanager.net attempts: ZERO   (every previous scheduled run made two, both 401)
+exceptions: none
+run status: Finished
+```
+
+Amanda confirmed receipt of the earlier probe email. The v28 framing works: a scheduled
+run now recognises it has no delivery path of its own and calls the mail tool instead.
+
+### The shipped routine
+
+`checkout-v4-3-morning-brief` — weekday 07:30 America/Los_Angeles, agent identity,
+emails "what is open / what is blocked / owner gaps" for Checkout v4.3 to
+amanda@notareal.co. The old `checkout-v4-3-open-bug-count-chat` was deleted: chat
+delivery never worked and leaving it enabled would have produced silent failures forever.
+
+### Working end-to-end state of the workstream manager (v28)
+
+| Capability | State |
+|---|---|
+| ADO questions in chat | works |
+| Meeting recap from transcript | works |
+| Routine create / list / pause / delete | works |
+| Scheduled run -> ADO query | works, including cold start |
+| Scheduled run -> email delivery | works |
+| Scheduled run -> chat delivery | **impossible**, 401 both endpoints, do not attempt |
+
+### Environment note
+
+`az monitor app-insights query` broke mid-session:
+`PermissionError [WinError 5] ... cliextensions\log-analytics\log_analytics-1.0.0b2.dist-info`.
+Workaround that does not need the extension at all:
+
+```powershell
+$tok = az account get-access-token --resource "https://api.applicationinsights.io" --query accessToken -o tsv
+Invoke-RestMethod -Uri ("https://api.applicationinsights.io/v1/apps/$appId/query?query=" + [uri]::EscapeDataString($kql)) -Headers @{ Authorization = "Bearer $tok" }
+```
