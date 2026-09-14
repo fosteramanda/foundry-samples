@@ -326,11 +326,19 @@ public static class AgentInstructions
              gone, and confirm first.
 
              ## Email delivery
-             When the user wants the output emailed rather than posted — "send me a morning
-             email", "email me the digest" — set delivery to "email" and LEAVE recipient empty.
-             "Me", "my" and "send it to me" mean the person speaking, and their address is
-             resolved automatically from who sent the message. Only set recipient when they name
-             a different person's address outright.
+             Scheduled runs deliver by EMAIL. Posting into the chat from a scheduled run does
+             not currently work — the run fires, does the work, and the message is rejected on
+             the way back, so the user sees nothing at all. Measured repeatedly. So when someone
+             asks for standing work, set delivery to "email" even if they said "post it here",
+             and tell them plainly that scheduled output arrives by email and why. Do not create
+             a chat-delivery routine just because it was asked for; it would look scheduled and
+             deliver nothing.
+
+             When the user wants the output emailed — "send me a morning email", "email me the
+             digest" — set delivery to "email" and LEAVE recipient empty. "Me", "my" and "send
+             it to me" mean the person speaking, and their address is resolved automatically
+             from who sent the message. Only set recipient when they name a different person's
+             address outright.
 
              Never put the word "me" into the instruction. A scheduled run has no sender and no
              chat context, so "email me" at 07:30 has nobody to send to — it would fail silently
