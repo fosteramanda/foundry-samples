@@ -2366,3 +2366,65 @@ the reply with no usable authorization and Bot Service returns 401.
 
 That is a platform-level gap in the routines preview for activity-protocol agents, not
 something the agent's own code has yet been shown able to fix. Unverified.
+
+## Email delivery for routines (v27, v28)
+
+Chat delivery from a scheduled run is dead (401, both endpoints, proven). Email bypasses
+Bot Service entirely -- the mail tool is called by the Responses API, which never touches
+the reply path -- so it is the only delivery that can reach the user.
+
+### What shipped
+
+- **v27**: attached `mcp_MailTools` (`McpServers.Mail.All`). The name came from Microsoft
+  Learn (24 mentions), not a guess. The blueprint already held the delegated scope, so no
+  consent change was needed. `create_routine` now defaults `delivery` to **email**, and the
+  prompt tells the agent to steer users off chat delivery and say why.
+- **v28**: the actual blocker. See below.
+
+### The one-sentence bug
+
+Every msteams turn was prefixed with:
+
+> "Your answer is delivered automatically, so do not look for a tool to send or post it,
+> and never mention posting or delivery."
+
+That sentence was added in v25 for a good reason -- it stopped the agent leaking "I
+couldn't post directly to that chat" into user-visible replies. But it is applied to
+**every** Teams turn, including scheduled ones, where it is false: nothing is delivered
+automatically, the reply is rejected 401.
+
+Measured: a routine explicitly instructed to email its output composed a complete answer
+and made **zero** tool calls. The mail server was attached and had passed preflight. The
+model simply obeyed the sentence above it.
+
+Scheduled turns (detected by `Activity.Id == null`) now get the opposite framing.
+
+### Telemetry blind spot worth remembering
+
+Absence of a `tools/call` record does **not** mean no tool ran. The Foundry toolbox is
+proxied through our own project endpoint, so its calls appear in our App Insights.
+Agent 365 MCP servers (Word, Excel, ODSP, Calendar, Mail) are invoked by the Responses
+API service directly -- they never traverse our container and never appear in our
+telemetry at all. Two hours were nearly spent reading that silence as failure.
+
+The reliable signal that mail is available is the tool name appearing in the Responses
+API payload: `SendEmailWithAttachments` is present and the turn attached 6 MCP servers
+and 12 local tools.
+
+### Cold scheduled runs cannot reach Azure DevOps
+
+The toolbox `tools/list` fails on a genuinely cold scheduled run:
+
+```
+azure-devops: CONNECTION_FAILED - "User identity authentication for this tool is not
+supported for this caller. Requires a delegated Microsoft Entra user context with user
+object ID and tenant ID."
+workiq: same
+```
+
+It succeeded at 10:45 only because earlier chat traffic had warmed the context. Same root
+cause as the Bot Service 401: **a scheduled run has no delegated user context.** So a
+routine whose content depends on ADO is unreliable even once email delivery works. A
+routine over data the agent holds itself (meetings, work items) is not affected.
+
+This is the single most important open risk for the morning-email scenario.
