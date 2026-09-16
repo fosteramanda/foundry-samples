@@ -317,14 +317,32 @@ public class A365AgentApplication : AgentApplication
             throw new ArgumentException("Activity must have a recipient and conversation.");
         }
 
-        // A scheduled run's recipient carries no tenantId, but the conversation does. Falling
-        // back keeps the cross-tenant guard and token acquisition working on routine-driven
-        // turns; without it tenantId is Guid.Empty and those checks see a tenant-less activity.
-        var tenantId = Guid.TryParse(recipient.TenantId, out var parsedTenantId)
-            ? parsedTenantId
-            : Guid.TryParse(conversation.TenantId, out var parsedConversationTenantId)
-                ? parsedConversationTenantId
-                : Guid.Empty;
+        // A scheduled run's recipient carries no tenantId. The conversation usually has one
+        // because the routine stores it in its conversation reference, but a routine created
+        // before that field was persisted replays a payload with no tenant anywhere. Both
+        // sources are then empty, tenantId is Guid.Empty, the agent-user token request goes to
+        // /00000000-0000-0000-0000-000000000000/oauth2/v2.0/token and Entra rejects it with
+        // AADSTS900021 on every fire, silently.
+        //
+        // The home tenant is the last resort, so a turn that carries no tenant at all still
+        // authenticates instead of failing silently.
+        Guid tenantId;
+        if (Guid.TryParse(recipient.TenantId, out var parsedTenantId))
+        {
+            tenantId = parsedTenantId;
+        }
+        else if (Guid.TryParse(conversation.TenantId, out var parsedConversationTenantId))
+        {
+            tenantId = parsedConversationTenantId;
+        }
+        else
+        {
+            tenantId = ResolveHomeTenantId(_configuration, _logger);
+            _logger.LogInformation(
+                "Tenant fallback: activity carried no tenant on recipient or conversation; using the deployment home tenant. activityType={ActivityType} homeTenantId={HomeTenantId}",
+                activity.Type,
+                tenantId);
+        }
 
         // AAI
         var agenticAppId = Guid.TryParse(recipient.AgenticAppId, out var parsedAgenticAppId) ? parsedAgenticAppId : Guid.Empty;
@@ -384,6 +402,49 @@ public class A365AgentApplication : AgentApplication
             $"Could not resolve the agent user id from the activity recipient. " +
             $"agenticUserId/aadObjectId were absent and recipient.Id ('{recipientId}') " +
             "does not contain a GUID.");
+    }
+
+    // Resolved once per container from the authority endpoint the service connection already
+    // authenticates against, so it cannot drift from the rest of the agent and needs no new
+    // deployment setting. The Dockerfile bakes it as
+    // Connections__ServiceConnection__Settings__AuthorityEndpoint
+    // (https://login.microsoftonline.com/{tenantId}). AgentTenantId overrides it if ever needed.
+    private static Guid? _homeTenantId;
+
+    private static Guid ResolveHomeTenantId(IConfiguration configuration, ILogger logger)
+    {
+        if (_homeTenantId.HasValue)
+        {
+            return _homeTenantId.Value;
+        }
+
+        if (Guid.TryParse(configuration["AgentTenantId"], out var configured))
+        {
+            _homeTenantId = configured;
+            logger.LogInformation("Home tenant resolved from AgentTenantId. homeTenantId={HomeTenantId}", configured);
+            return configured;
+        }
+
+        var authority = configuration["Connections:ServiceConnection:Settings:AuthorityEndpoint"];
+        if (!string.IsNullOrWhiteSpace(authority)
+            && Uri.TryCreate(authority, UriKind.Absolute, out var authorityUri)
+            && Guid.TryParse(authorityUri.Segments.LastOrDefault()?.Trim('/'), out var fromAuthority))
+        {
+            _homeTenantId = fromAuthority;
+            logger.LogInformation(
+                "Home tenant resolved from the service connection authority endpoint. homeTenantId={HomeTenantId}",
+                fromAuthority);
+            return fromAuthority;
+        }
+
+        // Do not guess. An unresolvable home tenant is reported loudly rather than papered over,
+        // because the symptom it causes downstream (AADSTS900021 on a scheduled run) surfaces
+        // nowhere near this code.
+        _homeTenantId = Guid.Empty;
+        logger.LogWarning(
+            "Home tenant could not be resolved; scheduled turns without a tenant will fail to acquire a token. authorityEndpoint={AuthorityEndpoint}",
+            string.IsNullOrWhiteSpace(authority) ? "(empty)" : authority);
+        return Guid.Empty;
     }
 }
 
