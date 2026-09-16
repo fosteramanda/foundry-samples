@@ -2737,3 +2737,40 @@ one turn showed 6.
 
 **A probe on a schedule prevents the thing it is probing for.** Same shape as the routine
 that pinned the image that broke the routine.
+
+### v30: verified reading the actual thread
+
+v29 attached the tool; a probe run inside the channel then called ListTeams and
+ListChannels, got four candidates back, and said it "could not identify this channel
+safely" — while standing in it. Refusing to guess was right; needing to guess was not.
+The activity already carries the answer: the conversation id at the top of the turn IS
+the Teams thread id. v30 says so explicitly.
+
+Verified against **the same thread that failed for Amanda**
+(`19:db0b60013ae04671a356543ceb301da0@thread.v2`):
+
+```
+mcp_call  ListChatMessages  server=mcp_TeamsServer  err=-
+"Retrieved 50 messages; date range: 2026-07-17T15:17:54Z to 2026-09-16T10:15:56Z"
+```
+
+Fifty real messages, ending minutes before she asked. The capability is confirmed end to
+end, not inferred.
+
+### How this was tested without touching the channel
+
+A routine's action carries a full conversation reference, so setting
+`conversation.id` to the channel thread makes the scheduled run execute **in that
+channel** — and because scheduled chat delivery is rejected 401, nothing is ever posted
+there. That gives a way to exercise a real conversation context safely, without waiting
+for a human to send a message.
+
+Two traps it surfaced, both self-inflicted and both costing a cycle:
+
+- A `*/5` probe routine keeps the container warm, so it measures the image it was meant
+  to replace. The first Teams probe reported "Loaded 5 MCP servers" after v29 shipped and
+  looked like a failed deploy. Delete the probe, wait out the idle window, fire one turn.
+- `Select-Object -First n` on a deploy script terminates the upstream pipeline, so a
+  command written to show the head and tail of a deploy ran the script twice. Only one
+  version was cut because the first invocation was killed during preflight — luck, not
+  design. Capture the output once and slice the variable.
