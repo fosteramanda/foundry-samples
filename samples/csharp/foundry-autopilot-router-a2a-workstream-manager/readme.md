@@ -1,0 +1,441 @@
+# 🤖 Workstream Manager Agent
+
+> A Foundry A365 agent that tracks work items, provides workstream summaries, and operates in manager-only direct message mode.
+
+**Note:** This agent will currently only respond in group chats if you @mention it.
+
+---
+
+## 📋 Prerequisites
+
+**Note:** You must be enrolled in the [Frontier preview program](https://adoption.microsoft.com/en-us/copilot/frontier-program/) to publish a Foundry agent to Microsoft Agent 365.
+
+Ensure you have the following installed:
+
+| Requirement | Description |
+|------------|-------------|
+| [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | Infrastructure deployment tool |
+| [.NET 9.0 SDK](https://dotnet.microsoft.com/download) | Development framework |
+
+
+### 🔐 Required Permissions
+
+- **Owner** role on the Azure subscription
+- **Azure AI User** or **Cognitive Services User** role at subscription or resource group level
+- **Tenant Admin** role for organization-wide configuration
+
+---
+
+## 🤖 Agent Functionality
+
+### Overview
+
+The Foundry Workstream Manager is an autopilot agent grounded in dynamic knowledge drawn from the group chat's conversation history — every message, file, link, GitHub PR — as well as documents and context from any other sources you choose, such as your team's SharePoint site, product specs, and public documentation.
+
+In a group chat, it can track tasks and deadlines, summarize conversations into action items, follow up on overdue work, surface risks and blockers, and coordinate updates across stakeholders.
+
+To bring this to life, we're starting with a practical, high-impact use case: a workstream manager autopilot agent designed to live in Teams group chats. We've created an out-of-the-box code sample you can easily customize and connect to your own enterprise data and workflows.
+
+### User model
+
+| Role | Configuration | Capabilities | Surfaces |
+|------|---------------|--------------|----------|
+| **Admin/Manager** | Person who creates the autopilot instance | Manages teammate list; gives the agent permissions and configures its behavior; runs `/workstreamsummary run`; can chat with the agent | Teams DM, Teams group chats |
+| **Teammates** | Added by the admin (`/access add`) | Can use the autopilot agent | Teams DM, Teams group chats |
+| **Non-teammates** | N/A | Blocked from using the autopilot. If a non-teammate DMs the agent, it redirects them to a channel it's in and declines to respond further. | Agent won't respond in channels or group chats that include non-teammates |
+
+### Interaction surfaces
+
+The autopilot agent is designed to live in Teams group chats and Teams 1:1 DMs. It also works outside Teams: it replies to email (including threads it's looped into) and to @-mentions in Word document comments.
+
+### Capabilities
+
+- **Manager onboarding flow** — On first DM from the manager (the person who creates the agent instance), the agent introduces itself and walks them through setup: granting access, how it tracks work items, and pulling summaries. Run `/onboarding` anytime to change preferences. *(Manager only.)*
+- **Manager-controlled access** — By default only the manager can talk to it; they extend access with `/access add`, `/access remove`, and `/access list <upn>`. In group chats, every participant must be approved. The management commands — `/onboarding`, `/access`, and `/workstreamsummary` — are **manager-only** (the manager is resolved via Microsoft Graph `/me/manager`); approved teammates can chat with the agent but can't run them.
+- **Tracks open items** — Captures every commitment that needs follow-up — any time someone agrees to look into something and report back. These are often small, easily forgotten items like "Amanda will file a bug for that" or "can you check with {person} about that." It marks the logged message with 📌, and the owner, description, status, and ETA persist across sessions, so you can ask later who's on what.
+  - When the LLM identifies an action item it calls `create_work_item`; items are stored in Azure Table Storage (owner, description, status, ETA, and changelog), and owner AAD object IDs are resolved automatically via Microsoft Graph.
+  - Commitments are captured even from messages the agent doesn't reply to: a passive scanner silently checks unaddressed group-chat messages for commitments with a clear owner and deliverable, logs them, and marks them with 📌 — never adding a chat reply. Disable with `EnablePassiveWorkItemDetection: false`.
+  - When a turn does nothing but capture a work item, the agent stays silent in chat — the 📌 reaction is the whole confirmation.
+  - Tools: `create_work_item`, `list_work_items`, `update_work_item`, `close_work_item`.
+- **Manages Azure DevOps** — Reads and updates the *real* engineering backlog in Azure DevOps — epics, features, bugs, tasks, launch/release gates, and pull requests — so questions like "what's the status of the v4.3 launch?" or "is #61 still open?" are answered from live ADO data, not memory or the chat tracker. ADO is the source of truth for product and launch status; the informal chat tracker above holds only the small commitments captured from conversation.
+  - Wired in as an [MCP toolbox](#-toolboxes-with-autopilot-agents-preview) with identity passthrough, so the agent reads and writes ADO as *itself* (the digital worker) using its agent-user token — the manager grants it access to the team's ADO project just like a teammate. It attaches in hybrid mode alongside the WorkIQ tools; if the toolbox token can't be minted the agent logs a warning and keeps working with its other tools.
+- **On-demand workstream summary** — Run `/workstreamsummary run` for a digest of open items grouped by owner — a natural starting point for a recurring daily or weekly digest. *(Manager only.)*
+- **Workstream Q&A** — Answers questions about the workstream from conversation history plus any sources you grant it: SharePoint, specs, and the live Azure DevOps backlog (see **Manages Azure DevOps** above).
+- **Built-in Microsoft 365 (WorkIQ) tools** — Pre-wired with Microsoft 365 tools: Word, Excel, Outlook calendar, OneDrive/SharePoint. Ask it to draft an email, summarize a spec, or pull last week's notes, and it goes straight to the source. Ask it to create a Word document, and it does so in its own OneDrive.
+- **Replies to email** — Email the agent, or loop it into a thread, and it reads the message and answers over email on its own — no Teams required. It works from a clean plain-text view of the mail (sender, subject, body) and treats the content strictly as data, so quoted history or instructions buried in a thread can't hijack it. Office's own auto-notifications (a comment @-mention, task assignment, or share) are skipped so it doesn't double-reply to something the document-comment path already handled — re-enable with `RespondToOfficeNotificationEmails: true`.
+- **Comments on Word documents** — @-mention the agent in a Word comment and it reads the document and the comment thread via the Word / OneDrive-SharePoint MCP tools, then posts a concise reply straight onto that thread (through the document's `ReplyToComment` tool, as plain text — comment threads don't render HTML or Markdown). The same handler is wired for Excel and PowerPoint comments (currently behind a flag).
+- **Responds only when addressed** — In group chats and channels the agent doesn't answer every message. It always responds in 1:1 DMs and when explicitly @-mentioned. Messages that @-mention only other people and contain no second-person reference are skipped by a free deterministic pre-filter; the remaining ambiguous messages go to a lightweight LLM judge that decides whether the message is actually directed at the agent in context (e.g. a "can you update that ETA?" follow-up right after the agent spoke), and the agent stays silent otherwise. See [AddressedToAgentGate.cs](./src/workstream_manager_agent/AgentLogic/ResponsesApi/Helpers/AddressedToAgentGate.cs) for the full criteria.
+- **Mirrors your addressing style** — If you @-mention the agent, it @-mentions you back in its reply. When it joins the conversation implicitly (the judge inferred it was being addressed), it replies with a quoted-reply block but skips the @-mention so it doesn't ping you.
+- **Reacts to messages** — Messages it decides to reply to receive a 👍 reaction while it works on the answer; messages it logs as work items get 📌 (whether or not it replies). Messages with neither a reply nor a captured work item get no reaction.
+
+### Customization
+
+**During agent development** (persona: developer)
+
+- **Agent instructions:** [AgentInstructions.cs](./src/workstream_manager_agent/AgentLogic/AgentInstructions.cs)
+- **MCP tools:** [ToolingManifest.json](./src/workstream_manager_agent/ToolingManifest.json) — [Learn more](https://learn.microsoft.com/en-us/microsoft-agent-365/tooling-servers-overview)
+- **Group-chat access response:** Set `GroupChatUnauthorizedResponse` to customize the message shown when a group chat includes unapproved participants (`{Manager}`, `{UnauthorizedCount}`, `{UnauthorizedParticipants}` placeholders).
+- **Cross-tenant access guard:** Set `CrossTenantUnauthorizedResponse` to customize the canned no-op response for users outside the digital worker tenant.
+- **When-to-respond gating:** Four settings control the addressed-to-agent gate and what happens to skipped messages:
+  - `EnableLlmAddressedToAgentJudge` (default `true`) — when `false`, the LLM judge is skipped and the agent only answers DMs and explicit @-mentions.
+  - `AgentDisplayNameAliases` (comma-separated) — extra display names the agent answers to. Useful because the bot's per-chat display name is chosen by whoever added it and isn't delivered on inbound activities; the gate resolves it via Graph chat-members when it can, and falls back to these aliases.
+  - `AddressedToAgentJudgeModelDeployment` — optional cheaper/faster model deployment for the YES/NO judge call; empty uses `ModelDeployment`. Recommended at scale: point this at a small/fast deployment — the judge is a single-token YES/NO classification that doesn't need the primary model.
+  - `EnablePassiveWorkItemDetection` (default `true`) — when the gate decides not to reply, a silent LLM pass still scans the message for trackable commitments and 📌-marks anything it captures; `false` skips the scan (skipped messages then cost zero LLM calls when the judge is also disabled).
+  - Cost note: a free deterministic pre-filter runs before the judge — messages that @-mention only other people, contain no second-person reference ("you", "your", …), and never name the agent are skipped without any LLM call. The judge only runs for genuinely ambiguous messages.
+- **Assign agent permissions (inheritable scopes):** As blueprint owner, declare the inheritable Graph/MCP delegated scopes the agent needs on the blueprint (e.g., `ChatMessage.Send`, `McpServers.Word.All`); these are consented at admin approval. Done during deployment, before any instance is created.
+
+**After the agent instance is created** (persona: agent manager)
+
+- **Direct-message access control:** Managers can manage a per-digital-worker allowlist in Teams direct message using:
+  - `/access list`
+  - `/access add <user-object-id-or-upn-or-mention>`
+  - `/access remove <user-object-id-or-upn-or-mention>`
+  - `azd provision` creates and wires Azure Table Storage for allowlist persistence across sessions (table defaults to `digitalworkerallowlist`).
+- **Assign agent permissions:** After hiring, the manager grants the agent instance access to the specific resources it should use — just like you would for a person — for example, adding it to a security group or a team SharePoint site, or sharing a Word document with it.
+
+---
+
+## 🧰 Toolboxes with autopilot agents (preview)
+
+[Toolboxes](https://learn.microsoft.com/azure/ai-foundry/) are how Foundry projects bundle MCP tools for hosted agents: a toolbox is a project resource containing tool entries, each backed by a **project connection** that declares how Foundry authenticates to the downstream server. Agents consume the whole bundle through one MCP proxy endpoint:
+
+```
+{projectEndpoint}/toolboxes/{name}/mcp?api-version=v1
+```
+
+### Why this works for autopilot agents
+
+The toolbox proxy resolves each tool's credential server-side. For connections with `authType: UserEntraToken` (identity passthrough), the proxy forwards **the caller's Entra identity** to the downstream server. An autopilot agent calls the proxy with an **agent-user token** (acquired via the [agent user impersonation flow](https://learn.microsoft.com/en-us/entra/agent-id/agent-user-oauth-flow) — the same `AgentTokenHelper` machinery this sample already uses for Graph and WorkIQ). The downstream tools therefore act as **the digital worker itself** — not on behalf of a human, and not as an app-only service principal. This is the same capability-vs-access split as the rest of the autopilot story: the blueprint declares *what* the agent can do (ADO scopes, Calendar scopes); the agent manager grants *which* resources each instance touches (e.g. adds the agent user to the team's ADO project).
+
+### Setup (Azure DevOps MCP example)
+
+1. **Connect the tool** (Foundry portal → Build → **Tools** → *Azure DevOps MCP Server (preview)* → **Connect**):
+   - `orgName` = your ADO organization (e.g. `notarealco`) — the endpoint becomes `https://mcp.dev.azure.com/<org>`
+   - Authentication = **OAuth Identity Passthrough**, OAuth Provider = **Managed**
+   - The dialog creates the project connection for you (default name `AzureDevOpsMCPServerpreview`, category `RemoteTool`, authType `UserEntraToken`, audience `api://2a72489c-aab2-4b65-b93a-a91edccf33b8`).
+2. **Create the toolbox** (portal → Build → **Toolboxes** → new toolbox → add the connected tool), or automate it with [scripts/create-toolbox.ps1](./scripts/create-toolbox.ps1). The toolbox page shows the MCP endpoint the agent will call:
+   ```
+   https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/<name>/mcp?api-version=v1
+   ```
+3. **Point the agent at the toolbox** in appsettings: set `ToolboxName` (and `FoundryProjectEndpoint`, auto-injected as `FOUNDRY_PROJECT_ENDPOINT` in hosted containers). Two modes:
+   - **Hybrid (recommended, the default here):** keep `McpDiscoverySource: "Manifest"` — the agent keeps all its WorkIQ tools (Word, Mail, OneDrive, …) and the toolbox is *attached alongside them* with its own agent-user bearer token.
+   - **Toolbox-only:** set `McpDiscoverySource: "Toolbox"` — the toolbox proxy becomes the agent's only tool source. (Don't use this if the agent still needs the manifest's WorkIQ tools.)
+   - Optionally pin `ToolboxVersion` (e.g. `"1"`); empty tracks the latest toolbox version.
+4. **Declare capability scopes on the blueprint** (inheritable permissions) so agent-user tokens can be minted for the downstream audiences — the [agent user impersonation flow](https://learn.microsoft.com/en-us/entra/agent-id/agent-user-oauth-flow) scopes access to the delegations assigned to the agent identity. Two resources are involved for the toolbox path, both addable with the existing [add-blueprint-inheritable-scopes.ps1](./scripts/add-blueprint-inheritable-scopes.ps1):
+
+   ```powershell
+   # First, discover the appId + delegated scope names each resource exposes in your tenant
+   # (the scope is assumed to be user_impersonation below — verify before running):
+   az ad sp show --id https://ai.azure.com --query "{appId:appId, scopes:oauth2PermissionScopes[].value}"
+   az ad sp show --id 2a72489c-aab2-4b65-b93a-a91edccf33b8 --query "{name:displayName, scopes:oauth2PermissionScopes[].value}"
+
+   # Foundry data plane — without this, the agent token service can't mint the toolbox
+   # bearer at all (symptom: "Failed to acquire toolbox bearer token" warning in agent logs).
+   ./scripts/add-blueprint-inheritable-scopes.ps1 -BlueprintAppId "<blueprint-app-id>" `
+       -ResourceAppId "<ai.azure.com appId from the query above>" -Scopes "user_impersonation"
+
+   # Azure DevOps MCP server — without this, the toolbox proxy can't exchange the
+   # agent-user token toward the ADO MCP audience (symptom: auth error in the tool result).
+   ./scripts/add-blueprint-inheritable-scopes.ps1 -BlueprintAppId "<blueprint-app-id>" `
+       -ResourceAppId "2a72489c-aab2-4b65-b93a-a91edccf33b8" -Scopes "user_impersonation"
+   ```
+
+   Inheritable scopes added **after** an instance was hired may not flow to it — re-approve in MAC if prompted, and if the existing instance still can't get tokens for the new audiences, hire a fresh instance. (Test-first is reasonable: deploy without these, read the exact error, then add what it names.)
+
+### Granting access — happens AFTER the instance is hired
+
+Everything above is blueprint/project setup that happens **before** any agent instance exists. The access grant is different — it can only happen at the **end** of the chain, because the identity it targets doesn't exist until then:
+
+1. Blueprint published → approved in the Microsoft Admin Center → configured in the Teams dev portal → **hired in Teams**. Hiring is what creates the agent identity + **agent user**. Find the agent user's UPN/object ID in the Entra admin center (Agent ID view) — you'll need it for every grant below.
+2. **Foundry data-plane RBAC** — the toolbox MCP proxy enforces Azure RBAC on the project, and the agent user has none by default:
+
+   ```powershell
+   az role assignment create --assignee "<agent-user-object-id>" `
+       --role "Azure AI User" `
+       --scope "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<foundry-account>"
+   ```
+
+3. **Azure DevOps organization access** — this is an *access level* (a license), not a role. `Basic` is the right level for reading and writing work items (`Stakeholder` is too limited); its CLI name is `express`:
+
+   ```powershell
+   az extension add --name azure-devops   # once
+   az devops user add --email-id "<agent-user-upn>" --license-type express `
+       --organization https://dev.azure.com/<org>
+   ```
+
+4. **Azure DevOps project access** — org membership alone grants no project visibility. Project permissions come from security-group membership; **Contributors** is the right group for work-item read/write (use **Readers** for read-only):
+
+   ```powershell
+   $contributors = az devops security group list --project "<project>" `
+       --organization https://dev.azure.com/<org> `
+       --query "graphGroups[?displayName=='Contributors'].descriptor | [0]" -o tsv
+   az devops security group membership add --group-id $contributors `
+       --member-id "<agent-user-upn>" --organization https://dev.azure.com/<org>
+   ```
+
+   UI alternative that does steps 3+4 in one dialog: ADO **Organization settings → Users → Add users** → agent user's UPN, Access level **Basic**, *Add to projects:* your project (default group Contributors).
+5. Until these grants exist, expect the toolbox call to fail with 401/403 at the proxy (missing RBAC) or the ADO tools to return 401/"project not found" (missing org/project access) — that's the capability-vs-access split working as designed, not a bug. For repeatable onboarding, put the Azure AI User role and the ADO group rule on an Entra security group once, then just add each agent user to the group at hire time.
+
+### Preview notes
+
+- The toolbox data plane requires the `Foundry-Features: Toolboxes=V1Preview` header; the agent sends it automatically (override with `ToolboxFeaturesHeader`).
+- The bearer scope presented to the proxy defaults to `https://ai.azure.com/.default` and is configurable via `ToolboxAccessTokenScope` while toolbox auth is in preview. The agent-user token issuance path for the toolbox proxy is the main untested assumption of this experiment — if the proxy rejects the agent-user bearer, capture the response and adjust the scope (or the blueprint's delegations) accordingly.
+- In hybrid mode a toolbox **token** failure is non-fatal: the agent logs a warning and continues with its WorkIQ tools only.
+
+### A broken tool source used to take the whole agent down
+
+A toolbox token failure is non-fatal, but a toolbox that *fails to enumerate its tools* is a different failure and it used to be fatal. The Responses API validates every MCP server in a request's `tools` array before it runs the model, so one server that cannot answer `tools/list` fails the entire call:
+
+```json
+{ "error": { "message": "Server returned 424: None", "type": "external_connector_error", "param": "tools", "code": "http_error" } }
+```
+
+which the agent surfaced to the user as `I encountered an error processing your request. Status: BadRequest` — on **every** turn, including questions that needed none of those tools.
+
+Two things make this survivable now:
+
+1. **Version-pin the toolbox.** `ToolboxVersion` is set to `6`. Without a pin, the agent calls `/toolboxes/{name}/mcp`, which serves the toolbox's **default version** — so publishing a new toolbox version, or repointing the default, silently changes what every running instance loads. Versions containing an `a2a_preview` (or `work_iq_preview`) tool whose connection uses `AgenticIdentityToken` cannot be resolved through the MCP proxy at all (`requires AgentInstanceClientId and AgentBlueprintClientId, or an ApplicationName`), because the proxy has no agent context on an MCP call — that is a supported shape for an agent's own `definition.tools`, not for a toolbox consumed as an MCP server. Keep toolboxes to plain `mcp` tools and do agent-to-agent delegation through `mcp_M365Copilot` instead.
+2. **Connector recovery in the agent.** On `external_connector_error`, `ResponsesApiClient` preflights every attached MCP server itself (`McpServerHealthProbe`: `initialize` → `notifications/initialized` → `tools/list`, with protocol-version negotiation), drops the ones that definitively fail, retries once, and quarantines them so later turns skip them. Verdicts are asymmetric on purpose: a `tools/list` failure is conclusive, while a failed `initialize` or an unreachable host is *inconclusive* and leaves the server attached — wrongly stripping a working tool source would be worse than the failure being recovered from.
+
+| Setting | Default | What it controls |
+|---------|---------|------------------|
+| `EnableMcpConnectorRecovery` | `true` | Preflight-and-retry after a connector failure. Set `false` to fail fast instead. |
+| `McpQuarantineSeconds` | `300` | How long a server that failed preflight is skipped before being retried. |
+| `McpHealthProbeTimeoutSeconds` | `20` | Per-server budget for the preflight handshake. |
+
+To find a healthy toolbox version, run `tools/list` against each one — a version that returns a JSON-RPC `error` is a version that will fail every turn:
+
+```powershell
+$tok = az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv
+$base = "https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/<name>"
+$h = @{ Authorization = "Bearer $tok"; "Foundry-Features" = "Toolboxes=V1Preview"; Accept = "application/json, text/event-stream" }
+foreach ($v in @("1","2","3")) {
+    $r = Invoke-WebRequest "$base/versions/$v/mcp?api-version=v1" -Method Post -Headers $h `
+        -ContentType "application/json" -SkipHttpErrorCheck `
+        -Body '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+    "v${v}: $($r.StatusCode) error=$($r.Content -match '"error"')"
+}
+```
+
+---
+
+## 🚀 Quick Start
+
+### Step 1: Authenticate
+
+Login to your Azure tenant and authenticate with Azure Developer CLI:
+
+Based on tenant security settings, sometimes just az login might be sufficient, sometimes one will need to login to each scope that is used in these scripts.
+
+```powershell
+# Login to Azure CLI
+az login
+
+az login --scope https://ai.azure.com/.default
+
+az login --scope https://graph.microsoft.com//.default
+
+az login --scope https://management.azure.com/.default
+# Login to Azure Developer CLI
+azd auth login
+```
+
+### Step 2: Deploy
+
+> **📍 Region availability:** This sample uses [Foundry hosted agents](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent?pivots=azd). Your Foundry account and other resources must be in a region where hosted agents are available. At the time of writing, supported regions are:
+>
+> Australia East, Brazil South, Canada Central, Canada East, East US, East US 2, France Central, Germany West Central, Italy North, Japan East, Korea Central, North Central US, Norway East, Poland Central, South Africa North, South Central US, South India, Southeast Asia, Spain Central, Sweden Central, Switzerland North, UAE North, UK South, West Central US, West US, West US 3.
+
+```powershell
+azd provision
+```
+
+After deployment completes, retrieve your resource values:
+
+```powershell
+azd env get-values
+```
+
+### Step 3: Review and Publish the Agent Request
+
+1. Navigate to the [Microsoft 365 admin center](https://admin.cloud.microsoft/?#/agents/all/requested)
+2. Under **Requests**, locate your pending agent request:
+   ![Find your pending agent request in A365](image.png)
+
+3. Open the request and click **Publish to store**:
+   ![Screenshot of the pending agent request details with the 'Publish to store' button highlighted](image-1.png)
+
+### Step 4: Configure Teams Integration
+
+After approving the agent blueprint, configure it in the Teams Developer Portal:
+
+1. Open the [Teams Developer Portal](https://dev.teams.microsoft.com/tools/agent-blueprint) and locate your approved agent blueprint.
+    
+   **Note:** Only 100 Agent Blueprints are displayed. If yours isn't visible, click any blueprint to open its details page, then in the browser's address bar replace the blueprint ID portion of the URL with your own Blueprint ID from the previous step (for example: `https://dev.teams.microsoft.com/tools/agent-blueprint/<your-blueprint-id>`).
+   ![Find agent blueprint](image-2.png)
+
+2. Get your Blueprint ID:
+   ```powershell
+   azd env get-values
+   ```
+
+3. Navigate to **Configuration** and add your **Bot ID** (same as Blueprint ID):
+   ![Screenshot showing the Bot ID configuration field in the Teams Developer Portal](image-3.png)
+
+### Step 5: Create Agent Instances
+
+After configuring the agent blueprint in Teams Developer Portal, you can now create agent instances based on your blueprint:
+
+1. In Microsoft Teams, navigate to **Apps** → **Agents for your team**. Note: may only be available on Teams through browser.
+2. Find the agent named by your `AGENT_NAME` value and create an instance:
+   ```powershell
+   azd env get-value AGENT_NAME
+   ```
+   ![Screenshot of Microsoft Teams showing the 'Agents for your team' section with an agent listed](image-4.png)
+
+---
+
+## 🔄 Updating the Agent After Code Changes
+
+When you change the agent source code (anything under `src/`), re-run:
+
+```powershell
+azd provision
+```
+
+This re-runs the `postprovision` hook, which:
+
+1. **Rebuilds and pushes the container image** via ACR Build (`scripts/build-docker-image-acr.ps1`).
+2. **Registers a new agent version** that points at the freshly built image (`scripts/agent-creation-script.ps1`), polls until it is `active`, and re-applies the endpoint protocol/auth configuration.
+
+Steps 1 and 2 run on **every** `azd provision`. The one-time digital worker setup steps — **publishing the digital worker**, creating the **blueprint SP OAuth2 grants**, and **adding you as blueprint owner** — are skipped on re-runs once they have completed (a `DIGITAL_WORKER_SETUP_DONE` marker is persisted in the azd environment). The published digital worker references the agent GUID, not a specific version, so new versions are served without re-publishing. You also do **not** need to recreate the blueprint — it is an idempotent ARM resource.
+
+To force the one-time setup steps to run again (e.g. after changing publish metadata or blueprint scopes):
+
+```powershell
+azd env set DIGITAL_WORKER_SETUP_DONE ""
+azd provision
+```
+
+> **⚠️ Traffic routing & draining:** Creating a new agent version does not instantly move every live session onto it. When you shift endpoint traffic routing to the new version, **existing sessions continue to run on the previous version until they go idle**, so two versions can be active at once. Use the per-version telemetry queries in [Monitoring & Observability](#-monitoring--observability) (slice `requests` by `application_Version`) to watch the cutover and confirm when the old version has fully drained.
+
+---
+
+## 🔧 Deployment Reference: `/infra` + Post-Provision Scripts
+
+`azd provision` runs in two phases: **(1)** it deploys the Bicep in `/infra`, then **(2)** it runs the `postprovision` hook (`scripts/post-provision.ps1`). The key distinction for permissions: `/infra` creates **managed-identity** role assignments (for the agent's runtime identities), while the post-provision **scripts run as *you*** and therefore require **your** user/directory roles.
+
+### Phase 1 — `azd provision` deploys `/infra`
+
+Creates the environment resources:
+
+- **Foundry account** (Cognitive Services `AIServices`, system-assigned managed identity).
+- **Foundry project** (child of the account, system-assigned managed identity).
+- **Azure Container Registry** (ACR) — hosts the agent image.
+- **Model deployment** (default: `gpt-5-chat`, version `2025-10-03`).
+- **User-Assigned Managed Identity (UMI)** used to run a PowerShell **deployment script** that creates the **Agent Blueprint** (a dataplane operation). The blueprint is created here, ahead of the agent, so its client ID is stable and known to the post-provision scripts that declare OAuth2 grants and inheritable scopes against it.
+- **Azure Storage account + two tables** (`digitalworkerallowlist`, `workitems`) for allowlist and work-item persistence.
+- **Monitoring resources** (Log Analytics + Application Insights + project AppInsights connection) — only when `ENABLE_MONITORING=true` (default). See [Monitoring & Observability](#-monitoring--observability).
+- **Project connections** — an **Application Insights connection** is created on the Foundry project (only when `ENABLE_MONITORING=true`) so the agent emits telemetry. This sample does **not** create a separate Azure Container Registry connection; the project pulls images via the **AcrPull** role assignment instead (see below).
+
+Role assignments created by `/infra` (all granted to **managed identities**, never to your user):
+
+| Role | Granted to | Scope | Why it's needed |
+|------|-----------|-------|-----------------|
+| **AcrPull** | Foundry project system MI | Container Registry | Pull the agent container image from the registry at runtime |
+| **Cognitive Services User** | Foundry project system MI | Foundry account | Access the deployed model |
+| **Contributor** | Deployment-script UMI | Resource group | Lets the deployment script create the Agent Blueprint (a data-plane operation run via the UMI) |
+| **Cognitive Services User** | Deployment-script UMI | Resource group | Gives the deployment-script UMI the Cognitive Services data-plane access it uses during blueprint creation |
+| **Log Analytics Reader** *(if monitoring enabled)* | Foundry project MI | Application Insights | Read telemetry for running evaluations over agent traces |
+
+> `/infra` does **not** grant **you** any roles (e.g., it does not give you ACR Contributor). Your ability to run the post-provision scripts comes from your own subscription/tenant roles — see the prerequisites and Phase 2 below.
+
+### Phase 2 — the `postprovision` hook runs the scripts
+
+The scripts below run under **your `az` / `azd` login**, so the permissions listed are what **you (the person running `azd provision`)** must hold. Permissions fall into three buckets: **Azure RBAC** (control plane), **Foundry data-plane** (token for `https://ai.azure.com`), and **Entra directory roles / Microsoft Graph** (token for `https://graph.microsoft.com`).
+
+| Script | What it does | Permissions required to run |
+|--------|--------------|-----------------------------|
+| `post-provision.ps1` | Orchestrator — runs the one-time setup scripts and gates them behind the `DIGITAL_WORKER_SETUP_DONE` azd env marker. The scripts run in dependency order: become blueprint owner → declare OAuth2 grants + inheritable scopes → publish (publishing last so the agent's scopes are declared before an admin approves it). | None of its own (inherits the requirements below). |
+| `build-docker-image-acr.ps1` | Publishes the .NET app and builds + pushes the container image using **ACR Build** (cloud build). | This sample builds in the cloud with **`az acr build`** (ACR Tasks), which requires the **control-plane** action `Microsoft.ContainerRegistry/registries/scheduleRun/action` — covered by **Contributor**. Note: the official least-privilege guidance ([Hosted agent permissions → Push an image](https://learn.microsoft.com/azure/foundry/agents/concepts/hosted-agent-permissions#push-an-image-to-the-registry)) covers a local build + `docker push`, which needs only **Container Registry Repository Writer** (or AcrPush). `az acr build` needs more because it runs as an ACR task, not a direct push — to stay least-privilege, use the local `build-docker-image.ps1` (docker push) variant instead. |
+| `agent-creation-script.ps1` | Creates the Foundry **hosted agent version** (referencing the blueprint), polls until `active`, grants the agent's default instance identity **Cognitive Services User** (+ **Storage Table Data Contributor**), and **patches the endpoint** for activity protocol + the authorization scheme in `AGENT_ENDPOINT_AUTH_SCHEME` (default `BotServiceTenant`). That scheme names how the Teams channel authenticates to the agent endpoint; it does **not** require an Azure Bot Service resource. | Creating the agent version and the activity-protocol **PATCH** require only **Foundry User** on the Foundry project (data-plane). The **role assignments** the script makes to the agent's instance identity (Cognitive Services User + Storage Table Data Contributor) are what require **Owner** or **User Access Administrator** on the resource group (for `roleAssignments/write`). |
+| `add-current-user-as-blueprint-owner.ps1` | Adds the deploying user as an **Owner** of the blueprint application (temporary fix so the OAuth2/inheritable steps work). Non-blocking — warns and continues if it lacks privileges. | **Cloud Application Administrator / Application Administrator** (`Application.ReadWrite.All`) to add the first owner, **or** already be an owner. |
+| `create-blueprintsp-oauth2-grants.ps1` | Creates tenant-wide (`AllPrincipals`) **OAuth2 permission grants** on the blueprint SP (Prod MCP, APEX, Microsoft Graph reaction scopes), then calls `add-blueprint-inheritable-scopes.ps1`. | **Cloud Application Administrator** (for `AllPrincipals` admin consent — or `DelegatedPermissionGrant.ReadWrite.All` / `Directory.ReadWrite.All`). |
+| `add-blueprint-inheritable-scopes.ps1` | Sets/merges **inheritablePermissions** (Graph reaction scopes) on the `agentIdentityBlueprint` app so each agent instance inherits them. Called by the OAuth2 grants script. | **Blueprint owner** (Agent ID Developer) **or Agent ID Administrator**. |
+| `publish-digital-worker.ps1` | Calls Foundry's `microsoft365/publish` API to publish the agent as an **AI Teammate** (validates properties, builds the manifest, submits to the MOS3 catalog). The agent then appears in the **Requests** tab in MAC. | **Foundry User** (or equivalent publish-capable role) on the Foundry project **+ Frontier preview** tenant enrollment. |
+| `build-docker-image.ps1` | **Not run by the hook** — a local `docker build` + push variant (superseded by the ACR Build script). Only relevant if invoked manually. | **Container Registry Repository Writer** (preferred — models push as a data action) or **AcrPush** on the registry (for `az acr login` + `docker push`). |
+
+---
+
+## 📊 Monitoring & Observability
+
+`azd provision` can deploy a Log Analytics workspace + Application Insights and wire them to the Foundry project so the agent emits traces, logs, and metrics. This is controlled by a single boolean flag.
+
+### Enable / disable
+
+Monitoring is **on by default**. Toggle it via the `ENABLE_MONITORING` azd environment variable:
+
+```powershell
+azd env set ENABLE_MONITORING false   # do not create monitoring resources, and do not use monitoring
+azd env set ENABLE_MONITORING true    # default: create Log Analytics + Application Insights
+azd provision
+```
+
+When enabled, provisioning creates:
+
+- A **Log Analytics workspace** and an **Application Insights** instance.
+- An **`AppInsights` connection** on the Foundry project — this is what causes the platform to auto-inject `APPLICATIONINSIGHTS_CONNECTION_STRING` into the agent container at runtime (no Docker build-arg needed).
+- A **`Log Analytics Reader`** role assignment for the Foundry project's managed identity, required for running **evaluations** over agent-generated traces.
+
+When disabled, none of the above is created, no connection string is injected, and the agent runs normally with telemetry simply not sent.
+
+### Per-version / per-instance telemetry
+
+In the autopilot (digital worker) model, one blueprint spawns many agent instances, and updating endpoint traffic routing leaves **multiple agent versions active at once** (existing sessions stay on the previous version until they go idle). To make this debuggable, every telemetry item is stamped with the Foundry-injected identifiers via `FoundryInstanceTelemetryInitializer`:
+
+| Foundry env var | Mapped to |
+|-----------------|-----------|
+| `FOUNDRY_AGENT_NAME` | `cloud_RoleName` + `agentName` dimension |
+| `FOUNDRY_AGENT_VERSION` | `application_Version` + `agentVersion` dimension |
+| `FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID` | `cloud_RoleInstance` + `agentInstanceClientId` dimension |
+| `FOUNDRY_AGENT_SESSION_ID` | `foundrySessionId` dimension |
+
+Example queries (App Insights → Logs):
+
+```kusto
+// See which agent versions are serving traffic over time (spot draining sessions on an old version)
+requests
+| summarize count() by application_Version, bin(timestamp, 5m)
+
+// Drill into a single version's requests for debugging
+requests
+| where application_Version == "<suspect-version>"
+| project timestamp, application_Version, cloud_RoleInstance, tostring(customDimensions.foundrySessionId), resultCode, duration
+
+// Compare error rate across versions during a rollout
+requests
+| summarize total = count(), failed = countif(success == false) by application_Version
+| extend failureRate = todouble(failed) / total
+```
+
+---
+
+## 📖 Additional Resources
+
+**Reference docs**
+
+- [Hosted agents in Microsoft Foundry (concepts)](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agents)
+- [Hosted agent permissions](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agent-permissions)
+- [Publish a Foundry agent to Agent 365 (how-to)](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365)
+- [Azure Developer CLI (azd) documentation](https://learn.microsoft.com/azure/developer/azure-developer-cli/)
+
+**Required setup action** (not reference docs)
+
+- **Configure your agent blueprint in the [Teams Developer Portal](https://dev.teams.microsoft.com/tools/agent-blueprint)** — set the Bot ID = Blueprint ID (see [Step 4](#step-4-configure-teams-integration)). This is a hands-on step you must perform, not documentation to read.
+
+---
+
+## 🤝 Support
+
+For issues or questions, please refer to the official documentation or contact your Azure administrator.
+
