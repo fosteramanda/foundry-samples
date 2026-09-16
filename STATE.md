@@ -2673,3 +2673,67 @@ the newest, so the serving image is the ported and aligned code.
 Verify a deploy by matching the version's image digest against the newest ACR **manifest**
 digest. The digest printed in the build log is a layer digest and will not match — comparing
 the wrong one looks like a stale deploy.
+
+## The agent could not read the channel it was standing in (v29)
+
+Amanda asked the workstream manager to summarise this week's channel discussion into a
+Word document. It replied that it had no access to thread `19:db0b6001...` and asked her
+to send the conversation link or paste the discussion in.
+
+Telemetry shows exactly what it did:
+
+```
+10:11:10  tools/call workiq___ask
+10:11:37  tools/call workiq___search_paths
+10:11:42  tools/call workiq___ask
+          -> could not resolve the thread, gave up
+```
+
+It tried. It simply had no Teams tool: the manifest carried Word, OneDrive/SharePoint,
+Excel, Calendar and Mail, and **nothing that reads a conversation**. Work IQ search was
+the only thing resembling one, and it is the wrong instrument — it answers questions
+across someone's M365 content, it is not a way to fetch the messages of one known thread.
+
+The agent was running INSIDE the conversation it said it could not see.
+
+### Fix
+
+Attached **`mcp_TeamsServer`** (`McpServers.Teams.All`). Name taken from Microsoft Learn,
+not guessed. **No consent change was needed** — the blueprint already held
+`McpServers.Teams.All` AND `ChannelMessage.Read.All`. The tool had simply never been
+attached, so a granted permission was doing nothing.
+
+Prompt guidance added: read the conversation with the Teams tools; do not ask which
+channel when you are already in it; do not ask the user to paste or export; never claim
+no access without having tried to read it directly. Asking a person to paste the
+discussion is the agent asking them to do the part it exists to do.
+
+Deployed **v29**, 38/38 gates.
+
+### Verified, and not
+
+Verified on a cold container after an enforced idle window:
+
+```
+10:45:09  Loaded 6 MCP servers from ToolingManifest.json     (was 5)
+10:45:15  Invoking Responses API with 7 MCP tool servers     (6 + toolbox)
+          no preflight failure, no quarantine, no connector error
+```
+
+That proves `mcp_TeamsServer` is a real server name and is accepted — a bad name fails
+`tools/list` wholesale and shows up as `external_connector_error`, which is how the
+toolbox failure surfaced earlier.
+
+**Not verified: that it can actually read that specific channel thread.** That needs a
+real turn in the channel, which only Amanda can trigger.
+
+### The warm-container trap bit again, from my own probe
+
+The first probe reported "Loaded 5 MCP servers" AFTER v29 was deployed, which looks like
+the deploy failed. It had not: the manifest on disk had 6. The 5-minute probe routine I
+created to test the fix was itself keeping the old container alive, so it kept measuring
+the pre-v29 image. Deleting the probe, waiting out the idle window, then firing exactly
+one turn showed 6.
+
+**A probe on a schedule prevents the thing it is probing for.** Same shape as the routine
+that pinned the image that broke the routine.
