@@ -2774,3 +2774,55 @@ Two traps it surfaced, both self-inflicted and both costing a cycle:
   command written to show the head and tail of a deploy ran the script twice. Only one
   version was cut because the first invocation was killed during preflight — luck, not
   design. Capture the output once and slice the variable.
+
+## Parked: the a2a workstream-manager fork. Back on the original.
+
+Amanda: "ok lets use original workstream manager for now." The fork stays provisioned but
+is not the working surface. All probe routines removed from it; it is idle.
+
+### Why it was parked, and the unfinished diagnosis
+
+She created an instance on the fork called **Workstream Manager Payments** (agent user
+`7631731d-46df-48b6-b12c-0e7af8cb9c36`, UPN `Workstream-Manager-Payments@notareal.co`,
+agent identity `5090f898-47fd-4d78-b6b7-aea7a333884f`, created 10:50) and sent it "hi".
+Nothing came back.
+
+Traced it to the fork by `agentIdentityBlueprintId` on that agent identity:
+`0877e6a4-61d3-4950-b1f9-0a3063fd69f4` — the blueprint provisioned today. So the silent
+instance is on the new sample, not on the original.
+
+**The fork's container has never run.** `traces`, `requests`, `exceptions` and
+`dependencies` are all zero rows for all time, while all three agent versions report
+`status=active` with no error. The message never reached the container.
+
+Ruled out along the way:
+
+- **A missing Azure Bot Service resource is NOT the cause.** The new resource group has
+  no `*-bot` resource while `rg-foundryworkstreammanger2` and `rg-autopilotroutera2a` both
+  do, which looked conclusive. The sample's own readme says otherwise:
+  `BotServiceTenant` "names how the Teams channel authenticates to the agent endpoint; it
+  does **not** require an Azure Bot Service resource." The bots in the other groups are a
+  different/older pattern.
+- **App Insights is wired correctly** — the project carries an `AppInsights` category
+  connection pointing at `workstreammanagera2arouter-appi`.
+- **Ingestion lag** — re-checked after several minutes, still zero.
+
+Open, and the next thing to do when the fork is picked up again: a routine dispatched
+directly at the fork's agent endpoint bypasses Teams entirely, so whether it produces
+telemetry separates "the container cannot start" from "Teams is not routing to it". That
+probe was created and then removed when the work was parked; it never returned a result.
+
+One concrete suspicion worth checking first: role assignments. `agent-creation-script.ps1`
+grants Cognitive Services User and Storage Table Data Contributor to the **default
+instance identity** (`e7c6233b-...`). The Payments instance is a *different* identity
+(`5090f898-...`) created later by Amanda and holds none of those grants.
+
+### The original, which is the working surface
+
+`workstreammanagerado` — **v30, 100%, enabled, publish approved**, blueprint
+`a029bdcc-03a4-4842-974c-4c99dfab09ec`. Six MCP servers (Word, OneDrive/SharePoint, Excel,
+Calendar, Mail, **Teams**) plus toolbox `workstream-manager-ado` v7. One routine:
+`checkout-v4-3-morning-brief`, weekday 07:30 Pacific, email delivery.
+
+Verified working today: ADO queries, meeting recap, routine create/list, scheduled email
+delivery from a cold container, and reading the channel thread (50 messages).
