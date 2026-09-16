@@ -2866,3 +2866,51 @@ involves other people.
 To revert: PATCH the agent endpoint with `authorization_schemes: [{ type:
 "BotServiceTenant" }]` and `protocols: ["activity"]`. The PATCH replaces both, so always
 send the protocol alongside.
+
+## stop-agent-sessions.ps1 updated (Downloads)
+
+Amanda asked for it to work against the router fork. It failed immediately:
+
+```
+ERROR: no Foundry project endpoint resolved
+```
+
+**The azd ai extension requires `FOUNDRY_PROJECT_ENDPOINT` and does not read the
+`AZURE_AI_PROJECT_ENDPOINT` that `azd provision` writes into the environment.** The value
+was sitting in the env file the whole time under the other name. The script now resolves
+it — `-ProjectEndpoint`, then `FOUNDRY_PROJECT_ENDPOINT`, then `azd env get-values`
+preferring `FOUNDRY_PROJECT_ENDPOINT` and falling back to `AZURE_AI_PROJECT_ENDPOINT` —
+and fails with an actionable message if none is found. Verified against both agents from a
+shell with nothing preset.
+
+It also would not run at all: `LocalMachine` policy is `RemoteSigned` and the file carried
+a `Zone.Identifier` stream. Fixed with `Unblock-File` on that one file rather than
+touching execution policy.
+
+### A correction worth keeping
+
+I added `-IncludeIdle` on the theory that an idle session still pins its agent version and
+would need stopping to pick up a new deployment. **That theory is wrong.** Stopping an idle
+session returns:
+
+```
+Session "cc8150b9..." is already stopped for agent "workstreammanagera2arouter".
+```
+
+So `idle` means already stopped. Amanda's original terminal-status list was right. The
+switch is kept as an assertion but is a no-op, and the comment in the script now says so
+rather than carrying my incorrect rationale.
+
+The real lever remains: **a session in a NON-terminal state pins the version it started
+on.** That is the thing to look for when a new version is not being picked up.
+
+### What the session list shows
+
+- Fork `workstreammanagera2arouter`: one session, version 3, idle. So compute WAS
+  allocated for it at some point — which means the earlier "the container has never run"
+  conclusion is unsafe. More likely its telemetry never reached App Insights, since that
+  project has zero rows in every table while a session exists. Worth re-opening from that
+  angle rather than from "it never started".
+- Original `workstreammanagerado`: 20 sessions, all `expired`, versions 1-7, from June and
+  July. Nothing live pinning an old version, so the staleness fought all session was
+  container-level, not session-level.
