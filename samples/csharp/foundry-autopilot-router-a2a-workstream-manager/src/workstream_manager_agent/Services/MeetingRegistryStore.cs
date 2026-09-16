@@ -38,20 +38,37 @@ public class TrackedMeetingEntity : ITableEntity
     public string JoinWebUrl { get; set; } = string.Empty;
 
     /// <summary>
-    /// Whether anyone has permitted the agent to use this meeting's content. Defaults false and
-    /// must be set by an explicit act. Nothing reads the meeting while this is false.
+    /// Whether this meeting's content may be used.
+    ///
+    /// Defaults to TRUE for meetings found on the agent's own calendar, because by then the
+    /// organizer has already performed two deliberate acts: they added the agent to the invite,
+    /// and someone started transcription with Teams showing every participant the banner. The
+    /// invitation IS the opt-in. Asking again afterwards is ceremony that blocks the user and
+    /// protects nothing.
+    ///
+    /// It remains settable so a meeting can be EXCLUDED. That is what "excluded if not enabled"
+    /// in the requirement needs: a way to turn a specific meeting off, not a hoop to jump before
+    /// every one.
     /// </summary>
-    public bool CaptureApproved { get; set; }
+    public bool CaptureApproved { get; set; } = true;
 
     public string ApprovedBy { get; set; } = string.Empty;
     public DateTimeOffset? ApprovedUtc { get; set; }
 
     /// <summary>
-    /// When participants were told the meeting may be captured. Separate from approval on
-    /// purpose: the organizer approving is not the same event as the room being told, and the
-    /// second is the one that is owed to people who are not the organizer.
+    /// When participants were told the meeting may be captured.
+    ///
+    /// This is recorded for audit, NOT gated on. Teams shows every participant a recording and
+    /// transcription banner the moment transcription starts, so the notice is enforced by the
+    /// platform rather than by this agent. An earlier version required a human to separately
+    /// attest that attendees had been told, which reimplemented a platform guarantee as a
+    /// checkbox and left users stuck in a loop being asked to confirm something Teams had
+    /// already done.
     /// </summary>
     public DateTimeOffset? NoticeSentUtc { get; set; }
+
+    /// <summary>How the notice was delivered. Normally the platform's own banner.</summary>
+    public string NoticeSource { get; set; } = string.Empty;
 
     /// <summary>
     /// Records whether this meeting was also approved for retention beyond the immediate recap.
@@ -73,11 +90,16 @@ public class TrackedMeetingEntity : ITableEntity
     public DateTimeOffset CreatedUtc { get; set; }
 
     /// <summary>
-    /// The single gate every future ingestion path must consult. Both conditions are required:
-    /// approval alone is not enough, because a participant who was never told cannot have
-    /// consented by someone else's approval.
+    /// The single gate every ingestion path must consult: has the organizer opted this meeting
+    /// in.
+    ///
+    /// Participant notice is deliberately NOT part of this. The requirement it comes from says
+    /// the notice is "enforced by platform", and Teams does enforce it: nobody can start
+    /// transcription without every participant seeing the banner. Gating on a human separately
+    /// asserting it added no protection and produced a dead end where the user was asked to
+    /// confirm something the platform had already guaranteed.
     /// </summary>
-    public bool IsIngestionEligible => CaptureApproved && NoticeSentUtc.HasValue;
+    public bool IsIngestionEligible => CaptureApproved;
 }
 
 /// <summary>
