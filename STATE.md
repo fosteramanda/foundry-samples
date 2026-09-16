@@ -2589,3 +2589,50 @@ they are the point of the router: `WorkIqA2AToolHandler`, `DelegationFollowUpSer
    path has no downstream target until one exists here.
 4. **No Azure DevOps toolbox in this project**, so no ADO tools — which a workstream
    manager needs. `post-provision.ps1` does not call `create-toolbox.ps1`.
+
+### v2 shipped: the six fixes ported
+
+Built, verified by marker assertions, committed, and deployed as **v2, 100% traffic,
+status active**. ACR holds exactly two manifests and v2 references the newer one
+(`sha256:679093...`, 09:14), so the ported code is what is serving. The `779b0b` digest
+printed by the build is a layer digest, not the manifest — worth knowing, because
+comparing the wrong one looks like a stale deploy.
+
+All six ported:
+
+1. Home-tenant fallback (`ResolveHomeTenantId`)
+2. Scheduled-run framing (`isScheduledRun`)
+3. Teams system-payload guard (`IsTeamsSystemPayload`) — this arm's chat framing was also
+   still the original "Respond to this chat message with chat id X" phrasing that made the
+   model hunt for a send tool
+4. Routines default to email
+5. `mcp_CalendarTools`
+6. Meeting capture follows the "invitation IS the consent" ruling — this arm still had the
+   superseded model where capture defaulted false and required a human to attest notice
+
+Verified surviving the port: `WorkIqA2AToolHandler`, `ManagerMailboxToolHandler`,
+`DelegationFollowUpService`, `PendingDelegationStore`, and this arm's `ResolveAgentUserId`,
+which recovers the agent user id from an MRI when a synthetic activity omits it. That last
+one is a fix this arm has and the workstream manager does **not** — worth porting the other
+way if the workstream manager ever gets a routine whose payload lacks `agenticUserId`.
+
+### Held back deliberately
+
+**The manager-mailbox surface and the `users/{mailbox}/...` Graph paths were NOT changed.**
+The workstream manager uses `me/...` — acting as itself. Which of the two this arm should
+be is Amanda's scenario ruling, not a mechanical port, so it was left alone and flagged.
+
+**Publish approval was not actioned.** The workspace rules require Amanda's explicit
+approval for publish changes. Status is still `pending` while both working agents are
+`approved`, so the agent will not appear in Teams and could not be tested end to end.
+Everything below the Teams surface is verified: build, image, version, provisioning
+status, traffic, role assignments.
+
+### Still open for this arm
+
+- Publish approval (blocks all Teams testing)
+- Scenario decision: act as itself (`me/...`) or on a manager's behalf
+- No Source of Truth agent in this project, so A2A delegation has no downstream target
+- No Azure DevOps toolbox in this project, so no ADO tools — which a workstream manager
+  needs. `post-provision.ps1` does not call `create-toolbox.ps1`; `ToolboxName` is empty
+  and `ToolboxVersion` was cleared, so it must be created and pinned here.
