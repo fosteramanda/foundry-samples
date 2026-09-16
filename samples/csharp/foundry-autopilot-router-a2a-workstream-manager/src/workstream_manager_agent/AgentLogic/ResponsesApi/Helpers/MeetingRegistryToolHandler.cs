@@ -29,14 +29,15 @@ using WorkstreamManager.Services;
 /// the organization that gets invited, has a mailbox, and shows up in the attendee list.
 /// AgentMetadata.UserId below is the USER account.
 ///
-/// Two flags gate ingestion and both are required:
+/// Ingestion is gated on one flag:
 ///
-///   CaptureApproved   the organizer said yes
-///   NoticeSentUtc     the people in the room were told
+///   CaptureApproved   defaults TRUE, and is turned off only to EXCLUDE a meeting
 ///
-/// They are deliberately not one field. The organizer approving is not the same event as the
-/// room being informed, and an organizer cannot consent on behalf of the other attendees. A
-/// design that collapses them reads as consent while only ever having recorded permission.
+/// Participant notice is recorded for audit (NoticeSentUtc / NoticeSource) but is NOT gated
+/// on. Teams shows every participant the recording banner the moment transcription starts, so
+/// the notice is enforced by the platform. An earlier design required a human to separately
+/// attest that attendees had been told, which reimplemented a platform guarantee as a checkbox
+/// and left users stuck confirming something Teams had already done.
 /// </summary>
 public class MeetingRegistryToolHandler
 {
@@ -133,23 +134,6 @@ public class MeetingRegistryToolHandler
             JsonNode.Parse("""
             {
                 "type": "function",
-                "name": "record_capture_notice",
-                "description": "Records that participants have been told this meeting may be captured. Call this ONLY after the notice has actually been delivered to the meeting's attendees, never in advance and never because the organizer said it was fine. Until this is recorded the meeting cannot be read even if capture was approved.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "subject": { "type": "string", "description": "Subject of a meeting already returned by list_tracked_meetings." },
-                        "how_delivered": { "type": "string", "description": "Briefly how participants were told, e.g. 'posted in the meeting chat' or 'stated at the top of the meeting'." }
-                    },
-                    "required": ["subject", "how_delivered"],
-                    "additionalProperties": false
-                }
-            }
-            """)!,
-
-            JsonNode.Parse("""
-            {
-                "type": "function",
                 "name": "read_meeting_transcript",
                 "description": "Fetches the transcript of a tracked meeting so it can be recapped. Refuses unless capture was approved AND participants were notified. Use this when asked what was decided, what was discussed, what actions came out of a meeting, or for a recap. Returns the raw transcript text; you then extract decisions, actions with owners, blockers and unresolved items yourself.",
                 "parameters": {
@@ -172,7 +156,7 @@ public class MeetingRegistryToolHandler
             return null;
         }
 
-        if (toolName is not ("track_meeting" or "list_tracked_meetings" or "set_meeting_capture" or "record_capture_notice" or "read_meeting_transcript"))
+        if (toolName is not ("track_meeting" or "list_tracked_meetings" or "set_meeting_capture" or "read_meeting_transcript"))
         {
             return null;
         }
@@ -200,7 +184,6 @@ public class MeetingRegistryToolHandler
             "track_meeting" => await TrackMeetingAsync(mailbox, args),
             "list_tracked_meetings" => await ListTrackedAsync(mailbox),
             "set_meeting_capture" => await SetCaptureAsync(mailbox, args),
-            "record_capture_notice" => await RecordNoticeAsync(mailbox, args),
             "read_meeting_transcript" => await ReadTranscriptAsync(mailbox, args),
             _ => null,
         };
@@ -225,9 +208,7 @@ public class MeetingRegistryToolHandler
 
         var already = wasAlreadyTracked ? " It was already being tracked." : string.Empty;
         return $"Now tracking '{entity.Subject}' ({entity.StartUtc:yyyy-MM-dd HH:mm} {DisplayTimeZone}).{already} "
-             + $"Capture is {(entity.CaptureApproved ? "APPROVED" : "NOT approved")} and participants have "
-             + $"{(entity.NoticeSentUtc.HasValue ? "been notified" : "NOT been notified")}. "
-             + "Tell the user tracking alone does not let me read what was said, and ask whether they want to approve capture.";
+             + "It is eligible to be read unless the user explicitly excludes it.";
     }
 
     /// <summary>
@@ -475,50 +456,11 @@ public class MeetingRegistryToolHandler
             return $"Capture is now OFF for '{entity.Subject}'. I will not use its content, and anything queued for it is excluded.";
         }
 
-        return entity.NoticeSentUtc.HasValue
-            ? $"Capture is now ON for '{entity.Subject}' and participants were notified on {entity.NoticeSentUtc:yyyy-MM-dd}. It is eligible to be read, so go ahead and answer what the user originally asked."
-            : $"Capture is now ON for '{entity.Subject}', but participants have NOT been notified yet, so I still must not read it. "
-              + "Ask the user one short question: have the attendees been told the meeting may be captured? If they confirm, "
-              + "call set_meeting_capture again with attendees_notified true.";
-    }
-
-    private async Task<string> RecordNoticeAsync(string mailbox, JsonNode? args)
-    {
-        var subject = GetString(args, "subject");
-        var how = GetString(args, "how_delivered");
-
-        if (string.IsNullOrWhiteSpace(how))
-        {
-            return "Record how participants were told before recording the notice. Do not record a notice that was not sent.";
-        }
-
-        var match = await FindTrackedAsync(mailbox, subject);
-        if (match.Error != null)
-        {
-            return match.Error;
-        }
-
-        var entity = match.Entity!;
-        entity.NoticeSentUtc = DateTimeOffset.UtcNow;
-
-        if (!await _store.UpsertAsync(entity))
-        {
-            return "I could not record the notice, so the meeting stays unreadable. Say so plainly.";
-        }
-
-        _logger.LogInformation(
-            "Capture notice recorded for '{Subject}' ({ThreadId}) delivered by: {How}",
-            entity.Subject,
-            entity.ThreadId,
-            how);
-
-        return entity.CaptureApproved
-            ? $"Notice recorded for '{entity.Subject}' ({how}). Capture was already approved, so it is now eligible to be read."
-            : $"Notice recorded for '{entity.Subject}' ({how}), but capture is still NOT approved, so I must not read it.";
+        return $"Capture is now ON for '{entity.Subject}'. It is eligible to be read, so go ahead and answer what the user originally asked.";
     }
 
     /// <summary>
-    /// Fetches a tracked meeting's transcript, but only when both gates are satisfied.
+    /// Fetches a tracked meeting's transcript, unless the user has explicitly excluded it.
     ///
     /// The eligibility check is first and has no override. Everything below it is plumbing;
     /// this is the line that makes the registry mean anything.
@@ -536,15 +478,10 @@ public class MeetingRegistryToolHandler
 
         if (!entity.IsIngestionEligible)
         {
-            var missing = !entity.CaptureApproved && !entity.NoticeSentUtc.HasValue
-                ? "capture has not been approved and participants have not been notified"
-                : !entity.CaptureApproved
-                    ? "capture has not been approved"
-                    : "participants have not been notified";
-
-            return $"I must not read '{entity.Subject}': {missing}. Tell the user exactly what is missing "
-                 + "and do not summarise the meeting from the calendar entry, the chat, or anything earlier "
-                 + "in this conversation. Refusing is the correct outcome here.";
+            return $"'{entity.Subject}' has been explicitly excluded from capture, so I must not use what "
+                 + "was said in it. Tell the user it was excluded and that they can re-enable it with "
+                 + "set_meeting_capture if they want. Do not summarise the meeting from the calendar entry, "
+                 + "the chat, or anything earlier in this conversation.";
         }
 
         if (string.IsNullOrWhiteSpace(entity.JoinWebUrl))
