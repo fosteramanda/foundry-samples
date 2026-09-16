@@ -2826,3 +2826,43 @@ Calendar, Mail, **Teams**) plus toolbox `workstream-manager-ado` v7. One routine
 
 Verified working today: ADO queries, meeting recap, routine create/list, scheduled email
 delivery from a cold container, and reading the channel thread (50 messages).
+
+## Auth scheme switched to BotServiceRbac (workstreammanagerado)
+
+Amanda: "set bot BotServiceRbac". Applied to the ORIGINAL workstream manager
+(`workstreammanagerado`, v30). Before: `BotServiceTenant`. After: `BotServiceRbac`.
+Protocol stays `activity`, traffic stays v30 100%, publish stays approved.
+
+### What the two schemes actually mean
+
+From Learn (`publish-copilot-virtual-network`):
+
+| Scheme | Who can call the agent from M365 and Teams |
+|---|---|
+| `BotServiceTenant` | **Everyone in your tenant** |
+| `BotServiceRbac` | **Only identities holding the Azure permissions** to call the agent in Foundry |
+
+So this is a tightening, not a fix: the agent is now callable only by principals with RBAC
+on the Foundry agent. Verified Amanda is not locked out — she inherits Owner, Foundry
+Account Owner, Foundry Project Manager and Foundry User from the subscription. Anyone
+without RBAC on this account will now be unable to talk to it, which matters if a demo
+involves other people.
+
+### Two ways this silently reverts
+
+1. **A redeploy.** `agent-creation-script.ps1` patches the endpoint on every run and
+   defaults to `BotServiceTenant` unless `AGENT_ENDPOINT_AUTH_SCHEME` is set. Set
+   `AGENT_ENDPOINT_AUTH_SCHEME="BotServiceRbac"` in the `workstreammanagerado` azd env so
+   the setting survives. Without that, the next deploy quietly undoes it — the script
+   comment already warns that a scheme set out of band is reverted on the next provision.
+2. **A republish.** Learn: publish scope and scheme are paired — `Tenant` maps to
+   `BotServiceTenant`, `Shared`/`Personal` map to `BotServiceRbac`, and "publishing sets
+   the matching scheme and replaces a different Bot Service scheme."
+   `publish-digital-worker.ps1` sends `appPublishScope = "Tenant"`, so **republishing will
+   flip this back to BotServiceTenant.** To make the pairing consistent, that scope would
+   have to change to `Shared` or `Personal` — not done, because it also changes store
+   visibility, which is Amanda's call.
+
+To revert: PATCH the agent endpoint with `authorization_schemes: [{ type:
+"BotServiceTenant" }]` and `protocols: ["activity"]`. The PATCH replaces both, so always
+send the protocol alongside.
