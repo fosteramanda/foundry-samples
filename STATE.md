@@ -2636,3 +2636,40 @@ status, traffic, role assignments.
 - No Azure DevOps toolbox in this project, so no ADO tools — which a workstream manager
   needs. `post-provision.ps1` does not call `create-toolbox.ps1`; `ToolboxName` is empty
   and `ToolboxVersion` was cleared, so it must be created and pinned here.
+
+### v3: the lesson that porting code without its prose is worse than not porting
+
+v2 changed defaults in code and left the instructions and the meeting handler describing
+the old behaviour. That is a worse state than either end, because the model is told to do
+the opposite of what the code does. Two contradictions, both self-inflicted:
+
+- Routines defaulted to email in code while the prompt still said chat was the default and
+  email was for "when the user asks".
+- `MeetingRegistryStore` treated the invitation as consent while BOTH the prompt and the
+  handler still implemented the superseded two-gate model — including a worked example
+  where the agent asks "do you approve me using what was said, and have the attendees been
+  told?", which is precisely the behaviour Amanda rejected.
+
+Fixed in v3. `record_capture_notice` is removed along with its handler, matching the
+reference sample's four meeting tools. Refusals now cite the only remaining reason to
+refuse: the meeting was explicitly excluded.
+
+**The rule this produces: when porting a behaviour change, port the prompt, the tool
+descriptions and the user-facing strings with it.** A marker grep on the C# would have
+reported all six features "ported" while the agent still argued with itself. The gap was
+found by diffing `AgentInstructions.cs`, which the first pass never diffed at all.
+
+Also set `ModelDeployment` to gpt-5.5. It was gpt-5-chat, which is not deployed in this
+project. The build script prefers `MODEL_DEPLOYMENT_NAME` and falls back to appsettings, so
+the stale value was a latent trap: any build without that variable produces an image that
+fails on every turn, and `publish: pending` would hide it until someone approved the app.
+
+### Deployment state
+
+`workstreammanagera2arouter` — **v3, active, 100% traffic**,
+image `sha256:b95bd0fb...`. ACR holds three manifests, one per version, and v3 references
+the newest, so the serving image is the ported and aligned code.
+
+Verify a deploy by matching the version's image digest against the newest ACR **manifest**
+digest. The digest printed in the build log is a layer digest and will not match — comparing
+the wrong one looks like a stale deploy.
