@@ -2497,3 +2497,95 @@ Workaround that does not need the extension at all:
 $tok = az account get-access-token --resource "https://api.applicationinsights.io" --query accessToken -o tsv
 Invoke-RestMethod -Uri ("https://api.applicationinsights.io/v1/apps/$appId/query?query=" + [uri]::EscapeDataString($kql)) -Headers @{ Authorization = "Bearer $tok" }
 ```
+
+## New sample: foundry-autopilot-router-a2a-workstream-manager
+
+Forked from `foundry-autopilot-router-agent-a2a`, which is the **Office of Amanda /
+chief of staff** arm. From the fork commit they are two independent samples with
+independent environments. Neither is to be changed on the other's behalf.
+
+### How the copy was made
+
+Enumerated `git ls-files` rather than copying the working tree, so everything gitignored
+was excluded **by construction**: `.azure/` (the sibling's azd environment), `bin/`,
+`obj/`, `publish/`. 65 tracked files. Verified afterwards: no `.azure`, `bin` or `obj` in
+the new tree, and no literal `autopilotroutera2a` anywhere in it.
+
+Two env ties had to be fixed by hand because they live in *tracked* source, where a
+gitignore-based copy cannot catch them:
+
+- **`ToolboxVersion: "8"`** — the version of the SIBLING project's toolbox. A toolbox is
+  a per-project resource; this project has none. Inert today only because `ToolboxName`
+  is empty, but the moment a toolbox is named it would request a version that does not
+  exist, and a bad pin fails `tools/list` wholesale → `external_connector_error` →
+  BadRequest on every turn. That is this session's opening bug. Set to empty.
+- The comment explaining why `ToolboxName` is empty **named the sibling's toolbox**.
+  Rewritten for this sample.
+
+### Environment
+
+`workstreammanagera2arouter`, Sweden Central, subscription Not A Real Co. Its own Foundry
+account/project, ACR, storage, App Insights, and **its own agent identity blueprint**
+(`0877e6a4-61d3-4950-b1f9-0a3063fd69f4`, vs the sibling's `ac1da9f1-...`). Deployed **v1,
+100% traffic**. No `TOOLBOX_*` variables, correctly.
+
+### Provisioning gotcha: azd hooks inherit the shell's az config
+
+First `azd provision` failed in the post-provision hook:
+
+```
+ERROR: Subscription '9bf2fcb3-...' not found. Check the spelling and casing.
+```
+
+The bicep phase succeeded because **azd** was signed in. The hook shells out to **az**,
+which is a different credential store. All az work in this workspace uses a pinned
+`AZURE_CONFIG_DIR` (`.azure-notarealco-session`); the machine-default az config has other
+subscriptions and not this one. The hook inherits environment variables from the azd
+process, so the fix is to set `AZURE_CONFIG_DIR` in the shell before `azd provision` — not
+to change any script. Re-ran and it succeeded.
+
+### A memory that did not reproduce
+
+Stored guidance says to always pass `--no-logs` to `az acr build` on Windows because
+streamed logs crash the CLI with a cp1252 `UnicodeEncodeError`. It did **not** reproduce:
+this sample's script has no `--no-logs` and the ACR build succeeded, including under an
+`interactive: true` azd hook (a real console, which is the condition most likely to
+trigger it). The sibling's script also lacks `--no-logs` and ran three times today. Left
+the scripts alone rather than editing on the strength of a memory that current evidence
+contradicts.
+
+### Feature gap vs foundry-workstream-manager-autopilot-agent
+
+Derived from content diffs, not marker greps — a first pass using greps produced a false
+negative on the `/me` row because the pattern omitted a leading slash.
+
+| # | Missing here | File | Size |
+|---|---|---|---|
+| 1 | Home-tenant fallback (`ResolveHomeTenantId`) | `A365AgentApplication.cs` | ~43 lines |
+| 2 | Scheduled-run framing (`isScheduledRun`) | `ResponsesApiAgentLogicService.cs` | ~20 lines |
+| 3 | Teams system-payload guard (`IsTeamsSystemPayload`) | `ResponsesApiAgentLogicService.cs` | ~30 lines |
+| 4 | Routine email default | `RoutineToolHandler.cs` | 2 lines |
+| 5 | `mcp_CalendarTools` | `ToolingManifest.json` | 6 lines |
+| 6 | `CaptureApproved`/`NoticeSource`/`IsIngestionEligible` | `MeetingRegistryStore.cs` | 3 lines |
+
+1–4 are the v25–v28 fixes; each was measured against a real failure. Without 1 and 4 a
+routine here would fire and deliver nothing, silently, while the platform records the run
+as Finished.
+
+The a2a arm additionally has what the workstream manager does not, and these **stay** —
+they are the point of the router: `WorkIqA2AToolHandler`, `DelegationFollowUpService`,
+`PendingDelegationStore`, `ManagerMailboxToolHandler`.
+
+### Open — needs Amanda
+
+1. **Publish approval is `pending`.** Both working agents are `approved`. Until a tenant
+   admin approves the published app it will not appear in Teams, so it cannot be tested.
+   Not actioned: publish changes need Amanda's explicit approval.
+2. **`ManagerMailboxToolHandler` and the `users/{mailbox}/...` Graph paths are the chief
+   of staff scenario.** The workstream manager arm uses `me/...` — acting as itself, not
+   on a manager's behalf. That is Amanda's two-scenario ruling expressed in code. Whether
+   this fork keeps the manager-mailbox surface is a scenario decision, not a port.
+3. **Nothing to delegate to.** A fresh project has no Source of Truth agent, so the A2A
+   path has no downstream target until one exists here.
+4. **No Azure DevOps toolbox in this project**, so no ADO tools — which a workstream
+   manager needs. `post-provision.ps1` does not call `create-toolbox.ps1`.
