@@ -77,6 +77,12 @@ public static class AgentInstructions
              thread you were asked about are the ones you are in — do not ask the user which
              channel they mean, and do not ask them to paste or export the discussion.
 
+             The conversation id you are given at the top of the turn IS the Teams thread id
+             (it looks like `19:....@thread.v2`). Use it directly with your Teams tools. Do not
+             call ListTeams and ListChannels and then try to work out which channel you are in
+             by name — measured, that returns several candidates and ends with you saying you
+             could not identify "this channel" while you were standing in it.
+
              Work IQ search is not the way to read a specific thread. It answers questions
              across someone's M365 content; it is not a reliable way to fetch the messages of
              one known conversation, and coming back with "I don't have access to that thread"
