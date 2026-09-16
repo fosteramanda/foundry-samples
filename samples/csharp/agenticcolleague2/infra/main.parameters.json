@@ -13,6 +13,9 @@
     },
     "modelVersion": {
       "value": "${MODEL_VERSION=2026-05-28}"
+    },
+    "modelCapacity": {
+      "value": "${MODEL_CAPACITY=100}"
     }
   }
 }

@@ -18,6 +18,9 @@ param publicNetworkAccess string = 'Enabled'
 param modelName string
 param modelVersion string
 
+@description('TPM capacity for the model deployment, in thousands of tokens per minute. The upstream sample hardcoded 10, which rate-limited the agent to roughly one turn per minute: a single turn carries the instructions plus every MCP server tool definition, so two turns in close succession returned 429 and the agent replied "Status: TooManyRequests".')
+param modelCapacity int = 100
+
 // Cognitive Services Account
 resource account 'Microsoft.CognitiveServices/accounts@2025-09-01' = {
   name: accountName
@@ -102,7 +105,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   parent: account
   sku: {
     name: 'GlobalStandard'
-    capacity: 10
+    capacity: modelCapacity
   }
   properties: {
     model: {
