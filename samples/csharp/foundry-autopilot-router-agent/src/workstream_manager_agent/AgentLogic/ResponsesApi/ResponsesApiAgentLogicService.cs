@@ -28,6 +28,17 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly ReactionService _reactionService;
     private readonly RoutineToolHandler _routineTools;
     private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
+    private readonly PlannerToolHandler _plannerTools;
+
+    /// <summary>
+    /// Whether the chat work-item tools are offered to the model.
+    ///
+    /// False once Planner is the team's board: the two track the same thing, and offering
+    /// both invites the model to split the team's work across two stores so neither is
+    /// complete. The handler itself is still constructed because AccessControlService needs
+    /// it, and setting this true restores the old behaviour without any other change.
+    /// </summary>
+    private readonly bool _workItemToolsOffered;
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -83,6 +94,15 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         }
 
         _workIqA2ATools = new WorkIqA2AToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration);
+
+        // The team's board. Planner replaces the chat work-item tracker rather than sitting
+        // alongside it: both record commitments, and running both splits the record so
+        // neither is the answer to "what is the team tracking".
+        _plannerTools = new PlannerToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
+        _responsesApiClient.PlannerEnabled = _plannerTools.IsEnabled;
+        _workItemToolsOffered = !_plannerTools.IsEnabled
+            && _configuration.GetValue("EnableWorkItemTools", true);
+        _responsesApiClient.WorkItemsEnabled = _workItemToolsOffered;
         _teamsHelper = new TeamsActivityHelper(_logger);
         _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken, httpClient, _teamsHelper, _workItemTools);
         _addressedToAgentGate = new AddressedToAgentGate(_logger, _configuration, _responsesApiClient, _teamsHelper, httpClient, graphAccessToken);
@@ -94,7 +114,12 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     /// </summary>
     private List<JsonNode> BuildLocalToolDefinitions()
     {
-        var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
+        var tools = new List<JsonNode>();
+        if (_workItemToolsOffered)
+        {
+            tools.AddRange(_workItemTools.GetToolDefinitions());
+        }
+        tools.AddRange(_plannerTools.GetToolDefinitions());
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
         tools.AddRange(_routineTools.GetToolDefinitions());
         if (_meetingRegistryTools != null)
@@ -109,7 +134,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     /// handler recognises the name, which the caller reports back to the model.
     /// </summary>
     private async Task<string?> ExecuteLocalToolAsync(string toolName, string arguments)
-        => await _workItemTools.TryExecuteAsync(toolName, arguments)
+        => await _plannerTools.TryExecuteAsync(toolName, arguments)
+           ?? await _workItemTools.TryExecuteAsync(toolName, arguments)
            ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
            ?? await _routineTools.TryExecuteAsync(toolName, arguments)
            ?? (_meetingRegistryTools != null

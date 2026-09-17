@@ -53,6 +53,12 @@ internal class ResponsesApiClient
     /// <summary>Whether the chat work-item tracker is attached.</summary>
     internal bool WorkItemsEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Whether the Planner board tools are attached. Requires a Graph token and a configured
+    /// default board, so the prompt never describes a board the agent cannot reach.
+    /// </summary>
+    internal bool PlannerEnabled { get; set; }
+
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
         ILogger logger,
@@ -97,7 +103,8 @@ internal class ResponsesApiClient
             _configuration["ToolboxName"],
             RoutinesEnabled,
             WorkItemsEnabled,
-            MeetingRegistryEnabled);
+            MeetingRegistryEnabled,
+            PlannerEnabled);
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.
