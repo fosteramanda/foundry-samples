@@ -1,6 +1,9 @@
 # STATE
 
-Last updated: 2026-09-03. Revised the same day after locating the source
+Last updated: 2026-09-17. The latest Payments-instance investigation and approved repair are
+appended under "Workstream Manager Payments: Agent Tools consent removed".
+
+Baseline recorded 2026-09-03. Revised the same day after locating the source
 session (`9bc6280f-…`) in the local session store: the decisions section is
 now cited from that conversation rather than reconstructed from the diff.
 Revised again after tracing the delegation path end to end, which showed
@@ -2914,3 +2917,268 @@ on.** That is the thing to look for when a new version is not being picked up.
 - Original `workstreammanagerado`: 20 sessions, all `expired`, versions 1-7, from June and
   July. Nothing live pinning an old version, so the staleness fought all session was
   container-level, not session-level.
+
+---
+
+## Workstream Manager Payments: Agent Tools consent removed (2026-09-17)
+
+Amanda requested diagnosis of the unanswered Teams messages. Working mode: run to root
+cause, with one review at the end. This investigation concerns
+`workstreammanagera2arouter`, NOT the original `workstreammanagerado`.
+
+### Target and live state
+
+- Source: `samples\csharp\foundry-autopilot-router-a2a-workstream-manager`.
+- Resource group: `rg-workstreammanagera2arouter`; account:
+  `workstreammanagera2arouteracct`; project: `workstreammanagera2arouterproj`.
+- NotARealCo subscription `9bf2fcb3-7a06-450b-b974-915443a451e6`, tenant
+  `dfa98250-28be-4cda-b270-45c05319c07c`. Used the existing isolated
+  `C:\Users\fosteramanda\.azure-notarealco-session` profile, without login or
+  changing the machine-wide Azure context.
+- Agent v3 is active; endpoint enabled, `activity`, `BotServiceTenant`,
+  publication approved, 100% selector `@latest`. Account public access enabled.
+- Blueprint client ID: `0877e6a4-61d3-4950-b1f9-0a3063fd69f4`; blueprint
+  principal ID: `5d212b9d-ff4d-437a-83e4-8527c35c8ec6`.
+- Payments agent identity: `5090f898-47fd-4d78-b6b7-aea7a333884f`.
+  Its agent user account is the separate object
+  `7631731d-46df-48b6-b12c-0e7af8cb9c36`, enabled and licensed, with no
+  reported service-provisioning errors.
+
+### Confirmed blocking defect and its provenance
+
+The required **Agent Tools delegated consent was removed during app approval**.
+This is measured, not inferred from an empty grant list:
+
+| UTC, 2026-09-16 | Evidence |
+|---|---|
+| 09:04:14.981 | Directory audit: Agent Tools delegated grant added to the blueprint principal. |
+| 10:48:07.121 | Directory audit: the entire Agent Tools delegated grant removed. |
+| 10:48:07.744 | `Consent to application`, with the SAME correlation ID as the removal: `b2486895-0e46-4932-af1a-cd67b910c316`. |
+| 11:50:06 | App Insights and Entra sign-in logs: Payments fails token acquisition for Agent Tools with `AADSTS65001`, `consent_required`. |
+
+The failing resource app is `ea9ffc3e-8a23-4a7d-836d-234d7c7565c1`
+(`Agent Tools`), resource service principal `77c5c1d4-ae49-46e5-91be-8a153b25266b`.
+The sign-in correlation ID is `e5d278fd-627b-4453-9c11-f12a432cf04d`.
+Conditional Access was not applied to that failed sign-in.
+
+Current OAuth grants confirm the defect persists: the blueprint principal has Graph,
+Messaging Bot API, Foundry, and ADO grants, but NO Agent Tools grant. The Payments
+identity has no direct OAuth grants either. A missing direct grant alone would not
+establish a defect because inheritance is supported; here the runtime consent failure
+and missing parent grant establish the blocker together.
+
+`ResponsesApiAgentLogicServiceFactory.cs:53-59` requests the Agent Tools `/.default`
+token unconditionally before constructing the agent logic service. The
+`user_fic` exchange throws in `Services\AgentTokenHelper.cs` before the model or
+any tool can run. Even a greeting needs to get past this initialization.
+
+The setup script creates the Agent Tools grant, but its explicit
+`requiredResourceAccess` updates cover Graph, Foundry, and ADO, not Agent Tools.
+This omission needs attention in the durable correction; restoring a grant alone
+without reviewing the declared and inheritable permissions risks losing it again
+during consent. Live inheritance configuration was not changed.
+
+### Corrections and remaining uncertainty
+
+The earlier "container never ran" / "telemetry never arrived" claims are superseded.
+App Insights contains a v3 cold start at 11:50:02 UTC on September 16, successful
+readiness and activity requests, followed by the consent failure. Session:
+`cc8150b926ee83c466bb9e1f7b5974ed5b6df935bc14ea38c90f40c1edacc44`.
+
+That recorded activity was a SYNTHETIC scheduled diagnostic, not a normal Teams
+message. Its attempt to send the error back also received HTTP 401. Do not present
+that scheduled-path reply failure as proof of the cause of today's Teams silence.
+No new application telemetry was found for today's messages. The missing consent
+is a confirmed blocker, but real Teams delivery and reply still need an end-to-end
+check after correction.
+
+The existing Graph diagnostic token lacks `Chat.Read` / `Chat.ReadWrite`, so a
+read of the affected chat was refused. No additional diagnostic permissions were
+consented. The documented agent-registry lookup returned 404 in this tenant;
+that does not establish that the Payments instance is unregistered.
+
+### Changes made
+
+Enabled diagnostic setting `workstreammanagera2arouter-incident` on the target
+Foundry account, forwarding `Audit` and `Trace` to the EXISTING
+`workstreammanagera2arouter-logs` workspace (30-day retention). The setting persisted
+and ARM recorded the successful write. No new platform-log rows had arrived at
+the last check, so end-to-end diagnostic ingestion is not yet demonstrated.
+
+No new fixed-cost resource was created. Approximate additional cost is
+pay-as-you-go log ingestion, on the order of $3/GB; a small diagnostic volume
+should cost pennies. The setting is left enabled for the next real message.
+
+During the initial diagnosis, no code, permissions, identity, publishing, protocol,
+or deployment was changed.
+Unrelated concurrent work, including `PlannerToolHandler.cs` in the original sample,
+was left untouched. No commit or push was made.
+
+### Approved five-scope repair applied, 2026-09-17
+
+The approval form twice reported that Amanda was unavailable. Amanda then explicitly
+approved in this CLI conversation at 03:16 PDT: "I approve the five-scope repair".
+Her later screenshot shows a DIFFERENT agent, Autopilot Router, acknowledging that
+same sentence in Teams. That bot acknowledgment was not the permission repair.
+
+At 10:24:02 UTC, applied all three parts to the Payments blueprint:
+
+- Added an Agent Tools entry to `requiredResourceAccess` containing exactly the
+  five enabled delegated scope IDs resolved from the resource service principal.
+- Added `inheritablePermissions` for Agent Tools with enumerated scopes, not
+  `allAllowed`, containing those same five scope names.
+- Created the blueprint principal's `AllPrincipals` delegated Agent Tools grant.
+  Grant ID: `nSshXU3_ekOD5IUnw1yOxtTBxXdJruVGkb6KFTslJms`.
+
+The approved and read-back scope set is exactly:
+
+```
+McpServers.Calendar.All
+McpServers.Excel.All
+McpServers.Mail.All
+McpServers.OneDriveSharepoint.All
+McpServers.Word.All
+```
+
+Before/after comparisons confirmed every OTHER resource's required declarations,
+inheritable permissions, and delegated grants were unchanged. No direct grant was
+added to the Payments identity. This repairs blueprint inheritance rather than
+working around it per instance.
+
+The actual live inspection also confirmed the original omission: before repair,
+Agent Tools was absent from both `requiredResourceAccess` and
+`inheritablePermissions`, as well as from the granted permissions.
+
+### Runtime token acquisition now succeeds
+
+Created one temporary routine, `payments-permissions-probe-6e9935ea`, using the
+supported `azd ai routine` commands, and manually dispatched it once. Its payload
+used the Payments agent identity and agent user account, with EMPTY message text.
+The factory acquires the tokens before the existing blank-message guard returns,
+so this checks the failing boundary without asking the model to run tools or send
+anything. No real Teams message was fabricated as evidence of delivery.
+
+Dispatch: `dispatch_01ac8424a43e4b3faa563f064864b13d`.
+The same session ID resumed on v3 with a new cold start:
+
+| UTC, 2026-09-17 | Runtime evidence |
+|---|---|
+| 10:28:58.732 | Application starting, agent version 3. |
+| 10:29:02.073 | Acquired Agent Tools token for `ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default`. |
+| 10:29:02.750 | Acquired Graph token. |
+| 10:29:02.754 | Loaded exactly 5 MCP servers from the manifest. |
+| 10:29:02.770 | Blank-message guard reached for activity `permissions-probe-6e9935ea`; no reply attempted. |
+
+Verified these positive markers in BOTH App Insights and the session console.
+The post-dispatch telemetry query returned zero exceptions and zero matching
+model, Agent 365 tool, or Teams-delivery dependencies. The recorded
+`AADSTS65001` blocker is therefore fixed at runtime, not merely patched in Graph.
+
+Deleted the temporary routine and confirmed the project routine list is empty.
+Removed its session-owned JSON manifest too. No recurring diagnostic was left
+behind. The diagnostic used existing hosted compute; it did not invoke the model.
+Audit/Trace logging remains enabled in the existing workspace as described above.
+
+No application code, provisioning script, other permission, identity, publishing,
+protocol, or deployment was changed. Read-back still shows v3 active, endpoint
+enabled, `activity` / `BotServiceTenant`, publication approved, and `@latest`
+at 100%. No commit or push was made; concurrent edits in other samples were
+left untouched.
+
+### FOR AMANDA
+
+- Artifact updated: `C:\Users\fosteramanda\Code-Samples\foundry-samples-ado\STATE.md`.
+- The approved permission repair is applied and runtime token acquisition succeeds.
+  No more approval messages are needed.
+- Next real-channel check: open **Workstream Manager Payments**, NOT the
+  **Autopilot Router** chat in the latest screenshot, and send `hello`.
+  Actual Teams ingress, model response, and reply delivery remain unverified;
+  the blank diagnostic deliberately did not exercise them.
+
+## autopilotrouter becomes the Novartis Agentic Colleague (v3, v4)
+
+Amanda: port routines, meetings and everything added to the workstream manager into the
+router, add all local tools, and name the persona Agentic Colleague for Novartis.
+
+### What the router was missing
+
+It was three months behind. Measured before touching it: **6 MCP servers and 4 local
+tools**, against the workstream manager's 6 + 12. No routines, no meetings, no tenant
+fallback, no Teams system-payload guard, and the original "respond to this chat message
+with chat id X" framing.
+
+### Ported
+
+`MeetingRegistryToolHandler`, `RoutineToolHandler`, `MeetingRegistryStore` wholesale.
+Wired into `BuildLocalToolDefinitions` / `ExecuteLocalToolAsync`, `MeetingRegistryStore`
+registered in DI and passed through the factory. Added `RoutinesEnabled` /
+`MeetingRegistryEnabled` / `WorkItemsEnabled` to `ResponsesApiClient` so the prompt
+describes only what is attached. Attached `mcp_MailTools` and `mcp_TeamsServer`.
+
+Plus the four fixes each measured against a real failure: home-tenant fallback, Teams
+system-payload guard, scheduled-run framing, and email-capable routines.
+
+### The bug that would have made routines impossible anyway
+
+`agent-creation-script.ps1` never set `FoundryProjectEndpoint` or `FoundryAgentName`, and
+`RoutineToolHandler.IsEnabled` requires **both**. The deployed version carried only three
+environment variables, so the scheduling tools would have vanished from every turn with no
+error — the code being present would not have mattered. Now set.
+
+### Prompt
+
+Reframed as the Agentic Colleague: a shared digital teammate, "employee zero", for one
+Integrated Product Strategy Team, carrying that team's decisions, actions and rationale
+across Microsoft 365. Memory is teamwide and never crosses teams.
+
+Added the governance the charter requires and the earlier ruling does not cover: **confirm
+before writing to the team's board or shared record, and name the approver.** That is
+deliberately scoped to WRITES. It does not apply to reading a meeting the agent was
+invited to — consent there is still the invitation, per the standing ruling. The two are
+different acts and collapsing them would reintroduce the approval loop Amanda rejected.
+
+**Removed the Azure DevOps section.** It declared ADO the source of truth and used
+NotARealCo / Checkout v4.3 examples, but `autopilotrouter-tools:1` contains *only* Work IQ
+MCP — no ADO tools at all. Keeping it would have advertised a capability the agent does
+not have, on a customer-facing persona.
+
+Kept `WorkIqA2AToolHandler` and the delegation section: routing to specialist agents is
+capability 6 of the Novartis use case.
+
+### Verified by outbound call
+
+```
+Loaded 6 MCP servers from ToolingManifest.json        (was 5)
+Invoking Responses API with 7 MCP tool servers and 15 local tools   (was 6 and 4)
+mcp_list_tools: Word, ODSP, Excel, Calendar, MailTools, TeamsServer, autopilotrouter-tools
+reply: "I'm the Agentic Colleague; scheduling tools: create_routine, list_routines,
+        set_routine_enabled, delete_routine; meeting tools: track_meeting,
+        list_tracked_meetings, set_meeting_capture, read_meeting_transcript."
+```
+
+`record_capture_notice` is correctly absent, matching the consent model.
+
+### A probe mistake worth not repeating
+
+The first verification failed with `AADSTS7002203: No matching federated identity record
+found for presented assertion subject '20dec68d-...'`. That was **my payload, not the
+agent**: I used `instance_identity.client_id` from the agent VERSION, which is the identity
+Foundry created for the version itself and holds no grants. The real instance the user
+talks to is a different id (`a37c4bb0-...`), readable from a live activity's
+`Recipient.AgenticAppId`. `RoutineToolHandler`'s own comment warns about exactly this.
+
+### Also fixed, in BOTH samples
+
+`ConversationStateStore` coalesced with `??` from `ConversationStateTableServiceUri` to
+`WorkItemsTableServiceUri`. appsettings ships the first as `""`, and an empty string is not
+null, so the fallback never fired — deployments that HAD a storage account still logged
+"No table URI configured" and silently lost conversation continuity on every restart.
+Caught because `MeetingRegistryStore` found the same account one line later in the same
+startup. Same empty-string trap already recorded for the routine env vars; it is a pattern
+in this codebase, not a one-off.
+
+### State
+
+`autopilotrouter` **v4, 100%**, publish approved, `BotServiceTenant`. The workstream
+manager has the same ConversationStateStore fix committed but **not yet deployed** — it is
+still on v30 and will pick it up on its next build.
