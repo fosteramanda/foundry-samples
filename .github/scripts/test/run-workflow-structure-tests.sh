@@ -110,7 +110,7 @@ else
     fail "detection contract must be the first trusted step (got: ${first_step:-<none>})"
 fi
 contract_line="$(grep -nF -- '- name: Validate sample detection contract' "$TRUSTED" | cut -d: -f1)"
-checkout_line="$(grep -nF -- '- uses: actions/checkout@v4' "$TRUSTED" | cut -d: -f1 | head -1)"
+checkout_line="$(grep -nE -- '- uses: actions/checkout@[0-9a-f]{40} # v4\.[0-9]+\.[0-9]+$' "$TRUSTED" | cut -d: -f1 | head -1)"
 if [ -n "$contract_line" ] && [ -n "$checkout_line" ] && [ "$contract_line" -lt "$checkout_line" ]; then
     pass "detection contract runs before checkout"
 else

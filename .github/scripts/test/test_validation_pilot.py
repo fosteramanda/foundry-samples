@@ -599,7 +599,10 @@ print_value(resolve(query))
     def test_discovery_jobs_install_pinned_dependencies(self) -> None:
         for workflow_path in (WORKFLOW, SELFTEST_WORKFLOW):
             workflow = workflow_path.read_text(encoding="utf-8")
-            self.assertIn("uses: actions/setup-python@v5", workflow)
+            self.assertRegex(
+                workflow,
+                r"(?m)^\s*-\s+uses: actions/setup-python@[0-9a-f]{40} # v5\.\d+\.\d+$",
+            )
             self.assertIn("python-version: '3.12'", workflow)
             self.assertIn(
                 "python -m pip install -r .github/scripts/requirements.txt",
