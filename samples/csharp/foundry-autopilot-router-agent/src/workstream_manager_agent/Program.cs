@@ -51,6 +51,12 @@ builder.Services.AddSingleton<WorkItemService>();
 // lost conversation continuity on every container recycle and could not work across replicas.
 builder.Services.AddSingleton<ConversationStateStore>();
 
+// Durable record of which meetings the agent may use. Same storage account and per-instance
+// RBAC grant as the work-item and conversation-state tables, so this adds no new
+// infrastructure. Without it the meeting tools disable themselves rather than offering a
+// capture decision that cannot be written down.
+builder.Services.AddSingleton<MeetingRegistryStore>();
+
 // Register OpenAPI for external agents
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
