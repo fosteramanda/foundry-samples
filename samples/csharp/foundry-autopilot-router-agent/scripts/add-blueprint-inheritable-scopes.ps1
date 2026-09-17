@@ -46,9 +46,11 @@
   scopes as inheritable permissions on the blueprint (grouped by resource app).
 
 .EXAMPLE
+  # This list must match the scopes granted by create-blueprintsp-oauth2-grants.ps1.
+  # A scope that is granted but not inheritable never reaches the agent identity's token.
   ./add-blueprint-inheritable-scopes.ps1 `
       -BlueprintObjectId "5c5a282e-9360-4bec-90cd-e812adff6090" `
-      -Scopes "Mail.Read","Mail.Send","Mail.ReadWrite","Chat.ReadWrite","User.ReadBasic.All"
+      -Scopes "Chat.ReadWrite","Mail.ReadWrite","Mail.Send","User.Read.All","ChatMember.Read","Tasks.ReadWrite","ChatMessage.Send","ChannelMessage.Read.All","ChannelMessage.Send"
 
 .EXAMPLE
   ./add-blueprint-inheritable-scopes.ps1 `

@@ -168,12 +168,19 @@ foreach ($audience in $toolboxAudiences) {
     }
 }
 
+# Graph delegated scopes granted to the blueprint principal.
+# IMPORTANT: granting here is only half the job. A scope reaches an agent identity's
+# token only if it is ALSO listed as inheritable on the blueprint
+# (see add-blueprint-inheritable-scopes.ps1). Granting without inheriting produces a
+# token that silently lacks the scope: group-chat roster reads and Planner writes then
+# fail with 403 and report misleading causes. Keep these two lists in step.
 $graphReactionScopes = @(
     "ChatMessage.Send",
     "ChannelMessage.Send",
     "ChatMember.Read",
     "ChannelMessage.Read.All",
-    "User.Read.All"
+    "User.Read.All",
+    "Tasks.ReadWrite"
 )
 $graphDeprecatedScopes = @(
     "User.Read"

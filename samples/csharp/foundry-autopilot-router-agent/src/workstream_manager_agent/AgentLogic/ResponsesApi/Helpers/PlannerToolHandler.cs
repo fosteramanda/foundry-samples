@@ -368,10 +368,13 @@ public class PlannerToolHandler
     /// <summary>
     /// Finds the plan id for a board title.
     ///
-    /// Plans are listed user-scoped (/me/planner/plans) because that returns the boards this
-    /// account can actually act on. An empty list is the signal that the agent user is not a
-    /// member of the group owning the board — Planner authorises on group membership, so the
-    /// fix is to add the agent user to that group, not to grant a wider permission.
+    /// Plan lookup must not use /me. The container authenticates as the agent identity, which
+    /// has no signed-in user, so GET /me/planner/plans returns 403 "You do not have the required
+    /// permissions" — an error that reads like a group-membership problem and sends the reader
+    /// off to fix the wrong thing. Prefer the configured group, then the agent user by id.
+    ///
+    /// An empty plan list still means the agent user is not a member of the group owning the
+    /// board: Planner authorises on group membership, not on a tenant-wide role.
     /// </summary>
     private async Task<(string? PlanId, string? Error)> ResolvePlanAsync(string? requestedBoard)
     {
@@ -387,11 +390,41 @@ public class PlannerToolHandler
             return (cached, null);
         }
 
-        var (ok, response, error) = await SendGraphAsync(HttpMethod.Get, "me/planner/plans");
+        var candidatePaths = new List<string>();
 
-        if (!ok)
+        var groupId = _configuration["PlannerGroupId"];
+        if (!string.IsNullOrWhiteSpace(groupId))
         {
-            return (null, $"Could not list Planner boards: {error}");
+            candidatePaths.Add($"groups/{groupId}/planner/plans");
+        }
+
+        if (_agentUserId != Guid.Empty)
+        {
+            candidatePaths.Add($"users/{_agentUserId}/planner/plans");
+        }
+
+        candidatePaths.Add("me/planner/plans");
+
+        string? response = null;
+        string? lastError = null;
+
+        foreach (var path in candidatePaths)
+        {
+            var (ok, body, error) = await SendGraphAsync(HttpMethod.Get, path);
+
+            if (ok)
+            {
+                response = body;
+                break;
+            }
+
+            lastError = error;
+            _logger.LogWarning("Planner plan lookup via {Path} failed: {Error}", path, error);
+        }
+
+        if (response == null)
+        {
+            return (null, $"Could not list Planner boards: {lastError}");
         }
 
         var plans = JsonNode.Parse(response ?? "{}")?["value"] as JsonArray;
@@ -455,7 +488,14 @@ public class PlannerToolHandler
                     "Graph {Method} {Path} failed: {Status} {Body}",
                     method, path, (int)response.StatusCode, Truncate(text, 300));
 
-                return (false, null, $"Graph returned {(int)response.StatusCode}. {Truncate(text, 200)}");
+                // Planner's 401/403 body says only "you do not have the required permissions",
+                // which reads like a group-membership problem. It is not: it means our own
+                // token is missing Tasks.ReadWrite. Say so, or the model invents a fix.
+                var hint = (int)response.StatusCode is 401 or 403
+                    ? " This is a missing permission on my own access token (Tasks.ReadWrite), not group membership. Do not suggest adding me to the group; report that my Planner permission needs granting."
+                    : string.Empty;
+
+                return (false, null, $"Graph returned {(int)response.StatusCode}. {Truncate(text, 200)}{hint}");
             }
 
             return (true, text, null);
