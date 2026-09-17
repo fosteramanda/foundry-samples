@@ -3323,3 +3323,60 @@ Blueprint Graph scopes are inherited, so no new consent either.
 
 **Net answer: a new instance on the same blueprint needs no setup.** Create it, chat to it
 as its manager, and add colleagues to its allowlist through the agent itself.
+
+## Planner replaces the work-item tracker (v5)
+
+Amanda: "I want it to use planner instead", then "Create a new group for the board". That
+settles the mirror-vs-replace question left open earlier: **replace**.
+
+### Why replace rather than mirror
+
+Both Planner and the chat work-item tracker record commitments. Running both splits the
+team's record, so neither is the answer to "what are we tracking". The work-item tools are
+now withheld from the turn and their prompt section omitted whenever a Planner board is
+configured. `WorkItemToolHandler` is still CONSTRUCTED because `AccessControlService`
+depends on it; only its tools are withheld. `EnableWorkItemTools` reverts this with no
+other change.
+
+### Access, and the thing worth remembering
+
+**Planner authorises on GROUP MEMBERSHIP, not on a tenant-wide role.** The agent user can
+only see boards owned by groups it belongs to, which is why the earlier attempt found no
+boards at all: `/me/planner/plans` was empty because the agent was in no group that owned
+one.
+
+Two things were needed:
+
+1. Delegated **`Tasks.ReadWrite`** added to the blueprint's Graph grant
+   (`5846983a-...`). It now reads:
+   `ChatMessage.Send ChannelMessage.Send ChatMember.Read ChannelMessage.Read.All
+   User.Read.All Tasks.ReadWrite`
+2. A group that owns the board and has the agent in it.
+
+The first pass used **Caldova**, because the agent user was already a member and that
+needed no membership change at all. Amanda then asked for a dedicated group, which is the
+better answer and the one originally recommended: a group whose only purpose is the board
+grants the agent nothing else. Created `IPST Board`
+(`ec724eb3-df17-4439-ab6c-064a6d89d08b`, `ipst-board@...`), private, with Amanda as owner
+and the agent user as a member. The board was recreated there and **the interim Caldova
+board was deleted** — `ResolvePlanAsync` matches by title, so two boards with the same
+title would have been ambiguous.
+
+The agent therefore gains access to exactly one group, containing exactly one board.
+
+### Config
+
+`PlannerDefaultBoard: "IPST Board"` — by TITLE, not id, so the board can be recreated
+without a redeploy. `PlannerEnabled` is derived from the handler's real state and drives
+the prompt section, so an agent with no reachable board never tells the team it keeps one.
+
+### Prompt
+
+Planner is described as the shared record: read it before answering "what is open", list
+before adding so duplicates are not created, put the evidence in the notes so a card's
+origin can be checked, and apply the charter's write confirmation in full because a card
+changes the team's shared record. If it can see no board it must say so and ask to be added
+to the owning group — explicitly NOT fall back to tracking privately while implying the
+work is on the board.
+
+Deployed **v5, 100%**.
