@@ -50,6 +50,17 @@
   if (-not [string]::IsNullOrWhiteSpace($env:TOOLBOX_VERSION)) {
       $environmentVariables.ToolboxVersion = $env:TOOLBOX_VERSION
   }
+  # Routines need BOTH of these. RoutineToolHandler.IsEnabled checks them, and when either is
+  # missing it returns false and the scheduling tools vanish from the turn with no error at all
+  # — the agent simply stops offering to schedule anything and nothing explains why. An empty
+  # string in appsettings.json is NOT null, so the `?? Environment.GetEnvironmentVariable(...)`
+  # fallback never fires; these must be supplied here.
+  if (-not [string]::IsNullOrWhiteSpace($env:AZURE_AI_PROJECT_ENDPOINT)) {
+      $environmentVariables.FoundryProjectEndpoint = $env:AZURE_AI_PROJECT_ENDPOINT
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:AGENT_NAME)) {
+      $environmentVariables.FoundryAgentName = $env:AGENT_NAME
+  }
 
   $agentUrl = "$($AzureAIProjectEndpoint)/agents/$($AgentName)/versions?api-version=2025-11-15-preview"
 

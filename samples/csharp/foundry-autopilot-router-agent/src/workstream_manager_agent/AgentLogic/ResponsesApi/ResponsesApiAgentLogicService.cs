@@ -26,6 +26,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly AccessControlService _accessControl;
     private readonly AddressedToAgentGate _addressedToAgentGate;
     private readonly ReactionService _reactionService;
+    private readonly RoutineToolHandler _routineTools;
+    private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -35,7 +37,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         List<McpServerConfig> mcpServers,
         string? graphAccessToken = null,
         ConversationStateStore? conversationState = null,
-        AgentTokenHelper? tokenHelper = null)
+        AgentTokenHelper? tokenHelper = null,
+        MeetingRegistryStore? meetingRegistry = null)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -63,6 +66,22 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             workItemService = new WorkItemService(configuration, new LoggerFactory().CreateLogger<WorkItemService>());
         }
         _workItemTools = new WorkItemToolHandler(agentMetadata, _logger, graphAccessToken, httpClient, workItemService, _reactionService);
+
+        // Standing scheduled work. Disables itself when the project endpoint or agent name is
+        // missing rather than advertising a tool that cannot create anything.
+        _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
+        _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
+
+        // Meeting capture. Only constructed when durable storage exists: a capture decision
+        // that cannot be written down must not be offered, because the agent would report a
+        // permission it has no record of and cannot honour on the next turn.
+        if (meetingRegistry != null)
+        {
+            _meetingRegistryTools = new MeetingRegistryToolHandler(
+                agentMetadata, _logger, httpClient, _configuration, graphAccessToken, meetingRegistry);
+            _responsesApiClient.MeetingRegistryEnabled = _meetingRegistryTools.IsEnabled;
+        }
+
         _workIqA2ATools = new WorkIqA2AToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration);
         _teamsHelper = new TeamsActivityHelper(_logger);
         _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken, httpClient, _teamsHelper, _workItemTools);
@@ -77,6 +96,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     {
         var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
+        tools.AddRange(_routineTools.GetToolDefinitions());
+        if (_meetingRegistryTools != null)
+        {
+            tools.AddRange(_meetingRegistryTools.GetToolDefinitions());
+        }
         return tools;
     }
 
@@ -86,7 +110,54 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     /// </summary>
     private async Task<string?> ExecuteLocalToolAsync(string toolName, string arguments)
         => await _workItemTools.TryExecuteAsync(toolName, arguments)
-           ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments);
+           ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
+           ?? await _routineTools.TryExecuteAsync(toolName, arguments)
+           ?? (_meetingRegistryTools != null
+                ? await _meetingRegistryTools.TryExecuteAsync(toolName, arguments)
+                : null);
+
+    /// <summary>
+    /// True when a message activity is Teams machinery rather than something a person said.
+    ///
+    /// Measured in a real meeting, all of these arrive as ordinary message activities in the
+    /// meeting chat and none is addressed to anybody:
+    ///   - no text at all (meeting started, someone joined)
+    ///   - &lt;URIObject type="Video.2/CallRecording.1"&gt;&lt;RecordingStatus .../&gt;
+    ///   - {"scopeId":"...","storageId":"...","callId":"..."}
+    ///
+    /// Answering them is never right. The failure is loud and public: the model reads recording
+    /// XML, finds nothing to reply to, and says so in front of the meeting.
+    /// </summary>
+    private static bool IsTeamsSystemPayload(string text, IActivity activity)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            // A person can send a file with no caption, but the agent has nothing to answer
+            // there either, and staying quiet is the safe failure.
+            return true;
+        }
+
+        var t = text.TrimStart();
+
+        if (t.StartsWith("<URIObject", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("RecordingStatus", StringComparison.OrdinalIgnoreCase)
+            || t.Contains("Video.2/CallRecording", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // Call metadata. Matched on the pair, not on either id alone, so a person quoting one
+        // of these words is not silenced.
+        if (t.StartsWith('{')
+            && t.Contains("\"callId\"", StringComparison.OrdinalIgnoreCase)
+            && (t.Contains("\"scopeId\"", StringComparison.OrdinalIgnoreCase)
+                || t.Contains("\"storageId\"", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return false;
+    }
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
@@ -95,6 +166,24 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         var sender = turnContext.Activity.From;
         var rawUserMessage = incomingText ?? string.Empty;
+
+        // Teams delivers meeting lifecycle events (meeting started, recording started, someone
+        // joined) into the meeting chat as message activities. Without this guard each one is
+        // handed to the model, which answers "I can't respond to an empty message" in front of
+        // everyone in the meeting. Recording payloads carry text and blank ones carry
+        // attachments, so a blank-text check alone catches almost none of it.
+        if (turnContext.Activity.Type == ActivityTypes.Message
+            && IsTeamsSystemPayload(rawUserMessage, turnContext.Activity))
+        {
+            _logger.LogInformation(
+                "Skipping reply: Teams system payload, not a user message. " +
+                "channelId={ChannelId} conversationId={ConversationId} activityId={ActivityId} preview={Preview}",
+                turnContext.Activity.ChannelId,
+                turnContext.Activity.Conversation?.Id,
+                turnContext.Activity.Id,
+                rawUserMessage.Length > 60 ? rawUserMessage[..60] : rawUserMessage);
+            return;
+        }
 
         // Global AP tenant guard: if we can determine that the sender is from outside this
         // digital worker's tenant, return a deterministic canned response and skip LLM work.
@@ -105,9 +194,31 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         if (turnContext.Activity.ChannelId == "msteams")
         {
-            incomingText = $"Respond to this chat message with chat id {turnContext.Activity.Conversation.Id} " +
-                           $"From: {sender?.Name} ({sender?.Id})\n" +
-                           $"Message: {incomingText}";
+            // A scheduled run has no activity id. It is not a live chat turn: nobody is waiting,
+            // and whatever it returns is NOT delivered — the reply to Teams is rejected 401 on
+            // the way back. So the interactive framing below is exactly wrong here. It tells the
+            // model its answer is delivered automatically and forbids it from looking for a send
+            // tool, which on a scheduled run means it composes the output, calls no mail tool,
+            // and the result reaches nobody.
+            var isScheduledRun = string.IsNullOrEmpty(turnContext.Activity.Id);
+
+            incomingText = isScheduledRun
+                ? "This is a scheduled run, not a live chat turn. Nobody is watching this chat "
+                  + "and your reply is NOT delivered anywhere — a scheduled run cannot post into "
+                  + "Teams. If the instruction says to email the result, you MUST call your mail "
+                  + "tool to send it; that is the only way the output reaches anyone. Send it "
+                  + "once, then stop.\n"
+                  + $"Instruction: {incomingText}"
+
+                // The chat id is context, not an instruction to deliver anything. Phrasing it as
+                // "respond to chat id X" led the model to hunt for a send-message tool, fail to
+                // find one, and prefix its answer with "I couldn't post directly to that chat" —
+                // leaking plumbing into a user-visible reply.
+                : $"You are replying in Teams chat {turnContext.Activity.Conversation.Id}. " +
+                  "Your answer is delivered automatically, so do not look for a tool to send " +
+                  "or post it, and never mention posting or delivery.\n" +
+                  $"From: {sender?.Name} ({sender?.Id})\n" +
+                  $"Message: {incomingText}";
         }
         else if (turnContext.Activity.Type == ActivityTypes.InstallationUpdate)
         {
@@ -164,6 +275,10 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         // Capture activity context for 📌 reaction on work item creation
         _workItemTools.SetCurrentActivityContext(turnContext.Activity);
+
+        // A routine created this turn must post into THIS conversation when it fires, so the
+        // routine tools need the activity that addresses it.
+        _routineTools.SetCurrentActivityContext(turnContext.Activity);
 
         var response = await _responsesApiClient.InvokeAsync(
             input: incomingText ?? string.Empty,

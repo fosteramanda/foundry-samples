@@ -17,7 +17,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
     IConfiguration configuration,
     ILogger<ResponsesApiAgentLogicServiceFactory> logger,
     AgentTokenHelper tokenHelper,
-    ConversationStateStore conversationState)
+    ConversationStateStore conversationState,
+    MeetingRegistryStore meetingRegistry)
 {
     private static readonly HttpClient HttpClient = new();
 
@@ -131,7 +132,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
             mcpServers,
             graphAccessToken,
             conversationState,
-            tokenHelper);
+            tokenHelper,
+            meetingRegistry);
 
         return service;
     }
