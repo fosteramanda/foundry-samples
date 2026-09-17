@@ -189,7 +189,7 @@ internal class AccessControlService
         if (participants == null)
         {
             var managerLabel = GetManagerLabel(manager);
-            var cannedText = GetGroupChatUnauthorizedResponseText(managerLabel, 0, []);
+            var cannedText = GetGroupChatRosterUnavailableResponseText(managerLabel);
             await SendAccessControlResponseAsync(turnContext, cannedText, cancellationToken);
             _logger.LogWarning(
                 "Group-chat access control: failed to resolve participants from Graph; blocked response by default. managerId={ManagerId} allowListCount={AllowListCount} allowListIds=[{AllowListIds}] allowListUpns=[{AllowListUpns}] allowListStorage={AllowListStorage} conversationId={ConversationId}",
@@ -361,6 +361,20 @@ internal class AccessControlService
             ?? manager?.UserPrincipalName
             ?? _configuration["DirectMessageManagerContact"]
             ?? "my manager";
+    }
+
+    // Distinct from the unauthorized-participant message on purpose. Failing to read the
+    // roster is a permission fault on our side; reporting it as "missing approvals" sends
+    // the reader off to re-approve people who are already approved.
+    private string GetGroupChatRosterUnavailableResponseText(string managerLabel)
+    {
+        var template = _configuration["GroupChatRosterUnavailableResponse"];
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            template = "I can't reply in this group chat yet: I couldn't read the chat's member list, so I'm unable to confirm everyone here is approved. This is a permissions problem with my own access, not a missing approval — {Manager} may need to check my Teams chat permissions.";
+        }
+
+        return template.Replace("{Manager}", managerLabel, StringComparison.OrdinalIgnoreCase);
     }
 
     private string GetGroupChatUnauthorizedResponseText(
