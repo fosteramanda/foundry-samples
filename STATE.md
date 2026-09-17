@@ -3095,6 +3095,108 @@ left untouched.
   Actual Teams ingress, model response, and reply delivery remain unverified;
   the blank diagnostic deliberately did not exercise them.
 
+### Real Teams follow-up: missing Entra authorization (2026-09-17)
+
+Amanda sent a real `hello` to Payments at 03:34 PDT after the five-scope repair.
+It produced no incoming activity in either the running container's console or
+App Insights; the only recorded activity remained the earlier blank diagnostic.
+This established that the repaired Agent Tools token was not the whole issue.
+
+Additional checks:
+
+- Payments' agent identity remains enabled and belongs to the expected blueprint.
+  Its agent user account's manager is Amanda's expected NotARealCo user.
+- All three agent versions share GUID `b6d34cfb-e8aa-4bed-ad1e-984fa9b5347e`;
+  this is not a published-agent GUID drift between versions.
+- Amanda reported **API Based** in Teams Developer Portal, with the Foundry
+  Activity endpoint as the destination. The initial URL report abbreviated the
+  query string, so it did not establish exactly what had been saved.
+- A complete diagnostic Activity sent without `api-version` returns HTTP 400:
+  `Missing required query parameter: api-version`.
+- The same complete Activity with `api-version=2025-11-15-preview` and a valid
+  Entra token returned HTTP 403:
+  `Endpoint doesn't support entra auth and no valid bot service token was provided`.
+- Amanda then supplied the REAL Payments chat error with that same authorization
+  text (03:50 PDT). This is evidence from the Teams path, not just a synthetic
+  diagnostic. Do not treat the separate missing-query-parameter probe as proof
+  that the saved Developer Portal URL caused the original silence.
+
+The complete versioned destination supplied to Amanda was:
+
+```
+https://workstreammanagera2arouteracct.services.ai.azure.com/api/projects/workstreammanagera2arouterproj/agents/workstreammanagera2arouter/endpoint/protocols/activityprotocol?api-version=2025-11-15-preview
+```
+
+### Both authorization schemes now persisted on the agent object
+
+Amanda explicitly instructed: "you need to patch authorizat on agent object but
+add BotServiceTenant and keep entra".
+
+The live pre-patch object contained only `BotServiceTenant`. Added Entra and
+retained BotServiceTenant. The final ordered scheme list is:
+
+```json
+[
+  { "type": "Entra" },
+  { "type": "BotServiceTenant" }
+]
+```
+
+Read-back confirmed both schemes persisted. The activity protocol and its
+configuration, publication approval, version 3, `@latest` / 100% routing, agent
+state, blueprint identity, and default instance identity were preserved. No
+container image was rebuilt, no new version or bot was created, and no additional
+RBAC or Graph grants were made. The earlier five-scope repair remains intact.
+
+### Verification limit: direct synthetic calls now return 500
+
+The missing-Entra rejection no longer occurs for the diagnostic caller, but the
+direct Entra-authenticated Activity probes now return HTTP 500 before any new
+container activity is visible:
+
+| UTC | Variant | Foundry request ID |
+|---|---|---|
+| 11:04:04 | Versioned Activity URL after adding Entra | `1abcb7f7688136396e9a806becdb7cf6` |
+| 11:09:32 | Documented `2025-05-15-preview` Activity URL with hosted-agent feature headers | `4fa52904534bc7bcc3b451abb74e668e` |
+| 11:14:24 | Entra first, BotServiceTenant retained; timestamped blank Activity with numeric ID | `47a837e79ec2bb0561dbb1b90c18ce39` |
+
+The last APIM request ID is `2e36c62e-29e3-484c-a8f8-1265201c32d7`.
+The caller inherits Foundry User, Foundry Project Manager, and other Azure roles
+from the subscription. The documented Entra scheme has no additional mandatory
+constructor parameters; no header-based isolation or permissive fallback was added.
+
+No runtime request, trace, or exception after 11:02 UTC was visible at the final
+check. These 500s are from direct synthetic requests, NOT a verified real Teams
+request after the patch. Do not claim the user has hit this new 500 or that the
+whole Teams interaction is fixed without a new real-channel observation.
+
+### Additional diagnostics retained
+
+Enabled project-level setting `payments-delivery-incident` for Audit, Trace, and
+AllMetrics into the existing log workspace. Also enabled RequestResponse in the
+existing account-level incident setting; the GET had materialized that category
+as disabled, so explicitly setting `enabled=true` was required.
+
+Platform records now ingest. They include ordinary portal operations and our
+diagnostic POSTs, so a record at a similar time is not automatically a Teams
+delivery: the 10:34 audit record was `ListKey`, not an agent invocation.
+
+No new fixed-cost monitoring resource was created. These settings add usage-based
+log ingestion (approximately $3/GB); the existing workspace retains 30 days.
+
+### FOR AMANDA: current state after authorization patch
+
+- Both requested authorization schemes are saved on `workstreammanagera2arouter`.
+- The five-scope Agent Tools repair is independently runtime-verified.
+- A real Payments reply AFTER the dual-authorization patch remains unverified;
+  direct synthetic invocation is currently blocked by the 500 responses above.
+- Before the next provision, review the target sample's
+  `scripts\agent-creation-script.ps1`: its current endpoint PATCH writes a
+  singleton `AGENT_ENDPOINT_AUTH_SCHEME` (default BotServiceTenant), so a future
+  provision can remove Entra again. This task changed the live agent object,
+  not the deployment script or environment.
+- Artifact: `C:\Users\fosteramanda\Code-Samples\foundry-samples-ado\STATE.md`.
+
 ## autopilotrouter becomes the Novartis Agentic Colleague (v3, v4)
 
 Amanda: port routines, meetings and everything added to the workstream manager into the
@@ -3182,3 +3284,42 @@ in this codebase, not a one-off.
 `autopilotrouter` **v4, 100%**, publish approved, `BotServiceTenant`. The workstream
 manager has the same ConversationStateStore fix committed but **not yet deployed** — it is
 still on v30 and will pick it up on its next build.
+
+## Correction: role assignments are NOT what a new agent instance needs
+
+Earlier this session the leading suspicion for why "Workstream Manager Payments" never
+started was that `agent-creation-script.ps1` grants Cognitive Services User and Storage
+Table Data Contributor only to the **default** instance identity, so an instance Amanda
+creates afterwards holds none of them. **That hypothesis is wrong.** Measured:
+
+| Instance | Foundry account | Storage | Works? |
+|---|---|---|---|
+| `autopilotrouter` default (`20dec68d`) | Cognitive Services User | Storage Table Data Contributor | — |
+| `autopilotrouter` the one Amanda actually chats with (`a37c4bb0`) | **NONE** | **NONE** | **YES** |
+| fork "Workstream Manager Payments" (`5090f898`) | NONE | NONE | no |
+
+The instance Amanda uses every day holds **no Azure RBAC at all** and works perfectly. The
+container authenticates to Azure OpenAI and storage as the agent VERSION's identity; the
+per-instance identity is used for the agent-user Graph token, which is authorised by
+blueprint scopes, not by Azure role assignments. So the two broken/working cases are not
+separated by RBAC and the Payments failure remains unexplained.
+
+### What actually is per-instance
+
+- **The agent user** — a new directory account, new Teams display name, new mailbox and
+  calendar. This is what gets invited to meetings.
+- **The DM allowlist.** `AccessControlService` builds its key as
+  `{TenantId:D}:{AgentUserId:D}`, so every instance has its **own** allowlist and a new one
+  starts empty. Until someone is added, only the resolved manager can DM it — which is the
+  right default, and is why a fresh instance can look "broken" to a colleague while
+  answering its manager normally.
+- **Conversation state and meeting-registry rows**, partitioned the same way.
+
+### What is NOT per-instance
+
+Code, tools, prompt and toolbox are per-AGENT: all instances share the deployed version, so
+a new instance on the same blueprint immediately has everything in v4 with no extra work.
+Blueprint Graph scopes are inherited, so no new consent either.
+
+**Net answer: a new instance on the same blueprint needs no setup.** Create it, chat to it
+as its manager, and add colleagues to its allowlist through the agent itself.
