@@ -56,8 +56,19 @@ public class ConversationStateStore
 
         // Reuse the work-items table account: same lifetime, same per-instance RBAC grant, and
         // one less thing to provision. The table name is separately configurable.
-        var tableServiceUri = configuration["ConversationStateTableServiceUri"]
-            ?? configuration["WorkItemsTableServiceUri"];
+        //
+        // Coalesce on whitespace, NOT on null. appsettings.json ships
+        // "ConversationStateTableServiceUri": "", and an empty string is not null, so `??`
+        // never fell through to the work-items account. The result was that a deployment which
+        // HAD a table still logged "no table URI configured" and silently dropped conversation
+        // continuity on every container restart.
+        var tableServiceUri = configuration["ConversationStateTableServiceUri"];
+
+        if (string.IsNullOrWhiteSpace(tableServiceUri))
+        {
+            tableServiceUri = configuration["WorkItemsTableServiceUri"];
+        }
+
         var tableName = configuration["ConversationStateTableName"] ?? "conversationstate";
 
         if (string.IsNullOrWhiteSpace(tableServiceUri))
