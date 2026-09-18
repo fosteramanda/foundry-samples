@@ -19,6 +19,13 @@
 # Fine-tuning samples — individually owned by their authors until a team slug exists.
 /samples/python/finetuning/schemaraft-dst/ @mikeslinmsft
 
+# Voice Agents samples — individually owned until a team slug exists.
+/samples/csharp/VoiceAgents/      @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/java/voice-agents/       @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/javascript/voice-agents/ @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/python/voice-agents/     @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/typescript/voice-agents/ @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+
 #### Partner / external collaborator sample areas #######################################################
 # Partners are outside collaborators (not org members). Each entry is the source of truth for that
 # partner. Update alongside step 3 of the onboarding process in docs/external-contributions.md.
