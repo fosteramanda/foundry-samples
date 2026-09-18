@@ -221,19 +221,23 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         if (turnContext.Activity.ChannelId == "msteams")
         {
             // A scheduled run has no activity id. It is not a live chat turn: nobody is waiting,
-            // and whatever it returns is NOT delivered — the reply to Teams is rejected 401 on
-            // the way back. So the interactive framing below is exactly wrong here. It tells the
+            // and whatever it RETURNS is not delivered — the automatic reply is rejected on the
+            // way back. So the interactive framing below is exactly wrong here. It tells the
             // model its answer is delivered automatically and forbids it from looking for a send
-            // tool, which on a scheduled run means it composes the output, calls no mail tool,
-            // and the result reaches nobody.
+            // tool, which on a scheduled run means it composes the output, calls no tool, and the
+            // result reaches nobody.
+            //
+            // Note it must SEND, not that it cannot post to Teams. Both mail and the Teams tools
+            // (SendMessageToChat) work from a scheduled run; only the automatic reply does not.
             var isScheduledRun = string.IsNullOrEmpty(turnContext.Activity.Id);
 
             incomingText = isScheduledRun
-                ? "This is a scheduled run, not a live chat turn. Nobody is watching this chat "
-                  + "and your reply is NOT delivered anywhere — a scheduled run cannot post into "
-                  + "Teams. If the instruction says to email the result, you MUST call your mail "
-                  + "tool to send it; that is the only way the output reaches anyone. Send it "
-                  + "once, then stop.\n"
+                ? "This is a scheduled run, not a live chat turn. Nobody is watching, and your "
+                  + "reply is NOT delivered anywhere on its own. You MUST send the output with a "
+                  + "tool or it reaches no one: use your mail tool to email it, or SendMessageToChat "
+                  + "to post it into a chat you belong to — posting is the only way to @mention "
+                  + "someone so they are really pinged. Follow whatever the instruction says, send "
+                  + "it once, then stop.\n"
                   + $"Instruction: {incomingText}"
 
                 // The chat id is context, not an instruction to deliver anything. Phrasing it as
