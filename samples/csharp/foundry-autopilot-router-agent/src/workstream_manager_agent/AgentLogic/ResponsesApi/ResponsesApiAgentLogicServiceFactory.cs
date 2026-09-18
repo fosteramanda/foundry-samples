@@ -22,6 +22,52 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
 {
     private static readonly HttpClient HttpClient = new();
 
+    /// <summary>
+    /// Decodes the non-sensitive diagnostic claims of a JWT: which identity the token actually
+    /// represents, and which scopes it carries.
+    ///
+    /// Worth the few lines. A token that silently lacks a scope produces failures that look like
+    /// anything except a permission problem — a group chat reporting "missing approvals", an
+    /// empty Planner board, a toolbox quarantined on preflight. Logging scp once at acquisition
+    /// turns a multi-hour investigation into reading one line.
+    /// </summary>
+    private static string DescribeTokenClaims(string jwt)
+    {
+        try
+        {
+            var parts = jwt.Split('.');
+
+            if (parts.Length < 2)
+            {
+                return "claims=(not a JWT)";
+            }
+
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + ((4 - (payload.Length % 4)) % 4), '=');
+
+            using var doc = JsonDocument.Parse(Convert.FromBase64String(payload));
+            var root = doc.RootElement;
+
+            string Claim(string name) =>
+                root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+                    ? v.GetString() ?? ""
+                    : "";
+
+            var upn = Claim("upn");
+
+            if (string.IsNullOrEmpty(upn))
+            {
+                upn = Claim("unique_name");
+            }
+
+            return $"oid={Claim("oid")} upn={upn} idtyp={Claim("idtyp")} appid={Claim("appid")} scp=[{Claim("scp")}] roles=[{Claim("roles")}]";
+        }
+        catch (Exception)
+        {
+            return "claims=(undecodable)";
+        }
+    }
+
     public async Task<IAgentLogicService> CreateAsync(AgentMetadata agent, ITurnContext turnContext, UserAuthorization userAuthorization)
         => await CreateForAgentAsync(agent);
 
@@ -74,7 +120,10 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
             var graphTokenCredential = new AgentTokenCredential(tokenHelper, agent);
             var graphToken = await graphTokenCredential.GetTokenAsync(graphRequestContext, CancellationToken.None);
             graphAccessToken = graphToken.Token;
-            logger.LogInformation("Acquired Graph token for chat-members lookup. Expires at: {Expiration}", graphToken.ExpiresOn);
+            logger.LogInformation(
+                "Acquired Graph token. Expires at: {Expiration}. {Claims}",
+                graphToken.ExpiresOn,
+                DescribeTokenClaims(graphToken.Token));
         }
         catch (Exception ex)
         {
