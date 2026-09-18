@@ -102,7 +102,7 @@ public class RoutineToolHandler
                         "cron_expression": { "type": "string", "description": "5-field cron: minute hour day-of-month month day-of-week. Weekdays at 07:30 is '30 7 * * 1-5'. Every day at 09:00 is '0 9 * * *'. Fridays at 15:00 is '0 15 * * 5'." },
                         "time_zone": { "type": "string", "description": "IANA time zone the cron is interpreted in, e.g. 'America/Los_Angeles' for Pacific, 'America/New_York' for Eastern, 'UTC'. Always set this from what the user said; never assume UTC when they named a local time." },
                         "instruction": { "type": "string", "description": "The instruction to give yourself when the routine fires, written as if the user had just typed it. Be specific about the output format so recurring posts stay consistent, e.g. 'Post a short summary of what is open and anything waiting on someone. One line per item.'" },
-                        "delivery": { "type": "string", "enum": ["chat", "email", "both"], "description": "Where the scheduled run sends its output. Use 'email' — it is the default and the only delivery that currently works. A scheduled run cannot post into the chat: the message is rejected on the way back and the user sees nothing. Only set 'chat' or 'both' if the user insists after being told." },
+                        "delivery": { "type": "string", "enum": ["chat", "email", "both"], "description": "Where the scheduled run sends its output. Use 'chat' when people need to be @mentioned about open items - only a Teams post can genuinely ping someone. Use 'email' for a briefing someone just reads, or when the agent is not a member of the target chat. 'both' sends each. Default is 'email'." },
                         "recipient": { "type": "string", "description": "Email address for email delivery. LEAVE THIS EMPTY when the user says 'me', 'my', or otherwise means themselves — it is resolved automatically from who is speaking. Only set it when they name a different person's address explicitly." }
                     },
                     "required": ["name", "description", "cron_expression", "time_zone", "instruction"],
@@ -193,11 +193,10 @@ public class RoutineToolHandler
         var timeZone = GetString(args, "time_zone");
         var instruction = GetString(args, "instruction");
         var delivery = GetString(args, "delivery");
-        // Default to email, not chat. A scheduled run's reply to Teams is rejected with 401 on
-        // the way back (both ReplyToActivity and SendToConversation, measured), so a
-        // chat-delivery routine fires on time, does the work, and delivers nothing — while the
-        // platform still records the run as Finished. Email goes out through the mail tool and
-        // never touches that path, so it is the only delivery that actually reaches the user.
+        // Default to email. Both deliveries work, but email needs no chat membership and is the
+        // safer default when the request does not say. Chat delivery goes through the Teams tools
+        // (SendMessageToChat), NOT through the automatic reply — that reply is rejected on a
+        // scheduled run, which is why the stored instruction always names a send tool explicitly.
         delivery = string.IsNullOrWhiteSpace(delivery) ? "email" : delivery.Trim().ToLowerInvariant();
         var recipient = GetString(args, "recipient");
 
@@ -337,17 +336,21 @@ public class RoutineToolHandler
             "email" =>
                 $"{instruction}\n\n"
                 + $"Deliver this by email to {recipient} using your mail tools. Write a clear subject line. "
-                + "Do not post the content in this chat — email is the only delivery for this routine. "
                 + "If there is nothing to report, send nothing at all rather than an empty email.",
 
             "both" =>
                 $"{instruction}\n\n"
-                + $"Post this in the chat AND email the same content to {recipient} using your mail tools. "
-                + "If there is nothing to report, do neither.",
+                + "Post this into the chat using SendMessageToChat, passing anyone with an open item "
+                + "in the mentions argument so they are really pinged, AND email the same content to "
+                + $"{recipient} using your mail tools. If there is nothing to report, do neither.",
 
             _ =>
                 $"{instruction}\n\n"
-                + "Post this in the chat. If there is nothing to report, post nothing.",
+                + "Post this into the chat using SendMessageToChat. Your automatic reply is not "
+                + "delivered on a scheduled run, so you must call the tool. Pass anyone with an open "
+                + "item in the mentions argument so they are genuinely pinged rather than just named. "
+                + "If SendMessageToChat fails, say why in an email instead. If there is nothing to "
+                + "report, post nothing.",
         };
     }
 

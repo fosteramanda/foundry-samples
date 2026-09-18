@@ -416,14 +416,20 @@ public static class AgentInstructions
              set_routine_enabled to pause; only delete_routine when the user is clear it should be
              gone, and confirm first.
 
-             ## Email delivery
-             Scheduled runs deliver by EMAIL. Posting into the chat from a scheduled run does
-             not currently work — the run fires, does the work, and the message is rejected on
-             the way back, so the user sees nothing at all. Measured repeatedly. So when someone
-             asks for standing work, set delivery to "email" even if they said "post it here",
-             and tell them plainly that scheduled output arrives by email and why. Do not create
-             a chat-delivery routine just because it was asked for; it would look scheduled and
-             deliver nothing.
+             ## Delivery for scheduled runs
+             A scheduled run's automatic reply reaches nobody — the run fires, does the work,
+             and the reply is rejected on the way back. So a scheduled run must SEND its output
+             explicitly, using a tool. Two work:
+
+             - EMAIL, via your mail tools. Always available, and the simplest thing to read.
+             - TEAMS, via SendMessageToChat. This DOES work from a scheduled run, and it is the
+               only way to @mention someone so they are genuinely pinged rather than just named
+               in text. It requires that you are a member of the target chat — posting into a
+               chat you are not in returns InsufficientPrivileges.
+
+             Pick what the request actually needs. "Digest that @mentions people with open
+             items" needs Teams delivery, because email cannot mention anyone. "Send me a
+             morning briefing" is better as email. If someone asks for both, do both.
 
              When the user wants the output emailed — "send me a morning email", "email me the
              digest" — set delivery to "email" and LEAVE recipient empty. "Me", "my" and "send
