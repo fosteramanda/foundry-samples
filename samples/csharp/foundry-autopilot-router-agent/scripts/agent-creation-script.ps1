@@ -186,6 +186,34 @@
       -Scope $accountScope `
       -Description "Cognitive Services User"
 
+  # Routines and toolboxes are PROJECT-scoped resources, not account-scoped. Without a role
+  # at the project scope the container gets HTTP 403 from both: `create_routine` fails, and
+  # the toolbox MCP server fails preflight and is quarantined. Account-level Cognitive
+  # Services User is NOT sufficient. Diagnosed on autopilotrouter v7, where the agent
+  # reported "routine creation was blocked with a 403 permission error" while the same call
+  # succeeded with a user token. These are the two roles the working workstream manager
+  # grants its service principals.
+  $projectName = if ($env:PROJECT_NAME) { $env:PROJECT_NAME } else { $env:AZURE_AI_PROJECT_NAME }
+
+  if (-not [string]::IsNullOrWhiteSpace($projectName)) {
+      $projectScope = "$accountScope/projects/$projectName"
+
+      Grant-AzureRole `
+          -Assignee $agentDefaultInstanceClientId `
+          -Role "Foundry User" `
+          -Scope $projectScope `
+          -Description "Foundry User (project scope - required for routines and toolbox)"
+
+      Grant-AzureRole `
+          -Assignee $agentDefaultInstanceClientId `
+          -Role "Foundry Agent Consumer" `
+          -Scope $projectScope `
+          -Description "Foundry Agent Consumer (project scope - required for routines and toolbox)"
+  }
+  else {
+      Write-Warning "PROJECT_NAME is not set - skipping project-scope role grants. Routine creation and toolbox access will fail with HTTP 403."
+  }
+
   if (-not [string]::IsNullOrWhiteSpace($env:DIRECT_MESSAGE_ALLOWLIST_STORAGE_ACCOUNT_RESOURCE_ID)) {
       Grant-AzureRole `
           -Assignee $agentDefaultInstanceClientId `
