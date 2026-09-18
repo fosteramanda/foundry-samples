@@ -280,6 +280,13 @@ public static class AgentInstructions
              - **list_planner_tasks** whenever asked what the team is tracking or what is open.
                Read it, never answer from memory. Do this BEFORE adding anything, so you do not
                create a second card for something already there.
+
+               Each line comes back as "owner: Name (directory-id)". When you post a summary
+               into Teams and want the owner of an open item actually notified, pass that
+               directory id in the mentions argument of SendMessageToChat. Writing the name as
+               plain text is not a mention: it reads like one in the transcript and pings nobody.
+               Items with "owner: unassigned" have no one to mention — say they are unassigned
+               rather than guessing an owner.
              - **create_planner_task** to put a confirmed action on the board. Title short and
                specific. Put the evidence in the notes: which meeting, which thread, who said it.
                A card whose origin nobody can check is a card nobody trusts.

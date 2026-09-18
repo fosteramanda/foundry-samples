@@ -255,6 +255,7 @@ public class PlannerToolHandler
         }
 
         var lines = new List<string>();
+        var nameCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var t in tasks)
         {
@@ -269,7 +270,8 @@ public class PlannerToolHandler
             var due = t?["dueDateTime"]?.GetValue<string>();
             var state = percent >= 100 ? "done" : percent > 0 ? "in progress" : "not started";
             var dueText = string.IsNullOrWhiteSpace(due) ? string.Empty : $" | due {due[..Math.Min(10, due.Length)]}";
-            lines.Add($"- {titleText} | {state}{dueText}");
+            var ownerText = await DescribeAssigneesAsync(t?["assignments"] as JsonObject, nameCache);
+            lines.Add($"- {titleText} | {state}{dueText}{ownerText}");
         }
 
         if (lines.Count == 0)
@@ -278,6 +280,49 @@ public class PlannerToolHandler
         }
 
         return $"{lines.Count} open task(s) on the board:\n{string.Join("\n", lines)}";
+    }
+
+    /// <summary>
+    /// Renders a task's assignees as "owner: Name (directory-id)".
+    ///
+    /// The id is included deliberately. Naming an owner in text is not enough to act on them: a
+    /// digest that genuinely pings people needs the directory id to pass to the mentions argument
+    /// of SendMessageToChat. Without it the model can only write the name as plain text, which
+    /// looks like a mention in the transcript and notifies nobody — the failure is invisible
+    /// exactly where it matters.
+    /// </summary>
+    private async Task<string> DescribeAssigneesAsync(JsonObject? assignments, Dictionary<string, string> nameCache)
+    {
+        if (assignments == null || assignments.Count == 0)
+        {
+            return " | owner: unassigned";
+        }
+
+        var owners = new List<string>();
+
+        foreach (var assignment in assignments)
+        {
+            var id = assignment.Key;
+
+            if (!nameCache.TryGetValue(id, out var name))
+            {
+                name = await ResolveUserDisplayNameAsync(id) ?? id;
+                nameCache[id] = name;
+            }
+
+            owners.Add($"{name} ({id})");
+        }
+
+        return $" | owner: {string.Join(", ", owners)}";
+    }
+
+    private async Task<string?> ResolveUserDisplayNameAsync(string userId)
+    {
+        var (ok, body, _) = await SendGraphAsync(HttpMethod.Get, $"users/{userId}?$select=displayName");
+
+        return ok
+            ? JsonNode.Parse(body ?? "{}")?["displayName"]?.GetValue<string>()
+            : null;
     }
 
     private async Task<string> CompleteTaskAsync(JsonNode? args)
