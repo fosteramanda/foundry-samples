@@ -22,9 +22,7 @@ The graph state declares three channels:
 
 Routing out of `await_approval` is done by returning a [`Command(goto=...)`](https://langchain-ai.github.io/langgraph/how-tos/command/) instead of static edges, so the same node can finalize, loop, or stay paused depending on the resume value.
 
-State is persisted by an `InMemorySaver` checkpointer keyed by the `conversation.id` from the Responses request, so follow-up requests continue the paused run. See [main.py](src/langgraph-human-in-the-loop-responses/main.py) for the full implementation.
-
-> **Production note.** `InMemorySaver` keeps the checkpoint in process memory only — a container restart loses paused runs. Production HITL agents should swap in a durable checkpointer (Cosmos DB, Redis, or a Foundry-managed store).
+State is persisted by `FoundryCheckpointSaver` and keyed by the `conversation.id` from the Responses request, so follow-up requests continue the paused run even after a process restart. The saver uses Foundry State Store when hosted and a local file-backed store during local development. See [main.py](src/langgraph-human-in-the-loop-responses/main.py) for the full implementation.
 
 ### Review decisions
 
@@ -41,7 +39,7 @@ The Responses host emits two paired output items for each pause, both keyed by t
 
 ### Agent Hosting
 
-The compiled graph is hosted with `ResponsesHostServer`, which exposes the OpenAI-compatible Responses endpoint at `/responses` and handles conversation history, interrupt serialization, and streaming lifecycle events automatically.
+The graph factory is registered in `langgraph.json` and loaded by `langchain_azure_ai.agents.hosting.run`, which exposes the OpenAI-compatible Responses endpoint at `/responses` and handles conversation history, interrupt serialization, and streaming lifecycle events automatically.
 
 ## Option 1: Azure Developer CLI (`azd`)
 
@@ -189,7 +187,7 @@ When the agent pauses with an approval request, the Inspector renders an interac
 ### Or run manually, then open the Inspector
 
 1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `python main.py` (listens on `http://localhost:8088`).
+2. Start the agent: `python -m langchain_azure_ai.agents.hosting.run --protocol responses` (listens on `http://localhost:8088`).
 3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
 
 ### Deploy to Foundry

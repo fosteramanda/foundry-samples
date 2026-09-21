@@ -4,12 +4,27 @@
 # Each contributing team owns their sample paths for review routing. See CONTRIBUTING.md for setup guide.
 /samples/python/hosted-agents/ @microsoft-foundry/hosted-agents
 /samples/csharp/hosted-agents/ @microsoft-foundry/hosted-agents
+/.azure-pipelines/hosted-agent-tests/ @microsoft-foundry/hosted-agents
+/.azure-pipelines/hosted-agents-samples-ci.yml @microsoft-foundry/hosted-agents
+/.azure-pipelines/scripts/hosted-agents/ @microsoft-foundry/hosted-agents
+/.azure-pipelines/scripts/hosted-agent-samples-ci-skiplist @microsoft-foundry/hosted-agents
+/.azure-pipelines/scripts/hosted-agent-samples-code-ci-skiplist @microsoft-foundry/hosted-agents
 
 # Foundry Local samples — replace @microsoft-foundry/foundry-local with the actual team slug once created.
 /samples/csharp/foundry-local/     @microsoft-foundry/foundry-local
 /samples/javascript/foundry-local/ @microsoft-foundry/foundry-local
 /samples/python/foundry-local/     @microsoft-foundry/foundry-local
 /samples/rust/foundry-local/       @microsoft-foundry/foundry-local
+
+# Fine-tuning samples — individually owned by their authors until a team slug exists.
+/samples/python/finetuning/schemaraft-dst/ @mikeslinmsft
+
+# Voice Agents samples — individually owned until a team slug exists.
+/samples/csharp/VoiceAgents/      @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/java/voice-agents/       @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/javascript/voice-agents/ @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/python/voice-agents/     @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
+/samples/typescript/voice-agents/ @goergenj @xitzhang @rhurey @dargilco @glharper @howieleung @kingernupur @nick863 @trangevi @bobogogo1990 @ganeshyb @glecaros @jpalvarezl @kaylieee @guotuofeng @yulin-li
 
 #### Partner / external collaborator sample areas #######################################################
 # Partners are outside collaborators (not org members). Each entry is the source of truth for that
@@ -92,6 +107,7 @@
 /samples/python/foundry-local/tutorial-voice-to-text/src/app.py @microsoft-foundry/AI-Platform-Docs
 /samples/python/foundry-local/web-server/src/app.py @microsoft-foundry/AI-Platform-Docs
 /samples/python/foundry-models/model-router/model-router-chat-completions-observability.py @microsoft-foundry/AI-Platform-Docs
+/samples/python/foundry-models/model-router/model-router-chat-completions-session-affinity.py @microsoft-foundry/AI-Platform-Docs
 /samples/python/foundry-models/model-router/model-router-chat-completions.py @microsoft-foundry/AI-Platform-Docs
 /samples/python/foundry-models/model-router/model-router-foundry-responses.py @microsoft-foundry/AI-Platform-Docs
 /samples/python/quickstart/chat-with-agent/quickstart-chat-with-agent.py @microsoft-foundry/AI-Platform-Docs

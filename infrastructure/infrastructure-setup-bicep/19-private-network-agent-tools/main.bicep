@@ -129,6 +129,15 @@ param existingAzureCosmosDBAccountResourceId string = ''
 @description('The Microsoft Fabric Workspace full ARM Resource ID. Optional — enables Fabric private link connectivity.')
 param existingFabricWorkspaceResourceId string = ''
 
+@description('Deploy a private Key Vault for customer CA certificates. Disable only when private CA trust will not be used.')
+param enableKeyVault bool = true
+
+@description('Optional name for a new Key Vault. When empty, a deterministic name is generated.')
+param keyVaultName string = ''
+
+@description('Optional existing Key Vault resource ID. When provided, the template uses this vault instead of creating one. The vault must use Azure RBAC authorization.')
+param existingKeyVaultResourceId string = ''
+
 @description('Enable Azure Container Registry with Private Endpoint. When true, creates an ACR (Premium SKU) with a PE in the private endpoints subnet.')
 param enableContainerRegistry bool = true
 
@@ -149,6 +158,7 @@ param existingDnsZones object = {
   'privatelink.documents.azure.com': { subscriptionId: '', resourceGroup: '' }
   'privatelink.fabric.microsoft.com': { subscriptionId: '', resourceGroup: '' }
   'privatelink.azurecr.io': { subscriptionId: '', resourceGroup: '' }
+  'privatelink.vaultcore.azure.net': { subscriptionId: '', resourceGroup: '' }
 }
 
 @description('Object mapping Azure Monitor private DNS zone names to an existing zone subscription/resource group, or empty strings to create it. Use to bring your own centralized Private DNS Zones (e.g. an Azure Landing Zone) for agent tracing.')
@@ -192,6 +202,22 @@ var storageParts = split(existingAzureStorageAccountResourceId, '/')
 var azureStorageSubscriptionId = storagePassedIn ? storageParts[2] : subscription().subscriptionId
 var azureStorageResourceGroupName = storagePassedIn ? storageParts[4] : resourceGroup().name
 
+var useExistingKeyVault = enableKeyVault && existingKeyVaultResourceId != ''
+var existingKeyVaultParts = split(existingKeyVaultResourceId, '/')
+var generatedKeyVaultName = 'kv-${take(aiServices, 14)}-${uniqueSuffix}'
+var effectiveKeyVaultName = !enableKeyVault
+  ? ''
+  : useExistingKeyVault
+    ? existingKeyVaultParts[8]
+    : empty(keyVaultName) ? generatedKeyVaultName : keyVaultName
+var keyVaultSubscriptionId = useExistingKeyVault ? existingKeyVaultParts[2] : subscription().subscriptionId
+var keyVaultResourceGroupName = useExistingKeyVault ? existingKeyVaultParts[4] : resourceGroup().name
+var effectiveKeyVaultResourceId = !enableKeyVault
+  ? ''
+  : useExistingKeyVault
+    ? existingKeyVaultResourceId
+    : resourceId('Microsoft.KeyVault/vaults', effectiveKeyVaultName)
+
 var vnetParts = split(existingVnetResourceId, '/')
 var vnetSubscriptionId = existingVnetPassedIn ? vnetParts[2] : subscription().subscriptionId
 var vnetResourceGroupName = existingVnetPassedIn ? vnetParts[4] : resourceGroup().name
@@ -223,6 +249,17 @@ module vnet 'modules-network-secured/network-agent-vnet.bicep' = {
   }
 }
 
+// Creates the default private CA certificate store. Existing vaults are referenced
+// without modification and are expected to use Azure RBAC authorization.
+module keyVault 'modules-network-secured/key-vault.bicep' = {
+  name: 'key-vault-${uniqueSuffix}-deployment'
+  params: {
+    enabled: enableKeyVault && !useExistingKeyVault
+    keyVaultName: effectiveKeyVaultName
+    location: location
+  }
+}
+
 /*
   Create the AI Services account and gpt-4o model deployment
 */
@@ -239,6 +276,19 @@ module aiAccount 'modules-network-secured/ai-account-identity.bicep' = {
     modelCapacity: modelCapacity
     agentSubnetId: vnet.outputs.agentSubnetId
   }
+}
+
+// Foundry resolves account-level trustedCertificates through the account identity.
+module keyVaultRoleAssignment 'modules-network-secured/key-vault-role-assignment.bicep' = if (enableKeyVault) {
+  name: 'key-vault-ra-${uniqueSuffix}-deployment'
+  scope: resourceGroup(keyVaultSubscriptionId, keyVaultResourceGroupName)
+  params: {
+    keyVaultName: effectiveKeyVaultName
+    accountPrincipalId: aiAccount.outputs.accountPrincipalId
+  }
+  dependsOn: [
+    keyVault
+  ]
 }
 /*
   Inline existence checks (replaces the previous validate-existing-resources.bicep module,
@@ -305,9 +355,13 @@ module privateEndpointAndDNS 'modules-network-secured/private-endpoint-and-dns.b
     storageAccountResourceGroupName: azureStorageResourceGroupName // Resource Group for Storage Account
     storageAccountSubscriptionId: azureStorageSubscriptionId // Subscription ID for Storage Account
     existingDnsZones: existingDnsZones
+    keyVaultResourceId: effectiveKeyVaultResourceId
   }
   // Dependencies on `aiDependencies` and `vnet` are implicit through param references
   // (e.g. aiAccount.outputs, aiDependencies.outputs.*, vnet.outputs.*).
+  dependsOn: [
+    keyVault
+  ]
 }
 
 // Optional: Azure Container Registry with Private Endpoint
@@ -498,3 +552,6 @@ module applicationInsightsRoleAssignment 'modules-network-secured/application-in
     projectPrincipalId: aiProject.outputs.projectPrincipalId
   }
 }
+
+output privateCaKeyVaultName string = effectiveKeyVaultName
+output privateCaKeyVaultResourceId string = effectiveKeyVaultResourceId

@@ -18,6 +18,9 @@ param existingAccountResourceId string = ''
 @description('Optional. When true, skip the model deployment. Recommended when reusing an existing account that already has the required model deployments.')
 param skipModelDeployment bool = false
 
+@description('Optional. When true (default), disables API-key (local) authentication on the account. Set to false to enable API-key auth.')
+param disableLocalAuth bool = true
+
 var useExistingAccount = !empty(existingAccountResourceId)
 var existingParts = split(existingAccountResourceId, '/')
 var existingAccountSub = useExistingAccount ? existingParts[2] : subscription().subscriptionId
@@ -52,7 +55,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if 
         useMicrosoftManagedNetwork: false
       }
       ] : null )
-    disableLocalAuth: false
+    disableLocalAuth: disableLocalAuth
   }
 }
 

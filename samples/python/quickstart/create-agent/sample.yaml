@@ -3,3 +3,15 @@ description: Basic quickstart sample demonstrating Microsoft Foundry agent creat
 
 build: "pip install -r requirements.txt"
 validate: "python -m py_compile *.py"
+live_service_validation:
+  command: "python quickstart-create-agent.py"
+  required_env:
+    - FOUNDRY_PROJECT_ENDPOINT
+    - MODEL_DEPLOYMENT
+  substitutions:
+    - file: quickstart-create-agent.py
+      replacements:
+        - placeholder: "your_project_endpoint"
+          env: FOUNDRY_PROJECT_ENDPOINT
+        - placeholder: "gpt-5-mini"
+          env: MODEL_DEPLOYMENT

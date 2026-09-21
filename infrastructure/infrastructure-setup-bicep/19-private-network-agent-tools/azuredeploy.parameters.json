@@ -68,6 +68,15 @@
     "existingFabricWorkspaceResourceId": {
       "value": ""
     },
+    "enableKeyVault": {
+      "value": true
+    },
+    "keyVaultName": {
+      "value": ""
+    },
+    "existingKeyVaultResourceId": {
+      "value": ""
+    },
     "existingPeSubnetResourceId": {
       "value": ""
     },
@@ -94,7 +103,9 @@
         "privatelink.search.windows.net":          { "subscriptionId": "", "resourceGroup": "" },
         "privatelink.blob.core.windows.net":       { "subscriptionId": "", "resourceGroup": "" },
         "privatelink.documents.azure.com":         { "subscriptionId": "", "resourceGroup": "" },
-        "privatelink.fabric.microsoft.com":        { "subscriptionId": "", "resourceGroup": "" }
+        "privatelink.azurecr.io":                  { "subscriptionId": "", "resourceGroup": "" },
+        "privatelink.fabric.microsoft.com":        { "subscriptionId": "", "resourceGroup": "" },
+        "privatelink.vaultcore.azure.net":         { "subscriptionId": "", "resourceGroup": "" }
       }
     }
   }

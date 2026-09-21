@@ -33,6 +33,8 @@ param storageName string
 param cosmosDBName string
 @description('The Microsoft Fabric Workspace full ARM Resource ID. Optional - leave empty to skip Fabric private endpoint.')
 param fabricWorkspaceResourceId string = ''
+@description('The Key Vault full ARM Resource ID. Optional - leave empty to skip the Key Vault private endpoint.')
+param keyVaultResourceId string = ''
 @description('Name of the Vnet')
 param vnetName string
 @description('Name of the Customer subnet')
@@ -75,6 +77,7 @@ var requiredDnsZones = {
   'privatelink.blob.${environment().suffixes.storage}': { subscriptionId: '', resourceGroup: '' }
   'privatelink.documents.azure.com': { subscriptionId: '', resourceGroup: '' }
   'privatelink.fabric.microsoft.com': { subscriptionId: '', resourceGroup: '' }
+  'privatelink.vaultcore.azure.net': { subscriptionId: '', resourceGroup: '' }
 }
 var effectiveDnsZones = union(requiredDnsZones, existingDnsZones)
 
@@ -103,6 +106,9 @@ resource cosmosDBAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' exis
 var fabricPassedIn = fabricWorkspaceResourceId != ''
 var fabricParts = split(fabricWorkspaceResourceId, '/')
 var fabricWorkspaceName = fabricPassedIn ? last(fabricParts) : ''
+var keyVaultEnabled = keyVaultResourceId != ''
+var keyVaultParts = split(keyVaultResourceId, '/')
+var keyVaultName = keyVaultEnabled ? last(keyVaultParts) : ''
 
 // Reference existing network resources
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
@@ -222,15 +228,33 @@ resource fabricPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' =
   }
 }
 
+/* -------------------------------------------- Key Vault Private Endpoint -------------------------------------------- */
+
+resource keyVaultPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = if (keyVaultEnabled) {
+  name: '${keyVaultName}-private-endpoint'
+  location: resourceGroup().location
+  properties: {
+    subnet: { id: peSubnet.id }
+    privateLinkServiceConnections: [
+      {
+        name: '${keyVaultName}-private-link-service-connection'
+        properties: {
+          privateLinkServiceId: keyVaultResourceId
+          groupIds: ['vault']
+        }
+      }
+    ]
+  }
+}
+
 /* -------------------------------------------- Private DNS Zones --------------------------------------------
 
-   This block used to declare 7 zones × 3 resources each (~150 lines). It is now a single
+   This block uses a single
    `for` loop over `existingDnsZones`, with one tiny sub-module (`private-dns-zone.bicep`)
    per zone. Per-PE DNS zone groups below look up zone IDs by zone name via `indexOf`.
 
-   To skip the optional Fabric zone when no Fabric workspace is provided, the corresponding
-   module call is disabled (`enabled: false`) instead of being filtered out — keeping the
-   array indices stable and `indexOf` lookups safe.
+   Optional service zones are disabled instead of being filtered out, keeping array indices
+   stable and `indexOf` lookups safe.
 */
 
 var aiServicesDnsZoneName = 'privatelink.services.ai.azure.com'
@@ -240,6 +264,7 @@ var aiSearchDnsZoneName = 'privatelink.search.windows.net'
 var storageDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
 var cosmosDBDnsZoneName = 'privatelink.documents.azure.com'
 var fabricDnsZoneName = 'privatelink.fabric.microsoft.com'
+var keyVaultDnsZoneName = 'privatelink.vaultcore.azure.net'
 
 var dnsZoneEntries = items(effectiveDnsZones)
 var dnsZoneKeys = map(dnsZoneEntries, e => e.key)
@@ -252,8 +277,9 @@ module dnsZones 'private-dns-zone.bicep' = [for (entry, i) in dnsZoneEntries: {
     existingSubscriptionId: entry.value.?subscriptionId ?? ''
     vnetId: vnet.id
     suffix: suffix
-    // Disable the Fabric zone when no Fabric workspace was supplied — saves a no-op zone.
-    enabled: entry.key == fabricDnsZoneName ? fabricPassedIn : true
+    enabled: entry.key == fabricDnsZoneName
+      ? fabricPassedIn
+      : entry.key == keyVaultDnsZoneName ? keyVaultEnabled : true
   }
 }]
 
@@ -265,6 +291,7 @@ var aiSearchDnsZoneId         = dnsZones[indexOf(dnsZoneKeys, aiSearchDnsZoneNam
 var storageDnsZoneId          = dnsZones[indexOf(dnsZoneKeys, storageDnsZoneName)].outputs.zoneId
 var cosmosDBDnsZoneId         = dnsZones[indexOf(dnsZoneKeys, cosmosDBDnsZoneName)].outputs.zoneId
 var fabricDnsZoneId           = fabricPassedIn ? dnsZones[indexOf(dnsZoneKeys, fabricDnsZoneName)].outputs.zoneId : ''
+var keyVaultDnsZoneId         = keyVaultEnabled ? dnsZones[indexOf(dnsZoneKeys, keyVaultDnsZoneName)].outputs.zoneId : ''
 
 // ---- DNS Zone Groups ----
 resource aiServicesDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
@@ -314,6 +341,16 @@ resource fabricDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups
   properties: {
     privateDnsZoneConfigs: [
       { name: '${fabricWorkspaceName}-dns-config', properties: { privateDnsZoneId: fabricDnsZoneId } }
+    ]
+  }
+}
+
+resource keyVaultDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = if (keyVaultEnabled) {
+  parent: keyVaultPrivateEndpoint
+  name: '${keyVaultName}-dns-group'
+  properties: {
+    privateDnsZoneConfigs: [
+      { name: '${keyVaultName}-dns-config', properties: { privateDnsZoneId: keyVaultDnsZoneId } }
     ]
   }
 }

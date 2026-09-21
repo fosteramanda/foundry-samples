@@ -1,6 +1,17 @@
+requiredVersions:
+  azd: '>=1.27.1'
+  extensions:
+    microsoft.foundry: '>=1.0.0-beta.1'
+
 name: foundry-a365
 
 hooks:
+  preprovision:
+    shell: pwsh
+    run: ./scripts/register-resource-providers.ps1
+    interactive: false
+    continueOnError: false
+
   postprovision:
     shell: pwsh
     run: ./scripts/post-provision.ps1

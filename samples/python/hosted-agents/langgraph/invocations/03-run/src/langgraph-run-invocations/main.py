@@ -1,6 +1,7 @@
 """Sample 03 - configuration-driven Invocations API host.
 
-Defines the same ``create_agent`` graph with ``MemorySaver`` as sample 01.
+Defines a minimal no-tool ``create_agent`` graph that uses durable Foundry
+checkpointing.
 The ``langchain_azure_ai.agents.hosting.run`` module loads the graph from
 ``langgraph.json`` and hosts it with the selected protocol.
 
@@ -31,13 +32,13 @@ from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+from langchain_azure_ai.agents.hosting import FoundryCheckpointSaver
 from langchain_azure_ai.callbacks.tracers import enable_auto_tracing
 
 load_dotenv()
@@ -73,4 +74,8 @@ def _configure_tracing() -> None:
 
 
 _configure_tracing()
-graph = create_agent(_build_chat_model(), tools=[], checkpointer=MemorySaver())
+graph = create_agent(
+    _build_chat_model(),
+    tools=[],
+    checkpointer=FoundryCheckpointSaver(user_isolation=True),
+)

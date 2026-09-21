@@ -13,13 +13,13 @@ Ensure you have the following installed:
 | Requirement | Description |
 |-------------|-------------|
 | [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) | Azure authentication and role management |
-| [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | Infrastructure deployment tool |
+| [Azure Developer CLI 1.27.1+](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) | Infrastructure and Toolbox deployment tool |
 | [Python 3.11+](https://www.python.org/downloads/) | Agent runtime (built and packaged inside the Docker image) |
 
 ### 🔐 Required Permissions
 
 - **Owner** role on the Azure subscription
-- **Foundry User** or **Cognitive Services User** role at subscription or resource group level
+- **Foundry User** role on the Foundry project
 - Access to a Microsoft 365 administrator who can approve and activate the agent blueprint
 
 ---
@@ -49,12 +49,20 @@ azd auth login --tenant-id <tenant-id>
 Before deploying, you can customize:
 - **Agent instructions:** [agent.py](./src/hello_world_a365_agent/agent.py) (the `AGENT_PROMPT` constant on `FoundryDigitalWorkerAgent`)
 - **MCP tools:** [ToolingManifest.json](./src/hello_world_a365_agent/ToolingManifest.json) - [Learn more](https://learn.microsoft.com/en-us/microsoft-agent-365/tooling-servers-overview)
+- **Foundry Toolbox:** [toolbox.yaml](./toolbox.yaml), which provides web search and code interpreter tools through one managed MCP endpoint
 
 #### Deploy
 
 ```powershell
+azd env set PUBLIC_NETWORK_ACCESS Enabled
 azd provision
 ```
+
+Provisioning creates the `foundry-autopilot-tools` Toolbox, stores its stable
+consumer endpoint in `TOOLBOX_ENDPOINT`, and injects that endpoint into the
+hosted agent container. The agent authenticates to the Toolbox with its managed
+identity. The existing Microsoft 365 MCP tools continue to use the signed-in
+user's delegated token.
 
 After deployment completes, inspect your resource values:
 
@@ -96,7 +104,7 @@ the Azure DevOps organization.
 
 ## 🏗️ Architecture Overview
 
-This deployment orchestrates four key components to create a fully functional Autopilot agent:
+This deployment orchestrates five key components to create a fully functional Autopilot agent:
 
 ### 1️⃣ Creating a Foundry Project
 
@@ -116,9 +124,35 @@ Creates the hosted agent using the Docker image above.
 
 📚 [Learn more about agent deployment](https://github.com/microsoft/container_agents_docs?tab=readme-ov-file#step-2-deploy-agent)
 
-### 4️⃣ Publishing to Your Organization
+### 4️⃣ Creating a Foundry Toolbox
+
+Creates `foundry-autopilot-tools` with web search and code interpreter tools,
+then stores its consumer endpoint for the hosted agent.
+
+### 5️⃣ Publishing to Your Organization
 
 Publishes the agent to Microsoft 365 via Foundry
+
+### Using Foundry Toolbox
+
+The Toolbox defined in [toolbox.yaml](./toolbox.yaml) exposes two managed tools:
+
+- **Web search** for current public information.
+- **Code interpreter** for calculations and data analysis.
+
+Web-search URL annotations are returned as numbered Teams citations. If the
+tool returns only plain URLs, the agent converts them to citation references
+before sending the response.
+
+For ordinary questions received in Teams, the agent sends the answer through
+the current Activity so citation metadata reaches the Teams client. The Teams
+MCP server is exposed only when the user explicitly asks to send, post, or
+forward a message to a Teams chat or channel.
+
+The agent connects to the Toolbox's unversioned consumer endpoint, so a future
+default Toolbox version can be promoted without rebuilding the agent image.
+Toolbox is optional when running locally; set `TOOLBOX_ENDPOINT` in
+`src/hello_world_a365_agent/.env` to enable it.
 
 ---
 
@@ -139,7 +173,7 @@ curl -N \
   "https://$ACCOUNT_NAME.services.ai.azure.com/api/projects/$PROJECT_NAME/agents/$AGENT_NAME/sessions/$FOUNDRY_AGENT_SESSION_ID:logstream?api-version=2025-11-15-preview"
 ```
 
-The agent sends aiohttp requests, outgoing dependencies, exceptions, Python logs, and GenAI spans to Application Insights. It calls the Responses API through `azure-ai-projects`, whose model-call span includes `gen_ai.operation.name`, `gen_ai.input.messages`, and `gen_ai.output.messages`. The enclosing activity span is named `invoke_agent FoundryDigitalWorker` and includes `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.id`, `microsoft.gen_ai.main_agent.id`, `gen_ai.response.id`, `gen_ai.input.messages`, and `gen_ai.output.messages`. Both agent ID attributes use the `<agentName>:<agentVersion>` format from the Foundry-injected `FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` environment variables. The `gen_ai.response.id` attribute contains the actual Responses API response ID required by trace-based evaluations. Every exported span includes the `FOUNDRY_PROJECT_ARM_ID` value in the `microsoft.foundry.project.id` custom dimension. Telemetry emitted while `CloudAdapter` processes an activity shares the `/api/messages` `operation_Id`.
+The agent sends aiohttp requests, outgoing dependencies, exceptions, Python logs, and GenAI spans to Application Insights. It calls the Responses API through `azure-ai-projects`, whose model-call span includes `gen_ai.operation.name`, `gen_ai.input.messages`, and `gen_ai.output.messages`. The enclosing activity span is named `invoke_agent FoundryDigitalWorker` and includes `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.id`, `microsoft.gen_ai.main_agent.id`, `gen_ai.response.id`, `gen_ai.input.messages`, and `gen_ai.output.messages`. Both agent ID attributes use the `<agentName>:<agentVersion>` format from the Foundry-injected `FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` environment variables. The `gen_ai.response.id` attribute contains the actual Responses API response ID required by trace-based evaluations. Every exported span includes the `FOUNDRY_PROJECT_ARM_ID` value in the `microsoft.foundry.project.id` custom dimension. Telemetry emitted while `CloudAdapter` processes an activity shares the `/activity/messages` `operation_Id`.
 
 Foundry injects `APPLICATIONINSIGHTS_CONNECTION_STRING` into the hosted container. Set the same environment variable when running locally. GenAI tracing and message-content capture are enabled when Application Insights is configured; set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` before startup when message text must not be recorded.
 

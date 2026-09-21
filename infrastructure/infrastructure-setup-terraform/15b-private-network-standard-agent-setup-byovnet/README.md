@@ -110,7 +110,7 @@ Use the table below to choose the right Terraform infrastructure template for yo
 
 1. The delegated agent subnet must be exclusively used by a single Foundry account. It cannot be shared across accounts.
 2. The Foundry resource and the virtual network must be in the same Azure region. BYO resources (Storage, Cosmos DB, AI Search) may be in different regions.
-3. Private Class A IP address ranges (10.x.x.x) are only supported in the following regions: **Australia East, Brazil South, Canada East, East US, East US 2, France Central, Germany West Central, Italy North, Japan East, South Africa North, South Central US, South India, Spain Central, Sweden Central, UAE North, UK South, West US, West US 3.** Use Class B (172.16.x.x) or C (192.168.x.x) ranges for other regions.
+3. Use only supported RFC 1918 or RFC 6598 address space. For RFC 1918, use addresses within `10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`. For RFC 6598 (CGNAT), use addresses within `100.64.0.0/10`, excluding `100.100.0.0/17`, `100.100.192.0/19`, and `100.100.224.0/19`. Public IP ranges aren't supported.
 4. This template does **not** support tools (MCP servers, OpenAPI tools, Azure Functions, A2A) behind the VNet. Use [template 19](../19-private-network-agent-setup-with-tools/) for that scenario.
 5. There is no upgrade path from BYO VNet (this template) to Managed Virtual Network. A Foundry resource redeployment is required.
 6. All projects within the same Foundry account share model deployments. Per-project model isolation is not supported.

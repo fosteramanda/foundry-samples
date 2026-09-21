@@ -60,6 +60,9 @@ param existingAiSearchResourceId = ''
 param existingAzureStorageAccountResourceId = ''
 param existingAzureCosmosDBAccountResourceId = ''
 param existingFabricWorkspaceResourceId = ''
+param enableKeyVault = true
+param keyVaultName = ''
+param existingKeyVaultResourceId = ''
 
 // -----------------------------------------------------------------------------
 // Private DNS zones
@@ -79,4 +82,5 @@ param existingDnsZones = {
   'privatelink.documents.azure.com':         { subscriptionId: '', resourceGroup: '' }
   'privatelink.azurecr.io':                  { subscriptionId: '', resourceGroup: '' }
   'privatelink.fabric.microsoft.com':        { subscriptionId: '', resourceGroup: '' }
+  'privatelink.vaultcore.azure.net':         { subscriptionId: '', resourceGroup: '' }
 }

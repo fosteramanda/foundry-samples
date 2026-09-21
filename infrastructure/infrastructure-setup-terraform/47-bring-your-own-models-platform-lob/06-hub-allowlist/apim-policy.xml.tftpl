@@ -1,0 +1,123 @@
+<policies>
+  <inbound>
+    <base />
+
+    <!-- ================================================================
+         Enterprise JWT gate.
+         Only spoke project MIs enumerated by hub-allowlist may call the
+         gateway. Empty allowlist means every caller is rejected because
+         every workload MI carries an oid claim.
+         ================================================================ -->
+    <validate-azure-ad-token tenant-id="${tenant_id}"
+                             output-token-variable-name="validatedJwt"
+                             failed-validation-httpcode="401"
+                             failed-validation-error-message="Invalid or missing bearer token.">
+      <audiences>
+        <audience>${audience}</audience>
+      </audiences>
+      <required-claims>
+        <claim name="oid" match="any">
+%{ for oid in project_oid_allowlist ~}
+          <value>${oid}</value>
+%{ endfor ~}
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+
+    <!-- Extract the caller's project oid + requested deployment. -->
+    <set-variable name="deploymentName" value="@((string)context.Request.MatchedParameters.GetValueOrDefault(&quot;deploymentName&quot;, &quot;&quot;))" />
+    <set-variable name="projectOid" value="@{
+        var jwt = (Jwt)context.Variables["validatedJwt"];
+        if (jwt == null || !jwt.Claims.ContainsKey("oid")) { return "unknown"; }
+        return jwt.Claims["oid"].FirstOrDefault() ?? "unknown";
+    }" />
+
+    <!-- Per-project token quota — the caller's oid is the key. -->
+    <llm-token-limit counter-key="@((string)context.Variables[&quot;projectOid&quot;])"
+                     tokens-per-minute="${quota_tokens_per_minute}"
+                     estimate-prompt-tokens="true"
+                     tokens-consumed-header-name="x-aigw-tokens-consumed"
+                     remaining-tokens-header-name="x-aigw-tokens-remaining" />
+
+    <!-- ================================================================
+         Vendor routing.
+         Each alias resolves to a specific upstream URL. Foundry uses
+         managed identity; Gemini and Groq use named-value-backed keys.
+         ================================================================ -->
+    <choose>
+      <when condition="@(((string)context.Variables[&quot;deploymentName&quot;]) == &quot;${foundry_alias}&quot;)">
+        <set-variable name="vendor" value="microsoft-foundry" />
+        <set-backend-service base-url="${foundry_endpoint}/openai" />
+        <authentication-managed-identity resource="${audience}" />
+      </when>
+      <when condition="@(((string)context.Variables[&quot;deploymentName&quot;]) == &quot;${gemini_alias}&quot;)">
+        <set-variable name="vendor" value="google-gemini" />
+        <set-backend-service base-url="${gemini_upstream}" />
+        <rewrite-uri template="/chat/completions" />
+        <set-header name="Authorization" exists-action="override">
+          <value>@("Bearer " + "{{gemini-api-key}}")</value>
+        </set-header>
+        <set-body>@{
+          var body = context.Request.Body.As<JObject>(preserveContent: true);
+          body["model"] = "${gemini_model}";
+          return body.ToString();
+        }</set-body>
+      </when>
+      <when condition="@(((string)context.Variables[&quot;deploymentName&quot;]) == &quot;${groq_alias}&quot;)">
+        <set-variable name="vendor" value="groq-llama" />
+        <set-backend-service base-url="${groq_upstream}" />
+        <rewrite-uri template="/chat/completions" />
+        <set-header name="Authorization" exists-action="override">
+          <value>@("Bearer " + "{{groq-api-key}}")</value>
+        </set-header>
+        <set-body>@{
+          var body = context.Request.Body.As<JObject>(preserveContent: true);
+          body["model"] = "${groq_model}";
+          return body.ToString();
+        }</set-body>
+      </when>
+      <otherwise>
+        <set-variable name="vendor" value="unknown" />
+        <return-response>
+          <set-status code="404" reason="Model alias not in approved catalog" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{
+            var alias = (string)context.Variables["deploymentName"];
+            return "{\"error\":{\"code\":\"model_not_approved\",\"message\":\"Model alias '" + alias + "' is not in the approved catalog. Contact the Platform team.\"}}";
+          }</set-body>
+        </return-response>
+      </otherwise>
+    </choose>
+
+    <!-- Observability headers routed to App Insights via the diagnostic. -->
+    <set-header name="x-aigw-project-id" exists-action="override">
+      <value>@((string)context.Variables["projectOid"])</value>
+    </set-header>
+    <set-header name="x-aigw-model-alias" exists-action="override">
+      <value>@((string)context.Variables["deploymentName"])</value>
+    </set-header>
+    <set-header name="x-aigw-vendor" exists-action="override">
+      <value>@((string)context.Variables["vendor"])</value>
+    </set-header>
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+    <set-header name="x-aigw-project-id" exists-action="override">
+      <value>@((string)context.Variables["projectOid"])</value>
+    </set-header>
+    <set-header name="x-aigw-model-alias" exists-action="override">
+      <value>@((string)context.Variables["deploymentName"])</value>
+    </set-header>
+    <set-header name="x-aigw-vendor" exists-action="override">
+      <value>@((string)context.Variables["vendor"])</value>
+    </set-header>
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

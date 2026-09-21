@@ -31,13 +31,13 @@ services:
     language: python
     codeConfiguration:
       runtime: python_3_13
-      entryPoint: main.py
+      entryPoint: '-m langchain_azure_ai.agents.hosting.run --protocol invocations'
     uses:
       - ai-project
     kind: hosted
     name: langgraph-chat-invocations
     displayName: LangGraph Chat (Invocations)
-    description: 'Multi-turn chat agent built with LangGraph and hosted on Foundry over the Invocations protocol using langchain_azure_ai.agents.hosting. Includes two local tools: get_current_time and calculator. Server-side conversation state via a MemorySaver checkpointer keyed by agent_session_id.'
+    description: 'Multi-turn chat agent built with LangGraph and hosted on Foundry over the Invocations protocol using langchain_azure_ai.agents.hosting. Includes two local tools: get_current_time and calculator. Durable server-side conversation state via FoundryCheckpointSaver keyed by agent_session_id.'
     protocols:
       - protocol: invocations
         version: 2.0.0

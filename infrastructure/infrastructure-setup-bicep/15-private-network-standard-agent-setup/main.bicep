@@ -107,6 +107,9 @@ param existingAiFoundryAccountResourceId string = ''
 @description('Optional. When true, skip the model deployment. Recommended when reusing an existing account that already has the required model deployments.')
 param skipModelDeployment bool = false
 
+@description('Optional. When true (default), disables API-key (local) authentication on the account. Set to false to enable API-key auth.')
+param disableLocalAuth bool = true
+
 @description('Enable Azure Container Registry with Private Endpoint. When true, creates an ACR (Premium SKU) with a PE in the private endpoints subnet.')
 param enableContainerRegistry bool = true
 
@@ -273,6 +276,7 @@ module aiAccount 'modules-network-secured/ai-account-identity.bicep' = {
     agentSubnetId: vnet.outputs.agentSubnetId
     existingAccountResourceId: existingAiFoundryAccountResourceId
     skipModelDeployment: skipModelDeployment
+    disableLocalAuth: disableLocalAuth
   }
 }
 /*

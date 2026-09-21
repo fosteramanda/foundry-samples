@@ -2,6 +2,8 @@
 
 This directory contains samples that demonstrate how to use [LangGraph](https://langchain-ai.github.io/langgraph/) together with [`langchain_azure_ai.agents.hosting`](https://github.com/langchain-ai/langchain-azure/tree/main/libs/azure-ai/langchain_azure_ai/agents/hosting) to host agents on Foundry with different capabilities and configurations. Each sample includes a README with sample queries and any sample-specific notes.
 
+Use the configuration-driven `langchain_azure_ai.agents.hosting.run` entrypoint by default. Use a protocol-specific host class only when the agent must customize request translation, unsupported protocol options, readiness behavior, or the lifetime of async resources. The [Responses Custom Host](responses/12-custom-host/) and [Invocations Custom Host](invocations/04-custom-host/) samples demonstrate the request-translation case.
+
 ## Samples
 
 ### Responses API
@@ -10,18 +12,25 @@ This directory contains samples that demonstrate how to use [LangGraph](https://
 | --- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | [Chat](responses/01-langgraph-chat/)                                  | A minimal LangGraph agent with two local tools (`get_current_time`, `calculator`), demonstrating multi-turn conversation via `previous_response_id`.                                     |
 | 2   | [LangGraph Toolbox](responses/02-langgraph-toolbox/)                  | A LangGraph agent wired to a Foundry Toolbox that exposes `web_search` plus a connection-backed GitHub Copilot MCP tool, with OAuth consent surfacing.                                   |
+| 3   | [Toolbox User Identity](responses/03-langgraph-toolbox-user-identity/) | A Toolbox-backed agent that propagates the hosted end-user identity to connection-backed tools.                                                                                          |
 | 5   | [Workflows](responses/05-workflows/)                                  | A custom `StateGraph` chaining three specialized LLM nodes — slogan writer, legal reviewer, formatter — each seeing only the previous agent's output.                                    |
 | 6   | [Files](responses/06-files/)                                          | A LangGraph agent with local filesystem tools and a Foundry-Toolbox `code_interpreter`, demonstrating session-uploaded file handling.                                                    |
 | 7   | [Human-in-the-Loop](responses/07-human-in-the-loop/)                  | A LangGraph `StateGraph` that drafts a proposal and pauses for human review via `langgraph.types.interrupt`, serialized as `mcp_approval_request` + `function_call` output items.        |
 | 8   | [Observability](responses/08-observability/)                          | A LangGraph agent with GenAI OpenTelemetry tracing enabled via `enable_auto_tracing()`, emitting spans, metrics, and logs to Application Insights.                                       |
+| 9   | [Resilient](responses/09-resilient/)                                 | Resilient background Responses with durable checkpoints, recovery, cancellation, steering, and human approval.                                                                        |
 | 10  | [Run](responses/10-run/)                                              | A minimal configuration-driven LangGraph agent hosted over the Responses protocol with the `langchain_azure_ai.agents.hosting.run` entrypoint.                                         |
+| 11  | [Deep Agents](responses/11-deep-agents/)                              | A deep research agent with Toolbox tools and a Foundry-backed checkpointer. Uses the host class for async resource lifecycle management.                                               |
+| 12  | [Custom Host](responses/12-custom-host/)                              | Extends a multi-turn chat agent with a locale header and custom location messages using `ResponsesHostServer`.                                                                         |
+| 13  | [Custom Stores](responses/13-custom-store/)                          | Demonstrates implementing custom response and conversation-chain stores and wiring LangGraph checkpoints and long-term memory for Foundry-hosted or on-premises agents.              |
 
 ### Invocations API
 
 | #   | Sample                                          | Description                                                                                                                                          |
 | --- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | [Chat](invocations/01-langgraph-chat/)          | A minimal LangGraph agent with two local tools, demonstrating session state via `agent_session_id` (URL param / `x-agent-session-id` response header) backed by a LangGraph checkpointer. |
-| 3   | [Run](invocations/03-run/)                      | A minimal configuration-driven LangGraph agent hosted over the Invocations protocol with the `langchain_azure_ai.agents.hosting.run` entrypoint and in-process `MemorySaver` state. |
+| 2   | [Resilient](invocations/02-resilient/)          | Resilient Invocations with durable checkpoints, recovery, cancellation, steering, and human approval. Uses the host class for options and server-lifetime resources.                    |
+| 3   | [Run](invocations/03-run/)                      | A minimal configuration-driven LangGraph agent hosted over the Invocations protocol with the `langchain_azure_ai.agents.hosting.run` entrypoint and durable Foundry checkpoint state. |
+| 4   | [Custom Host](invocations/04-custom-host/)      | Extends a multi-turn chat agent with a locale header and custom location messages using `InvocationsHostServer`.                                                                     |
 
 ### Agent-to-Agent (A2A)
 
@@ -30,6 +39,13 @@ This directory contains samples that demonstrate how to use [LangGraph](https://
 | [A2A delegation](a2a/)  | Two LangGraph Responses agents — a `concierge` that **delegates** math questions over A2A to a `math-expert` that publishes an incoming A2A endpoint + agent card. Wired with a `RemoteA2A` connection and an `a2a_preview` Toolbox loaded over MCP. |
 
 ## Running the Agent Host Locally
+
+For the [Custom Stores sample](responses/13-custom-store/#choose-a-deployment-path),
+choose between deploying the agent to Foundry Hosted Agents and running it
+on-premises with Foundry models only. Its on-premises path does not require a
+hosted-agent deployment. `AZURE_AI_API_KEY` is optional for that sample; without
+it, authenticate an Azure identity for `DefaultAzureCredential`, for example
+with `az login` during local development.
 
 ### Using `azd`
 
@@ -170,9 +186,13 @@ cd foundry-samples/samples/python/hosted-agents/langgraph
 
 #### Running the Agent Host
 
+From the sample's source directory, run the protocol selected by its `azure.yaml`:
+
 ```bash
-python main.py
+python -m langchain_azure_ai.agents.hosting.run --protocol responses
 ```
+
+The resilient Invocations, deep-agent, and custom-host exceptions use `python main.py` because they configure unsupported host behavior or manage resources for the server lifetime.
 
 Right now, the agent host should be running on `http://localhost:8088`
 

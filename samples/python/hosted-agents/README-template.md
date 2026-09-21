@@ -113,18 +113,18 @@ azd ai agent invoke "{{prompt}}"
 
 1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
 2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
+3. **Azure CLI** — [Install Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli), then run `az login` in the VS Code integrated terminal.
 
 ### Set up the Python virtual environment
 
 - Open the Command Palette (`Ctrl+Shift+P`) and run **Python: Create Environment...** to create a virtual environment in the workspace (or **Python: Select Interpreter** to use an existing one).
-- Install the complete, resolved dependency graph from the committed `requirements.txt`. It is the sample's portable consumer artifact; when authoring or updating a sample, see the [Python Hosted Agent dependency policy](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/DEPENDENCY_POLICY.md).
+- Install the complete, resolved dependency graph from the sample's committed dependency artifact. New samples use `pyproject.toml` with `uv.lock` by default; `requirements.txt` remains the backward-compatible fallback. When authoring or updating a sample, see the [Python Hosted Agent dependency policy](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/DEPENDENCY_POLICY.md).
 
   ```bash
-  # use uv to accelerate
-  pip install uv
-  uv pip install -r requirements.txt
+  # Default uv-native sample (use the exact uv version documented by the sample)
+  uv sync --frozen
 
-  # or pure pip
+  # Backward-compatible requirements.txt sample
   pip install -r requirements.txt
   ```
 

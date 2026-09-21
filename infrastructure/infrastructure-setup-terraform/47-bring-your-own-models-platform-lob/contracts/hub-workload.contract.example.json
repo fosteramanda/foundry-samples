@@ -1,0 +1,20 @@
+{
+  "$schema": "https://example.com/contoso/hub-workload-contract-v1.json",
+  "version": "1",
+  "generated_at": "2026-08-27T12:00:00Z",
+
+  "gateway": {
+    "private_url": "https://REPLACE-APIM-NAME.azure-api.net/inference",
+    "audience": "https://cognitiveservices.azure.com",
+    "inference_api_version": "2024-10-21"
+  },
+
+  "catalog": {
+    "version": "1",
+    "aliases": [
+      { "alias": "gpt-4.1",      "vendor": "microsoft-foundry", "upstream_model": "gpt-4.1" },
+      { "alias": "gemini-flash", "vendor": "google-gemini",     "upstream_model": "gemini-2.5-flash" },
+      { "alias": "llama-3-70b",  "vendor": "groq-llama",        "upstream_model": "llama-3.3-70b-versatile" }
+    ]
+  }
+}

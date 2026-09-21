@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and fill in. Never commit real values.
+
+platform_subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id                = "00000000-0000-0000-0000-000000000000"
+
+# Optional overrides — defaults are fine for a first apply.
+# location    = "swedencentral"
+# name_prefix = "contoso-byom"
+
+# The H-series policy allowlist. Empty list is a valid production choice.
+# approved_model_publishers = ["Microsoft"]
+# approved_model_asset_ids  = []
+# approved_deployment_skus = ["GlobalStandard", "DataZoneStandard"]
+
+# Firewall FQDN allowlist — only external providers.
+# provider_fqdn_allowlist = [
+#   "generativelanguage.googleapis.com",
+#   "api.groq.com",
+# ]
