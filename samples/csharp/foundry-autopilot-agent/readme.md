@@ -129,45 +129,9 @@ The agent also sends ASP.NET Core requests, outgoing HTTP dependencies, exceptio
 
 The Responses API invocation also emits an `invoke_agent <agentName>` span with `gen_ai.operation.name`, `gen_ai.agent.name`, a stable `<agentName>:<agentVersion>` in `gen_ai.agent.id` and `microsoft.gen_ai.main_agent.id`, input/output message envelopes, and the final `gen_ai.response.id`. The creation script supplies `FOUNDRY_PROJECT_ARM_ID` for `microsoft.foundry.project.id`; the runtime supplies the agent name, version, and session ID. The additional exporter listens only to this custom source, leaving the existing request and dependency collectors unchanged.
 
-To verify an update, use the same sample directory and `azd` environment that you deployed. The session commands require the Foundry agent extension (`azd ext install azure.ai.agents` if it is not installed).
+To verify an update, follow [Autopilot sample operations](../../AUTOPILOT_OPERATIONS.md) with these values: deploy a new version with `azd provision`, use `AZURE_AI_PROJECT_ENDPOINT` as the endpoint setting and the agent name stored in `AGENT_NAME`, and run the query for samples that emit their own `invoke_agent <agentName>` spans. This sample's spans are custom `ActivityKind.Internal` spans, so they appear in `dependencies`.
 
-1. After `azd provision`, record the new agent version reported by deployment. Confirm in the Foundry portal that it is selected for new invocations; creating a version alone is not proof that traffic uses it.
-2. Set the project endpoint and list the sessions:
-
-   ```powershell
-   $env:FOUNDRY_PROJECT_ENDPOINT = azd env get-value AZURE_AI_PROJECT_ENDPOINT
-   $agentName = azd env get-value AGENT_NAME
-   azd ai agent sessions list --agent-name $agentName --output json
-   ```
-
-   Find the session for your conversation and inspect its `agent_session_id`, `status`, and `version_indicator.agent_version`. If the response includes a continuation token, use `--pagination-token` to retrieve the next page. An existing session can still be using the previous version.
-3. Stop only the session you intend to test:
-
-   ```powershell
-   azd ai agent sessions stop "<session-id>" --agent-name $agentName
-   ```
-
-   Stopping interrupts running work but preserves the logical session and its persistent filesystem. Do not delete the session to update its code. Coordinate with anyone using that instance before stopping it.
-4. Send one message to the same instance in Teams to resume execution. Run the session-list command again and confirm the session now reports the intended version. If it does not, check the endpoint's selected version instead of assuming an idle timeout will fix it.
-5. Allow telemetry ingestion, then run this query in the connected Application Insights resource's **Logs** view. Replace the agent name and version with the values you just verified:
-
-   ```kusto
-   let expectedAgentId = "<agent-name>:<version>";
-   dependencies
-   | where timestamp > ago(30m)
-   | where name startswith "invoke_agent "
-   | where tostring(customDimensions["gen_ai.agent.id"]) == expectedAgentId
-   | project timestamp, name, type, success, operation_Id,
-       agentId = tostring(customDimensions["gen_ai.agent.id"]),
-       responseId = tostring(customDimensions["gen_ai.response.id"]),
-       sessionId = tostring(customDimensions["azure.ai.agentserver.session_id"]),
-       projectId = tostring(customDimensions["microsoft.foundry.project.id"])
-   | order by timestamp desc
-   ```
-
-These custom `ActivityKind.Internal` spans land in `dependencies` as `InProc`. That is not a rule for every implementation: other span kinds or SDK integrations can use `requests`. The trailing space in `"invoke_agent "` distinguishes this application's spans from the platform's bare `invoke_agent` span. A successful reply or a platform span alone does not verify this instrumentation.
-
-**Content capture:** the new invocation spans omit conversation text by default while retaining the message envelopes. To opt in deliberately, set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` in the `azd` environment and run `azd provision` to create an updated version, then repeat the session verification above. Setting it to `false` disables that capture. This setting is not an application-wide redaction switch: existing application logs, exceptions, and other SDKs can still contain sensitive data. Review logging, access, and retention before using real conversations.
+**Content capture:** the new invocation spans omit conversation text by default while retaining the message envelopes. To opt in deliberately, set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` in the `azd` environment and run `azd provision` to create an updated version, then repeat the verification. Setting it to `false` disables that capture. Read [Protect message content](../../AUTOPILOT_OPERATIONS.md#protect-message-content) before using real conversations.
 
 ---
 

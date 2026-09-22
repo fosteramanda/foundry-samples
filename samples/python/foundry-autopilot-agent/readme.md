@@ -175,44 +175,9 @@ curl -N \
 
 The agent sends aiohttp requests, outgoing dependencies, exceptions, Python logs, and GenAI spans to Application Insights. It calls the Responses API through `azure-ai-projects`, whose model-call span includes `gen_ai.operation.name`, `gen_ai.input.messages`, and `gen_ai.output.messages`. The enclosing activity span is named `invoke_agent <agentName>` and includes `gen_ai.operation.name=invoke_agent`, `gen_ai.agent.id`, `microsoft.gen_ai.main_agent.id`, `gen_ai.response.id`, `gen_ai.input.messages`, and `gen_ai.output.messages`. Both agent ID attributes use the `<agentName>:<agentVersion>` format from the Foundry-injected `FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` environment variables. The `gen_ai.response.id` attribute contains the actual Responses API response ID required by trace-based evaluations. Every exported span includes the `FOUNDRY_PROJECT_ARM_ID` value in the `microsoft.foundry.project.id` custom dimension. Telemetry emitted while `CloudAdapter` processes an activity shares the `/activity/messages` `operation_Id`.
 
-Foundry injects `APPLICATIONINSIGHTS_CONNECTION_STRING` into the hosted container. Set the same environment variable when running locally. GenAI tracing and message-content capture are enabled when Application Insights is configured; set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` in the running container's environment before startup to omit message text from the GenAI span attributes. This does not redact existing Python logs, exceptions, or every SDK's telemetry. Review those sources, access, and retention before using sensitive conversations; text-free envelopes alone do not provide the content needed by quality evaluators.
+Foundry injects `APPLICATIONINSIGHTS_CONNECTION_STRING` into the hosted container. Set the same environment variable when running locally. GenAI tracing and message-content capture are enabled when Application Insights is configured; set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` in the running container's environment before startup to omit message text from the GenAI span attributes. Read [Protect message content](../../AUTOPILOT_OPERATIONS.md#protect-message-content) before using real conversations.
 
-To verify updated code, use this sample directory and the `azd` environment you deployed. The session commands require the Foundry agent extension (`azd ext install azure.ai.agents` if it is not installed).
-
-1. After deployment, record the new version and confirm in the Foundry portal that it is selected for new invocations. An active version or a successful reply does not prove your existing session moved to it.
-2. Set the project endpoint and inspect the sessions:
-
-   ```powershell
-   $env:FOUNDRY_PROJECT_ENDPOINT = azd env get-value AZURE_AI_PROJECT_ENDPOINT
-   $agentName = azd env get-value AGENT_NAME
-   azd ai agent sessions list --agent-name $agentName --output json
-   ```
-
-   Match your conversation's `agent_session_id` and inspect `status` and `version_indicator.agent_version`. Follow any continuation token with `--pagination-token` if the session is not on the first page.
-3. Stop only the session you intend to update:
-
-   ```powershell
-   azd ai agent sessions stop "<session-id>" --agent-name $agentName
-   ```
-
-   Stopping interrupts current work while preserving the logical session and its persistent filesystem. Coordinate with its users and do not delete sessions just to load new code.
-4. Send one Teams message to resume the session, then repeat the list command and confirm it uses the intended version. Check endpoint routing if the old version remains; do not rely on waiting for an idle timeout.
-5. Allow telemetry ingestion, then run this query in the connected Application Insights resource's **Logs** view, substituting the agent name and verified version:
-
-   ```kusto
-   let expectedAgentId = "<agent-name>:<version>";
-   dependencies
-   | where timestamp > ago(30m)
-   | where name startswith "invoke_agent "
-   | where tostring(customDimensions["gen_ai.agent.id"]) == expectedAgentId
-   | project timestamp, name, type, success, operation_Id,
-       agentId = tostring(customDimensions["gen_ai.agent.id"]),
-       responseId = tostring(customDimensions["gen_ai.response.id"]),
-       projectId = tostring(customDimensions["microsoft.foundry.project.id"])
-   | order by timestamp desc
-   ```
-
-The custom Internal invocation spans use `dependencies` (`InProc`), not `requests`. That table choice is implementation-specific; other span kinds or SDK integrations can use `requests`. The space after `"invoke_agent "` filters out the platform's bare invocation span. Confirm the application attributes and version, not just that the platform recorded traffic.
+To verify updated code, follow [Autopilot sample operations](../../AUTOPILOT_OPERATIONS.md) with these values: deploy a new version with `azd provision`, use `AZURE_AI_PROJECT_ENDPOINT` as the endpoint setting and the agent name stored in `AGENT_NAME`, and run the query for samples that emit their own `invoke_agent <agentName>` spans. The enclosing activity span is a custom internal span, so it appears in `dependencies`.
 
 ---
 

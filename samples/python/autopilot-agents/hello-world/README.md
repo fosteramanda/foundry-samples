@@ -217,37 +217,12 @@ Edit the agent code, then deploy a new version:
 azd deploy
 ```
 
-Existing sessions can continue running on their previous sandbox. From the
-`hello-world` directory and the environment you just deployed, verify the
-version before and after resuming a session:
-
-1. Record the version reported by deployment and confirm it is selected for new
-   invocations. Inspect the agent and sessions:
-
-   ```powershell
-   $env:FOUNDRY_PROJECT_ENDPOINT = azd env get-value FOUNDRY_PROJECT_ENDPOINT
-   azd ai agent show --output json
-   azd ai agent sessions list --agent-name hello-world-autopilot --output json
-   ```
-
-   Find your conversation's `agent_session_id` and inspect its `status` and
-   `version_indicator.agent_version`. If the result includes a continuation
-   token, use `--pagination-token` to retrieve another page.
-2. Stop only the session you intend to test:
-
-   ```powershell
-   azd ai agent sessions stop "<session-id>" --agent-name hello-world-autopilot
-   ```
-
-   Stopping interrupts running work but preserves the logical session and its
-   persistent filesystem. Coordinate with its users first. Do not delete the
-   session just to pick up new code.
-3. Send one message to the same instance in Teams. The invocation resumes the
-   stopped session. Repeat the session-list command and confirm its version
-   matches the intended deployment. If it does not, check endpoint routing
-   rather than assuming an idle timeout will move it.
-4. Verify the resulting application spans under **Observability** below. A
-   successful reply alone does not prove tracing is configured.
+Existing sessions can continue running on their previous sandbox. To confirm
+which version a session runs, resume it on the new code, and verify its
+traces, follow [Autopilot sample operations](../../../AUTOPILOT_OPERATIONS.md)
+from the `hello-world` directory. Use `FOUNDRY_PROJECT_ENDPOINT` as the
+endpoint setting and `hello-world-autopilot` as the agent name. To inspect
+the deployed agent, run `azd ai agent show`.
 
 When you intentionally want to stop all non-terminal sessions, the shared
 helper is still available:
@@ -290,33 +265,22 @@ before importing the application stack.
   and the Agent 365 exporter sends the enriched telemetry used by Microsoft 365
   administration, Defender, and Purview experiences.
 
-After the version check and stop/resume sequence above, allow ingestion time
-and query the connected Application Insights resource's **Logs** view:
-
-```kusto
-union withsource=TelemetryTable requests, dependencies
-| where timestamp > ago(30m)
-| where cloud_RoleName == "hello-world-autopilot"
-| project timestamp, TelemetryTable, name, application_Version,
-    operation_Id, customDimensions
-| order by timestamp desc
-```
-
-Use the actual hosted agent name if you changed it. Inspect the table, version,
-and attributes of the model-call and Agents SDK application spans, not only
-the platform's invocation row. A trace ID in `operation_Id` lets you inspect
-the related spans together. Custom Internal spans in the other autopilot
-samples use `dependencies`; this distro-based implementation can emit different
-span kinds, so do not assume one table covers every application span.
+To confirm application spans after an update, run the query in
+[Autopilot sample operations](../../../AUTOPILOT_OPERATIONS.md#find-the-application-spans)
+for samples whose spans come from an SDK or an OpenTelemetry distribution. Use
+`hello-world-autopilot` as the service name, or the actual hosted agent name
+if you changed it. Because this sample sets `service.namespace`, its cloud role
+name ends with that service name rather than matching it exactly. Inspect the
+model-call and Agents SDK spans, not only the platform's invocation row.
 
 Content capture must be a deliberate choice. Configure compatible GenAI
 instrumentation with `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` in
 the service's `environmentVariables`, then deploy and repeat the session
 checks. Do not assume this flag redacts all telemetry: the sample's application
 logger records incoming Teams message text, and Agent 365 or other SDKs can
-have separate content settings. Use non-sensitive test messages and review
-logging, access, and retention before real conversations. A text-free trace
-does not prove that quality evaluators have the conversation content they need.
+have separate content settings. Read
+[Protect message content](../../../AUTOPILOT_OPERATIONS.md#protect-message-content)
+before using real conversations.
 
 ## Troubleshooting
 
