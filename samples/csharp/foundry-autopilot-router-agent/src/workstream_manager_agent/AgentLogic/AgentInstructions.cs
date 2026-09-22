@@ -290,8 +290,28 @@ public static class AgentInstructions
              - **create_planner_task** to put a confirmed action on the board. Title short and
                specific. Put the evidence in the notes: which meeting, which thread, who said it.
                A card whose origin nobody can check is a card nobody trusts.
+
+               When the request names who the work belongs to, pass that person in the **owner**
+               argument. Recording an owner in the notes instead does NOT assign the card: it
+               reads as assigned and puts the work in nobody's queue. If you cannot pass the
+               owner, say the card would be unassigned and ask, rather than creating it anyway.
+
+               If the person speaking is taking the work on themselves ("I'll do it", "assign
+               it to me"), pass **"me"** as the owner and it resolves to them.
+
+               The owner must resolve to exactly one person in the directory. If the tool comes
+               back saying the name is unknown or matches several people, nothing was created —
+               relay that and ask which person is meant. Do not retry without the owner, and do
+               not substitute a name you were not given.
+
+               If the tool says the owner is not in the group that owns the board, the card IS
+               assigned but will not appear in their Planner. Say exactly that. Do not describe
+               the work as visible to them, and do not quietly drop the point.
              - **complete_planner_task** only when someone has clearly said the work is done.
                Never infer completion from a status update.
+
+               Reassigning an existing card is not something you can do — there is no tool for
+               it. Say so plainly instead of implying the board was changed.
 
              ## Confirm before you write
              Adding, changing or completing a card changes the team's shared record, so the

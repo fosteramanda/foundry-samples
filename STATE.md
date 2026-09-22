@@ -3380,3 +3380,623 @@ to the owning group — explicitly NOT fall back to tracking privately while imp
 work is on the board.
 
 Deployed **v5, 100%**.
+
+## Planner cards can now carry an owner (v6, NOT DEPLOYED)
+
+Amanda, from a live Teams thread: the agent was asked to put "Stripe — complete onboarding,
+assigned to Sustineo" on the board and replied *"I can't assign the owner with the board tool
+available here, so I'll record Sustineo as the intended owner in the notes."*
+
+**That was true, and it was our gap, not Planner's.** `create_planner_task` exposed only
+title/notes/due_date/board, and `CreateTaskAsync` posted only planId/title/dueDateTime. Graph
+has always accepted `assignments` on `POST /planner/tasks`. The agent behaved correctly — it
+declined rather than faking it — but the honest answer was still a card nobody owns.
+
+This matters more than it looks because of v5: Planner REPLACED the work-item tracker, and
+`create_work_item` (which does take a required owner) is withheld whenever a board is
+reachable. So there was no path at all to a recorded owner.
+
+### What changed
+
+`PlannerToolHandler.cs`
+- `create_planner_task` takes an **`owner`** argument (display name, email or UPN).
+- `ResolveUserIdAsync` — directory lookup using the documented v1.0 or-of-`startswith` across
+  displayName/givenName/surname/mail/userPrincipalName. No advanced-query headers needed.
+  **Refuses on 0 or >1 match** rather than taking the first. Guessing here is the expensive
+  failure: the card looks correctly assigned, so nobody checks, and it surfaces when the wrong
+  person is chased for work they never agreed to.
+- Assignment travels **in the create POST**, so Planner either stores the card with its owner
+  or stores nothing. No create-then-patch window where a card sits unowned while the chat has
+  already said who owns it.
+- `DescribeAssigneeAccessAsync` — after a successful create, checks the assignee against the
+  plan's owning group and appends a warning if they are not in it.
+
+`AgentInstructions.cs` — Planner section now says to pass `owner`, that notes are not
+assignment, to relay ambiguity rather than resolve it, and to state plainly when the owner
+cannot see the board. Also records that reassigning an existing card is not possible.
+
+### Two things the live probe caught that the docs did not
+
+1. **The OData annotation is `#microsoft.graph.plannerAssignment`, not
+   `#microsoft.planner.plannerAssignment`.** The wrong namespace fails with
+   *"The given untyped value ... is invalid. Consider using a OData type annotation
+   explicitly"* — which reads as though the annotation is MISSING, not wrong, and sends you
+   looking in entirely the wrong place. The first version of this change had it wrong and
+   would have 400'd on every single assignment.
+
+2. **Planner assigns non-members without complaint.** The expectation was that Planner would
+   reject an assignee outside the owning group. It does not. Probe: created a card on
+   `IPST Board` assigned to Sustineo Juarez, who is not a member or owner of
+   `ec724eb3-df17-4439-ab6c-064a6d89d08b` (transitive members: Amanda Foster, Autopilot
+   Router, Agentic Colleague). It succeeded. The card is assigned in every view the team has
+   and never reaches his Planner, because group membership still gates who can open the board.
+   That is precisely the failure the board exists to prevent, so it is now surfaced in the
+   tool result instead of being invisible. Probe card was deleted; board verified back to its
+   prior 10 cards.
+
+### FOR AMANDA
+
+- **Not deployed.** Built clean (`dotnet build`, 0 errors; the one CS1998 warning in
+  `A365AgentApplication.cs:271` is pre-existing and unrelated). Not committed — say the word.
+- **Sustineo is not in the IPST Board group.** So the original request still will not fully
+  work: he gets assigned, but cannot see the board. Your call — add him to
+  `ec724eb3-df17-4439-ab6c-064a6d89d08b`, or accept that assignment is a record rather than a
+  notification and let the agent say so. Membership changes are yours, so I did not make one.
+
+  **RESOLVED 2026-09-21 — Amanda added Sustineo Juarez and Amanda Twin via Planner's Share
+  dialog.** Group now has 5 members (Amanda Foster, Amanda Twin, Autopilot Router, Agentic
+  Colleague, Sustineo Juarez). Verified: `checkMemberGroups` for Sustineo returns the group id,
+  so `DescribeAssigneeAccessAsync` correctly stays silent for him. The original Stripe request
+  will now assign properly and be visible to him.
+
+  Worth knowing: adding someone to the plan adds them to the **group**, which grants the files,
+  emails and chats too — not just the board. That is Planner's model, not a setting.
+- **Resolver validated against the live directory** with the exact filter the code uses:
+  `Sustineo` / `Sustineo Juarez` / `sustineo@notareal.co` → 1 match each (assigns cleanly);
+  `Amanda` → 3 matches (Amanda Foster, Amanda Twin, amandatest1) → refuses and asks which.
+  That ambiguity is now a live case in this tenant, so "assign it to Amanda" will come back as
+  a question rather than a guess. Working as intended, but expect it in a demo.
+- **The "Stripe" card from that thread is still on the board** with Sustineo recorded in the
+  notes rather than assigned. Want it fixed once this ships?
+- **Reassigning existing cards is still not possible** — no tool for it. Deliberately out of
+  scope; create is what failed. Say if you want `assign_planner_task` too.
+- **One permission decision for you.** The "this owner can't see the board" warning uses
+  `checkMemberGroups`, which needs delegated **`GroupMember.Read.All`**. The blueprint grant
+  does not include it (`ChatMessage.Send ChannelMessage.Send ChatMember.Read
+  ChannelMessage.Read.All User.Read.All Tasks.ReadWrite`). **Assignment works fine without
+  it** — only the warning is affected. I did NOT add the scope, because permission changes are
+  yours. Until you do, the check logs at Warning and produces no message, so it reads as a
+  missing grant rather than a feature that silently does nothing. I checked whether
+  `plannerPlanDetails.sharedWith` could substitute using `Tasks.ReadWrite` alone: it cannot —
+  it holds only the group id (`{"ec724eb3-...": true}`), never individual users.
+
+  Accept this consciously: until the grant exists, **every assigned create emits one Warning
+  line** and makes two extra Graph calls (plan GET, then the 403'ing `checkMemberGroups`). If
+  that noise is not worth it to you, say so and I will gate the check behind a config flag.
+- **One runtime unknown.** I validated the directory-lookup filter against live Graph, but with
+  your token, not the agent's. The agent has `User.Read.All`, which covers
+  `/users?$filter=startswith(...)`, so it should work — but owner resolution has not actually
+  been exercised under the agent's own token. First real assignment is the test.
+- **Unrelated, but you should see it:** `git diff` in this repo shows ~16,000 deletions across
+  `samples/csharp/agentic-colleague/` and `samples/csharp/agenticcolleague2/` that predate this
+  work and have nothing to do with it. Looks like sparse-checkout state. I have not touched or
+  "fixed" it, but do not commit anything here until you know why it looks like that.
+
+## Planner owner fixes, round 2 (v6 continued, NOT DEPLOYED)
+
+Amanda: "make all fixes we need to make". Everything below is code and docs only. No
+permission, identity or deployment change was made, and nothing was committed.
+
+### What changed
+
+**Exact match wins over a prefix collision.** `startswith` means a full, correct name can
+still collide with a longer one ("Amanda Foster" against a hypothetical "Amanda Fosterman"),
+and the old code refused a question the user had already answered precisely. Now: if exactly
+one result matches the term exactly on displayName, mail or UPN, take it. A partial name like
+"Amanda" has no exact match and still refuses, and two people genuinely sharing a display name
+still refuse rather than picking one.
+
+Caught while writing it: the exact-match test included `mail`, but `$select` did not request
+`mail`, so that arm could never have fired. `$select` now includes it.
+
+**"me" resolves to the speaker.** `PlannerToolHandler` now receives the turn's activity via
+`SetCurrentActivityContext`, wired in `ResponsesApiAgentLogicService` next to the existing
+calls for the work-item and routine handlers. `owner: "me"` (or "myself"/"I") resolves to
+`activity.From.AadObjectId`. Previously "assign it to me" failed outright, since no directory
+user is named "me".
+
+Deliberately NOT built: preferring the speaker for an *ambiguous* name. "Amanda" in a room
+containing two Amandas would resolve to whoever spoke, which is a guess wearing the costume of
+a resolution, and it contradicts the refuses-rather-than-guesses rule this resolver exists to
+enforce. "me" is different in kind: the user said it about themselves.
+
+**The access check now disables itself after one failure.** `checkMemberGroups` needs delegated
+`GroupMember.Read.All`, which is not granted. Previously every assigned create paid two extra
+Graph calls and logged the same warning again. The flag is **static** on purpose: a handler is
+constructed per turn (`_factory.CreateAsync` runs per activity, and `CreateForAgentAsync` news
+up the service and handler each time), so an instance field would reset on every message and
+re-log forever. Same process-local pattern as the activity dedupe in `A365AgentApplication`.
+
+**Stale config comment corrected.** `appsettings.json` still claimed the board was owned by the
+Caldova group and that the agent was already a member. That arrangement was abandoned: Caldova
+was the interim board, it was deleted, and a dedicated group now owns it. `PlannerGroupId` was
+already correct; only the comment lied.
+
+### Verification
+
+Live directory, exact filter the code uses: `Amanda` -> refuses, listing all three;
+`Amanda Foster` / `Amanda Twin` / `Sustineo` / `sustineo@notareal.co` -> each assigns cleanly;
+`Nobody McGhost` -> refuses. The exact-match branch has no live case in this tenant, so it was
+proven separately against a fabricated prefix collision: `Amanda Foster` vs `Amanda Fosterman`
+assigns via exact match, bare `Amanda` still refuses, and two identical `Sam Lee` entries still
+refuse. `dotnet build` clean, 0 errors; the single CS1998 warning in `A365AgentApplication.cs:271`
+is pre-existing and unrelated.
+
+### FOR AMANDA
+
+- **Still not committed and not deployed.** The ~16,000 deletions under
+  `samples/csharp/agentic-colleague/` and `agenticcolleague2/` remain unexplained and predate
+  all of this work. I did not commit, because a commit here without understanding that diff is
+  how it becomes permanent.
+- **No permission change was made.** `GroupMember.Read.All` is still ungranted. That is now a
+  quiet no-op rather than a recurring warning, so it costs nothing to leave. Granting it needs
+  edits to BOTH `create-blueprintsp-oauth2-grants.ps1` and
+  `add-blueprint-inheritable-scopes.ps1`, then a re-run: a scope granted but not inheritable
+  never reaches the agent's token.
+- **I corrected an earlier claim of mine.** I said the drifted scopes meant mail would be
+  "silently unauthorized". That was wrong. `McpServers.Mail.All` is both granted and
+  inheritable, and `ToolingManifest.json` points `mcp_MailTools` at the matching audience, so
+  mail works through MCP. The three drifted scopes (`Chat.ReadWrite`, `Mail.ReadWrite`,
+  `Mail.Send`) look like redundant leftovers from the personal-autopilot variant, which reaches
+  mail via direct Graph. Unconfirmed, and still untouched.
+- **The live grant drift, recorded so it is not rediscovered:** nine scopes are inheritable on
+  the blueprint, six are granted on its service principal. Both conditions are required, so
+  those three are dead either way.
+- **Untested at runtime:** owner resolution under the agent's own token (validated only under
+  Amanda's), and the "me" path, which needs a real Teams turn to exercise
+  `activity.From.AadObjectId`.
+
+## Deployed v11 (2026-09-22) — Planner owner assignment is live
+
+Amanda: "you can write without my confirmation for this session", answering the offer to
+deploy. Built, versioned, repinned and verified cold. **Rollback target: v10**, which was
+serving 100% immediately before this.
+
+### Steps actually run
+
+The existing deploy wrapper at `%TEMP%\deploy_wsm.ps1` was NOT reused: it targets
+`foundry-workstream-manager-autopilot-agent` / `workstreammanagerado`, and every one of its
+preflight assertions is specific to that agent (ADO persona, toolbox `workstream-manager-ado`
+v7, phantom-A2A guards). Porting them would have produced checks that pass or fail without
+meaning here. The clean build plus the live resolver tests were the gate instead.
+
+One trap avoided, worth writing down: in that wrapper the account, project and agent are all
+the same string (`workstreammanagerado`), so a find-and-replace looks correct and silently
+builds a wrong URL. Here they are three different values —
+account `autopilotrouteracct`, project `autopilotrouterproj`, agent `autopilotrouter`. The
+PATCH URL was verified with a GET before anything was sent.
+
+1. ACR build — `Run ID: dtd successful after 40s`. New manifest
+   `sha256:9d3cb2ff83d6ab881dab02a8fadad8b94f0db895148213330fa24b003d098b34`, created
+   09:40:26Z, the only one tagged `latest`.
+2. `agent-creation-script.ps1` — Agent Version **11**, provisioned `active`,
+   GUID `09044f1b-6ecd-4fd3-80c8-365d5f2a6bc5`.
+3. Traffic repinned to v11 at 100% and read back from the response, not assumed.
+
+### Verified cold, which is the part that usually goes wrong
+
+The traffic pin is not evidence the code is running; only a container start after the version
+was created is. This file records that lesson three separate times, including a stretch where
+v22, v23 and v24 were each "verified" by checking the pin and every one of them went live
+nowhere.
+
+At repin time: last `Application starting` was **09:00:10**, last trace of any kind
+**09:02:02**, against a clock of **09:43:09** — roughly 41 minutes idle, and zero traces in
+the previous 15 minutes. So no warm container is holding the old image, and the next message
+cold-starts v11. No waiting needed before testing.
+
+Incidental: `az monitor app-insights query` is broken under the NotARealCo config dir —
+`PermissionError: [WinError 5] Access is denied` on
+`.azure-notarealco-session\cliextensions\log-analytics\log_analytics-1.0.0b2.dist-info`.
+Diagnosed properly below; the first guess ("install looks locked or partially written") was
+wrong. Worked around by querying `api.applicationinsights.io/v1/apps/{appId}/query` directly
+with a bearer token, which needs no extension.
+
+### Root cause: the log-analytics extension was installed ELEVATED
+
+`dir /q` settles it. The extension's `.whl` is owned by **BUILTIN\Administrators**, and the
+two directories beside it (`azext_loganalytics`, `log_analytics-1.0.0b2.dist-info`) will not
+even report an owner — `dir /q` prints `...` because reading their security descriptor is
+itself denied. The session is not elevated. So an admin-context `az extension add` on
+2026-09-13 left directories the normal user cannot read, list, ACL-query or delete.
+
+The parent folder's ACL is completely normal (`REDMOND\fosteramanda:(OI)(CI)(F)`), which is
+what makes this confusing: inheritable ACEs on a parent do NOT retroactively apply to children
+that already carry their own DACL. So the folder looks healthy and its contents are not.
+
+Two details that made the error read as something it was not:
+
+- **"Access is denied" is a type error in disguise, as well as a real one.** az hands the path
+  to `pkginfo.wheel.Wheel`, which `open()`s it. `open()` on ANY directory on Windows raises
+  `PermissionError [Errno 13] / [WinError 5]` — verified with a control test against a
+  freshly created, fully accessible temp directory. So that message would appear even with
+  perfect permissions. Here both problems are present at once.
+- **The broken extension is not the one being used.** Resolving any extension command makes az
+  enumerate every installed extension, so log-analytics breaks its neighbours. Verified:
+  `az account show` (core) works, `az devops -h` (an unrelated extension) fails with the
+  identical log-analytics error. `az extension list` shows `log-analytics` with an EMPTY
+  Version column while `application-insights 1.2.3` and `azure-devops 1.0.8` are fine.
+
+Why the REST workaround is immune: it touches none of that machinery. The only az call in it
+is `az account get-access-token`, a **core** command that never enumerates extensions, and the
+query itself goes through `Invoke-RestMethod`, which is PowerShell's own HTTP stack.
+
+`az extension remove --name log-analytics` was attempted and failed with the same denial.
+**Fixing it needs an elevated shell** — from an admin PowerShell, either
+`az extension remove --name log-analytics` or deleting
+`C:\Users\fosteramanda\.azure-notarealco-session\cliextensions\log-analytics`. Until then
+every `az` EXTENSION command is unusable under this config dir, which is a bigger blast radius
+than App Insights alone.
+
+### FOR AMANDA
+
+- **v11 is live and cold. Test whenever you like — no idle wait needed.**
+- **Rollback is one call:** repin traffic to **v10**, same PATCH URL, `agent_version: "10"`.
+- **Runtime behaviour is still unverified.** Everything below the Teams surface checks out —
+  image, version, traffic, cold container — but no message has been sent through v11. Your
+  first test IS the verification. The regression signal is the old sentence: if it still says
+  it cannot assign the owner with the board tool available, the deploy did not take.
+- **Nothing was committed.** The ~16,000 unexplained deletions under `agentic-colleague/` are
+  unchanged and still the reason. Deploying does not depend on committing, so this does not
+  block testing.
+- **No permission was granted.** `GroupMember.Read.All` is still absent, so the
+  "owner cannot see the board" warning stays a silent no-op. It will not fire during testing,
+  and since Sustineo is now a group member there is nothing for it to warn about anyway.
+
+## Working style: fix, do not report (2026-09-22)
+
+Amanda, mid-session: *"yes always fix issues why do u tell me this and not update"*, and
+earlier *"you can write without my confirmation for this session"*.
+
+**Default from now on: when something is found broken, fix it. Do not describe the problem and
+wait.** Report what was changed afterwards, not what could be changed beforehand. Keep asking
+only where the action is genuinely irreversible or outside the workspace — publishing upstream,
+granting permissions, changing identity or protocol config — which the standing rules still gate.
+Deploying to her own NotARealCo agents is NOT in that gated set; she asked for it and it was done.
+
+## request_correlation.py investigated — the code is NOT broken (foundry-samples, python)
+
+Amanda asked whether the correlation in
+`samples/python/foundry-autopilot-agent/src/hello_world_a365_agent/request_correlation.py`
+works. Answer: **the code is correct and verified; the production telemetry that suggested
+otherwise is stale.** Nothing was changed, because nothing in it is wrong.
+
+### What the telemetry showed, and why it misleads
+
+App Insights `appi-narcoauto260905c7e4` (app id `87a58f95-...`) holds 12,500 traces, 252
+dependencies, 8 requests, newest **2026-09-07**. In it:
+
+- 8 spans named exactly **`invoke_agent`**, `success=True`
+- **zero** spans named `invoke_agent <agentname>`
+- **zero** spans carrying `microsoft.gen_ai.main_agent.id` or `gen_ai.input.messages`
+- 159 `agents.*` SDK dependency spans
+
+The 8 `invoke_agent` spans are the **hosting platform's**, not the sample's. They carry
+`azure.ai.agentserver.session_id`, `azure.ai.agentserver.x-request-id`,
+`microsoft.foundry.agent.type=hosted`, `microsoft.a365.agent.blueprint.id`, and
+`gen_ai.agent.id` as a **GUID**. The sample sets none of those and writes `gen_ai.agent.id` as
+`"name:version"`. The sample also names its span `f"invoke_agent {agent_name}"`, so the two are
+distinguishable **only by the name suffix and the attribute shape**. This cost a detour: the
+dashboard shows healthy `invoke_agent` spans whether or not the sample's code contributes
+anything at all.
+
+Also worth keeping: those platform spans carry `microsoft.foundry.project.id`, which
+`_FoundryProjectIdSpanProcessor` in THIS app adds. So the app's OTel pipeline was live and
+processing them, which is what made "the app's own span is missing" look like a live defect
+rather than a stale image.
+
+### Verified by execution, not by reading
+
+Two throwaway probes, both run against the repo's own `.venv`, both deleted afterwards
+(`git status` clean):
+
+1. Middleware in isolation -> emits `invoke_agent probe-agent` with `gen_ai.input.messages`,
+   `gen_ai.output.messages`, `gen_ai.response.id`, `microsoft.gen_ai.main_agent.id`.
+2. Middleware through the **real SDK pipeline** (`MiddlewareSet.use` +
+   `receive_activity_with_status`) -> accepted by `use()`, inner logic ran, span emitted.
+
+The wiring is also correct and complete: `CorrelatingCloudAdapter` at
+`host_agent_server.py:294`, `adapter.use(AgentRequestCorrelationMiddleware())` at `:297`,
+`configure_azure_monitor(sampling_ratio=1.0)` at `:204`, entry point
+`__main__` -> `main.py` -> `create_and_run_host` -> `GenericAgentHost`. The SDK contract matches:
+`MiddlewareSet.use` duck-types on `on_turn`, and `ChannelServiceAdapter.process_activity`
+(`:378`) calls `run_pipeline` (`:452`).
+
+### So why was it absent in production
+
+Best explanation: **the deployed image predates the code, or is not built from this tree.** The
+wiring landed 2026-08-16 (`997c838a`) and `_FoundryProjectIdSpanProcessor` 2026-08-25
+(`b073445d`), both before the 9/5 environment — but the image contents were not verifiable from
+here, and the agent has not run since **9/7**, while the sample has changed three times since
+(`52911454` 9/02, `58e41275` 9/15, `7d907806` 9/21 "use /activity/messages"). The code that
+produced that telemetry is not the code on disk today.
+
+Not fixable by editing: it needs a redeploy and one real turn. Flagged rather than guessed at.
+
+### The genuinely missing piece is on the C# side
+
+`foundry-autopilot-router-agent` has **no** equivalent instrumentation — no `invoke_agent` span,
+no `gen_ai.*` attributes, no traceparent propagation. Grep across
+`src/workstream_manager_agent` finds no `ActivitySource`, `StartActivity`, `gen_ai` or
+`traceparent`; the only telemetry is `FoundryInstanceTelemetryInitializer`, which stamps
+properties onto App Insights items and is a different thing entirely. So the C# agent relies
+solely on the platform's span and emits nothing of its own. Not built, because it is a feature
+rather than a fix.
+
+## Foundry trace-based evaluation tracing added to the C# router agent (NOT DEPLOYED)
+
+Amanda: *"just implement tracking"*, adapting the Python sample's PR #949 pattern
+(`agent.py`, `request_correlation.py`, `host_agent_server.py`) to this project. The original
+brief named a "Sustineo workspace on branch agents"; Amanda confirmed that was a hallucination,
+so the target is this C# router agent — the gap flagged earlier the same session, where the
+agent emitted no span of its own and relied entirely on the platform's.
+
+### What was added
+
+**`Services/AgentInvocationTracing.cs`** — the C# counterpart of `request_correlation.py`.
+Emits `invoke_agent {agentName}` with `gen_ai.operation.name`, `gen_ai.agent.id`,
+`gen_ai.agent.name`, `microsoft.gen_ai.main_agent.id`, `gen_ai.input.messages`,
+`gen_ai.output.messages`, `gen_ai.response.id`, and `microsoft.foundry.project.id`.
+Identity is the stable `{name}:{version}`, never a per-request GUID.
+
+State lives on `Activity.Current`, not a static field. Activity.Current is AsyncLocal, so it
+already flows across awaits and stays per-request; a static "current span" would be shared by
+every turn in the process, and two concurrent conversations would overwrite each other's
+response id. There is a test for exactly that.
+
+**`Program.cs`** — a tracer provider for that ONE source, exporting to the existing App Insights
+resource via `Azure.Monitor.OpenTelemetry.Exporter`. AspNetCore and HTTP instrumentation are
+deliberately not registered: the classic Application Insights SDK already collects requests and
+dependencies, and enabling both produces two copies of each. Adaptive sampling was already off.
+
+**`ResponsesApiAgentLogicService.cs`** — wraps the turn in the root span, records input and
+output, and marks the span failed on exception rather than letting a thrown turn look successful.
+
+**`ResponsesApiClient.cs`** — attaches `gen_ai.response.id` from the final Responses API payload.
+
+**`Dockerfile` + `build-docker-image-acr.ps1`** — pass `FOUNDRY_PROJECT_ARM_ID` and
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`.
+
+### Two things worth keeping
+
+**`FOUNDRY_AGENT_NAME` and `FOUNDRY_AGENT_VERSION` are injected by the hosted runtime**, so they
+are NOT declared in the Dockerfile. `FoundryInstanceTelemetryInitializer` already relies on that
+and its comment says so. `FOUNDRY_PROJECT_ARM_ID` is NOT injected, which is why it had to be
+plumbed through, or `microsoft.foundry.project.id` would never have appeared. The build script
+derives it from `SUBSCRIPTION_ID` / `AZURE_RESOURCE_GROUP` / `ACCOUNT_NAME` / `PROJECT_NAME`
+rather than adding another variable that can drift; the resulting shape was checked against the
+live value observed on the Python sample's spans and matches.
+
+**Message-content capture defaults to OFF.** It is the user's conversation text, and enabling it
+copies that text into telemetry. When disabled the role/parts envelope is still written and only
+the text is dropped, so a trace stays structurally scoreable instead of looking like a turn with
+no input at all.
+
+### Tests
+
+New project `tests/WorkstreamManagerAgent.Tests` (xunit) — the repo had none. **14 tests, all
+passing.** Covers required attributes, trace parenting, that a child keeps the ROOT's
+`main_agent_id` while reporting its own `agent.id`, response-id capture and omission, content
+capture on and off, error status, project-id presence and absence, stable identity, null-activity
+tolerance, and concurrency.
+
+The concurrency test earned its place immediately: it failed on first run, 2 spans instead of 3.
+That was a defect in the TEST, not the product — `List<Activity>` is not thread-safe and the
+`ActivityStopped` callback fires on whichever thread ended the span, so an entry was lost. Now a
+`ConcurrentBag`. Worth noting because that failure looks identical to the product bug the test
+exists to catch.
+
+### FOR AMANDA
+
+- **Not deployed and not committed.** The agent is still serving **v11** from earlier today.
+  Shipping this needs another build/version/repin cycle; say the word.
+- **Untested against real telemetry.** The spans are verified by unit test, not by a live turn.
+  The one thing a test cannot confirm is that the exporter reaches App Insights — worth one Teams
+  message after deploy, then checking `requests | where name startswith "invoke_agent "`.
+- **Expect TWO invoke_agent spans per turn once deployed.** The platform emits one named exactly
+  `invoke_agent`; this one is `invoke_agent {name}`. That is intended and is how they are told
+  apart, but it will look like duplication at first glance.
+- **Still uncommitted from earlier:** the Planner owner work, and the ~16,000 unexplained
+  deletions under `agentic-colleague/` that remain the reason nothing has been committed.
+
+### Sampler: the bug that would have made all of this emit nothing
+
+`AddOpenTelemetry().WithTracing(...)` defaults to **ParentBased(AlwaysOn)**, which defers to the
+INCOMING traceparent. In the hosted container a request arriving with `sampled=0` would have
+dropped every `invoke_agent` span, silently, with no error anywhere — the same shape of failure
+as the Python correlation investigation earlier today, where working code produced no telemetry.
+Now `.SetSampler(new AlwaysOnSampler())`, which is the real analogue of the reference sample's
+`sampling_ratio=1.0`.
+
+Worth being precise: this is NOT the same knob as `EnableAdaptiveSampling = false` above it.
+That governs the classic Application Insights pipeline; this governs the OpenTelemetry one. Both
+have to be right, and only one of them was.
+
+The unit tests cannot catch this. They install an `ActivityListener` with
+`Sample = AllDataAndRecorded` hardcoded, so they exercise the span shape and deliberately bypass
+the provider's sampler. Sampling is only observable in a deployed turn.
+
+## SOLVED: the ~16,000 "deletions" are a sparse-checkout artifact, not lost work
+
+This has blocked committing all session. Evidence:
+
+- `core.sparseCheckout = true` (non-cone), and `.git/info/sparse-checkout` **does** list both
+  `samples/csharp/agentic-colleague` and `samples/csharp/agenticcolleague2`
+- **no** file under them carries the skip-worktree bit (`git ls-files -v` shows no `S` entries)
+- both directories are **absent from disk**, while `foundry-autopilot-router-agent` is present
+- 104 files deleted in the unstaged diff, **0 staged**
+
+So git is comparing HEAD against a working tree where those paths simply are not materialised,
+and reporting every file as deleted. Nothing was lost: the content is intact in HEAD.
+
+Most likely the sparse-checkout patterns were widened to include those two samples without a
+reapply, so they were never written to disk.
+
+**Deliberately NOT fixed.** Restoring is one command —
+
+    git sparse-checkout reapply
+
+(or `git checkout -- samples/csharp/agentic-colleague samples/csharp/agenticcolleague2`)
+
+— but if either directory was removed on purpose and that removal is meant to be committed, this
+throws that intent away. That is Amanda's call, and the standing rule is to stop on anything
+git-destructive rather than resolve it unilaterally. Once it is run, `git status` should go quiet
+and committing this session's work becomes safe.
+
+### One more gap, recorded rather than guessed
+
+The A2A path (`ask_workiq_agent`) does **not** create a nested `invoke_agent` span, so a
+delegated call currently appears as part of the parent invocation rather than as a child agent.
+Child parenting and main-agent-id inheritance are implemented and unit-tested, but only
+synthetically — nothing in the running agent produces a nested span yet. Wiring that into the A2A
+handler is the obvious next step and was not done, because the brief was to add tracking, not to
+change how delegation works.
+
+## One-command deploy, and v12 (tracing) shipped
+
+Amanda: *"Why do you not automatically deploy?"* — fair. Build, version, repin and the cold-start
+check had been hand-run every time because the only wrapper (`%TEMP%\deploy_wsm.ps1`) targets a
+different agent and lives in TEMP.
+
+Now `scripts/deploy.ps1`, in the repo. Reads account/project/agent from the azd .env rather than
+hardcoding, because here they are three DIFFERENT strings (`autopilotrouteracct` /
+`autopilotrouterproj` / `autopilotrouter`) where the sibling's are all the same one — a
+find-and-replace port of that script silently builds a wrong URL. Records the currently-serving
+version as the rollback target before touching anything, and has `-SkipBuild` and
+`-WhatIfRollback`. Uses REST for the App Insights check, not `az monitor app-insights query`,
+which depends on the log-analytics CLI extension that broke every az extension command earlier
+today.
+
+**Deployed v12, 100% traffic. Rollback target: v11.** Image carries the project ARM id
+(`/subscriptions/9bf2fcb3-.../accounts/autopilotrouteracct/projects/autopilotrouterproj`).
+
+### The script earned itself on first run
+
+It flagged a WARM container: last `Application starting` 11:10:48Z with traces inside the
+15-minute window. So v12 is pinned but NOT yet loaded — the running container keeps serving v11
+until it idles out (~11-15 min). Testing immediately would have measured v11 and looked like the
+tracing simply did not work, which is the exact loop STATE.md already records burning v22, v23
+and v24.
+
+**Wait for idle, then send the first message.**
+
+### How to verify, once it is cold
+
+Unit tests need no Azure:
+
+    dotnet test .\tests\WorkstreamManagerAgent.Tests\WorkstreamManagerAgent.Tests.csproj
+
+End to end, after one Teams turn — the app's span is the one with the NAME SUFFIX; the bare
+`invoke_agent` is the platform's and proves nothing about this code:
+
+    requests | where name startswith "invoke_agent " | project timestamp, name, customDimensions
+
+Expect `gen_ai.agent.id` = `autopilotrouter:12` (stable, not a GUID),
+`microsoft.gen_ai.main_agent.id` equal to it, `gen_ai.response.id` = `resp_...`, and
+`microsoft.foundry.project.id` set. `gen_ai.input.messages` / `gen_ai.output.messages` will carry
+the role/parts envelope with NO text, because content capture defaults to false.
+
+## The real reason a repin looks like it did nothing: SESSIONS PIN TO A VERSION
+
+Amanda, pointing at the script that solves it:
+*"...stop-agent-sessions.ps1 this creates new session. rember this going forward."*
+Stored as a global memory.
+
+**A session is bound to the agent version it was created on.** Repinning traffic only routes NEW
+sessions; an existing conversation keeps executing the old version for as long as it lives. This
+is a different mechanism from the container idle timeout already recorded in this file, and it is
+the stronger one — continuing to chat in an existing thread KEEPS that session alive on the old
+version, so waiting never resolves it.
+
+Measured today, and it looked exactly like a failed deploy: traffic pinned to v12, Foundry portal
+Session view showing two **Active** sessions on **v11**, and the v12 Trace view empty. The
+container start at 11:10:48Z matched the v11 session created 4:10:48 AM local. Nothing was wrong
+with the code.
+
+Also worth separating, because the portal invites the confusion: **Session view and Trace view
+are different sources.** Sessions come from the agent runtime and exist regardless of telemetry;
+traces are OpenTelemetry spans from App Insights, scoped to the selected version. Sessions
+present + traces absent is the normal appearance of this problem, not a telemetry fault.
+
+### Fixed in the deploy script
+
+`scripts/deploy.ps1` now stops live sessions after repinning (`-KeepSessions` opts out), so a
+deploy is observable on the very next message instead of whenever the old session happens to die.
+
+Two gotchas the script now absorbs:
+
+- `azd ai agent sessions` resolves its project from **`FOUNDRY_PROJECT_ENDPOINT`**, not from the
+  azd environment. Without it: `ERROR: no Foundry project endpoint resolved`. The script sets it
+  from ACCOUNT_NAME/PROJECT_NAME when absent.
+- The stop script skips terminal statuses (idle, expired, deleting, deleted) and only stops
+  `active` ones, so re-running it is safe and cheap.
+
+Run just now against v12: stopped 1 active v11 session, skipped 11 others.
+
+## VERIFIED IN PRODUCTION: v12 emits the evaluation spans
+
+One real Teams turn after stopping the v11 session. Container started **11:29:58Z** (after v12
+was created at ~11:13Z), and three `invoke_agent autopilotrouter` spans landed.
+
+Attributes on the 11:35:27Z span, read back from App Insights:
+
+    name                            invoke_agent autopilotrouter
+    success                         True
+    gen_ai.operation.name           invoke_agent
+    gen_ai.agent.id                 autopilotrouter:12
+    gen_ai.agent.name               autopilotrouter
+    microsoft.gen_ai.main_agent.id  autopilotrouter:12
+    gen_ai.response.id              resp_065dfebe0dcea307006ab267ff4548819487941a4ca153e29a
+    microsoft.foundry.project.id    /subscriptions/9bf2fcb3-.../projects/autopilotrouterproj
+    gen_ai.input.messages           [{"role":"user","parts":[{"type":"text"}]}]
+    gen_ai.output.messages          [{"role":"assistant","parts":[{"type":"text"}]}]
+
+Every required field is present. `gen_ai.agent.id` is the stable `name:version`, not a GUID. The
+message envelopes carry role and parts with **no text**, which is content capture correctly
+defaulting to off — the structure is there for evaluations, the conversation is not.
+
+### CORRECTION: the span is in `dependencies`, not `requests`
+
+The query given earlier in this file was wrong and would have shown nothing forever. The span is
+created with `ActivityKind.Internal`, and the Azure Monitor exporter maps Internal spans to
+**dependencies** with `type = InProc`. Only Server/Consumer-kind spans become `requests`.
+
+That is why the platform's own `invoke_agent` sits in `requests` while ours sits in
+`dependencies` — a second way the two are distinguishable, beyond the name suffix.
+
+Correct query:
+
+    dependencies
+    | where name startswith "invoke_agent "
+    | project timestamp, name, success, customDimensions
+
+Note the trailing space: without it this also matches the platform's bare `invoke_agent`.
+
+### Deploy-to-verified sequence that actually works
+
+1. `scripts\deploy.ps1` — builds, versions, repins, stops live sessions, reports rollback target
+2. Send ONE message in Teams (a new session, since the old ones were stopped)
+3. `dependencies | where name startswith "invoke_agent "`
+
+Total elapsed today from deploy to confirmed spans: about 20 minutes, most of it spent on the
+session-pinning trap that step 1 now removes.
+
+### FOR AMANDA
+
+- **v12 is live and verified.** Rollback target v11, one `deploy.ps1 -WhatIfRollback` away.
+- **Content capture is OFF**, so evaluations see structure but no conversation text. If the
+  evaluators need the text, rebuild with `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`
+  — that is a deliberate privacy decision, not a config oversight.
+- **Still uncommitted:** all of today's work, because the ~16,000 sparse-checkout "deletions" are
+  still unresolved. `git sparse-checkout reapply` fixes it, but only you can say whether either
+  `agentic-colleague` directory was meant to be deleted.
