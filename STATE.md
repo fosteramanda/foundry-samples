@@ -4082,3 +4082,58 @@ these Planner cases.
   were performed. No Azure resources were created or changed; incremental resource cost is $0.
 - Initial persona authentication and target-instance verification happen when the test is run.
   The unrelated deleted root `.gitignore` is untouched and excluded from this commit.
+
+## Agent 365 registration: agentUserInstances cannot be called from outside Microsoft (2026-09-22)
+
+Amanda asked for the schema of the undocumented
+`POST /beta/copilot/agentRegistrations({id})/agentUserInstances` and a call against the canary
+registration `T_f2a10ea0-0782-4e88-76f2-848688d217b3` (Preview Explicit Instance Test: agent
+identity `dde466b0-...`, agent user account `9311c18b-...`, blueprint `783de898-...`). Not for the
+Entra API one-pager.
+
+### What was established
+
+Graph does not have it. Neither the `beta` nor the `stagingbeta` `$metadata` defines
+`agentUserInstances` or any `agentUserInstance` type. `agentRegistration` has its 14 properties, no
+navigation properties and no bound actions, and Learn's agentRegistration page says
+"Relationships: None". Parenthesis keys and key-as-segment both return
+`400 Resource not found for the segment 'agentUserInstances'`. The older
+`/beta/agentRegistry/agentInstances` API, the one with `agentUserId`, now returns 404 for every read.
+
+The route does exist on the internal AgentX service: app `59eca866-2f46-40b8-96ff-63f663121ef9`,
+service principal "Agent 365" in this tenant, one delegated scope `AgentX.Access`, no app roles.
+Unauthenticated `POST` and `GET` on
+`https://agentx.microsoft.com/api/a365/agents/registration/{id}/agentUserInstances` return 401,
+while a made-up sibling path returns 404. `agentxppe.microsoft.com` behaves the same.
+
+AgentX refuses every caller that can be obtained legitimately:
+
+| Attempt | Result |
+|---|---|
+| Azure CLI token for AgentX | `AADSTS65002`: a first-party client needs preauthorization by the API owner |
+| App-only token from a tenant app | 403, empty body, MISE |
+| Delegated token, `scp=AgentX.Access`, Global Administrator, via OBO from an admin-consented tenant app | 403, empty body, including `POST /api/a365/agents/registration` |
+
+AgentX rejects the calling app before it reads the body, so no validation errors come back and the
+body cannot be discovered by probing. The Agent365-devTools code reaches the same conclusion for
+AgentX 403 responses: a backend issue that no role or permission change on the caller's side
+resolves. No public GitHub code, Learn page or WorkIQ result contains the request body.
+
+### Tenant changes (Not A Real Co)
+
+- Created app registration **AgentX Registration API Test**, appId
+  `c31b2065-1ebd-4bb2-8f5e-1c2a0e383f9e`, object `5b45c169-...`, service principal `2980ea60-...`,
+  with delegated `AgentX.Access`, an AllPrincipals admin grant and an exposed `access_as_user` scope.
+- Two one-day client secrets and an Azure CLI preauthorization were added for the probes, then
+  removed. Verified afterwards: 0 secrets, 0 preauthorized clients. Local token files deleted.
+- No registration, agent identity, agent user account, license or routine changed. Cost $0.
+
+### FOR AMANDA
+
+- The Graph `agentUserInstances` API is not in the Graph schema for this tenant, and the AgentX
+  original accepts only callers Microsoft has allowlisted. Only the owners can unblock this: ask in
+  "Foundry customers calling registration api for agent user" for the request body and the Graph
+  ship date, or for an allowlist entry for appId `c31b2065-...`.
+- The test app is inert while AgentX rejects it. It was kept for a possible allowlist; deleting it
+  needs your OK.
+- The canary registration `T_f2a10ea0-...` persists, and the Teams Settings retest is still open.
