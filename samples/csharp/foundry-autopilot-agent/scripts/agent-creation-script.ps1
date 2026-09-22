@@ -8,7 +8,8 @@ $AzureContainerRegistryEndpoint = $env:AZURE_CONTAINER_REGISTRY_ENDPOINT
 $authorityEndpoint = "https://login.microsoftonline.com/$($env:TENANT_ID)"
 $azureOpenAIEndpoint = "https://$($env:ACCOUNT_NAME).openai.azure.com/"
 $modelDeployment = $env:MODEL_NAME
-
+$projectResourceId = "/subscriptions/$($env:SUBSCRIPTION_ID)/resourceGroups/$($env:RESOURCE_GROUP)/providers/Microsoft.CognitiveServices/accounts/$($env:ACCOUNT_NAME)/projects/$($env:PROJECT_NAME)"
+$captureMessageContent = if ([string]::IsNullOrWhiteSpace($env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT)) { "false" } else { $env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }
 
 $agentUrl = "$($AzureAIProjectEndpoint)/agents/$($AgentName)/versions?api-version=2025-11-15-preview"
 
@@ -22,6 +23,8 @@ $agentCreationBody = @{
             "Connections__ServiceConnection__Settings__AuthorityEndpoint" = $authorityEndpoint
             "AzureOpenAIEndpoint"                                         = $azureOpenAIEndpoint
             "ModelDeployment"                                             = $modelDeployment
+            "FOUNDRY_PROJECT_ARM_ID"                                       = $projectResourceId
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"           = $captureMessageContent
         }
         container_protocol_versions = @(
             @{

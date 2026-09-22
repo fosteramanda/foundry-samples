@@ -28,7 +28,14 @@
   $AzureContainerRegistryEndpoint = $env:AZURE_CONTAINER_REGISTRY_ENDPOINT
   $MAIBName = $env:MAIB_NAME
 
-  $environmentVariables = @{}
+  $subscriptionId = if ($env:SUBSCRIPTION_ID) { $env:SUBSCRIPTION_ID } else { $env:AZURE_SUBSCRIPTION_ID }
+  $resourceGroup = if ($env:RESOURCE_GROUP) { $env:RESOURCE_GROUP } else { $env:AZURE_RESOURCE_GROUP }
+  $projectResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.CognitiveServices/accounts/$($env:ACCOUNT_NAME)/projects/$($env:PROJECT_NAME)"
+  $captureMessageContent = if ([string]::IsNullOrWhiteSpace($env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT)) { "false" } else { $env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }
+  $environmentVariables = @{
+      "FOUNDRY_PROJECT_ARM_ID" = $projectResourceId
+      "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT" = $captureMessageContent
+  }
   if (-not [string]::IsNullOrWhiteSpace($env:DIRECT_MESSAGE_ALLOWLIST_TABLE_SERVICE_URI)) {
       $environmentVariables.DirectMessageAllowListTableServiceUri = $env:DIRECT_MESSAGE_ALLOWLIST_TABLE_SERVICE_URI
   }

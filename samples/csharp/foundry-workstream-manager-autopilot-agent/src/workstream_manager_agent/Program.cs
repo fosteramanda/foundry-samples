@@ -88,10 +88,23 @@ builder.Services.AddApplicationInsightsTelemetry(options =>
 
 builder.Logging.AddApplicationInsights();
 
+// The classic SDK already collects HTTP telemetry; export only our invocation source here.
+var otelConnectionString =
+    builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"] ??
+    builder.Configuration["ApplicationInsights:ConnectionString"];
+if (!string.IsNullOrWhiteSpace(otelConnectionString))
+{
+    builder.Services.AddHostedService(_ => new AgentInvocationTracingService(otelConnectionString));
+}
 
 var app = builder.Build();
 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
+if (string.IsNullOrWhiteSpace(otelConnectionString))
+{
+    logger.LogWarning(
+        "Application Insights is not configured. Set APPLICATIONINSIGHTS_CONNECTION_STRING to enable telemetry.");
+}
 logger.LogInformation("Application starting...");
 
 // ===================================
