@@ -4000,3 +4000,85 @@ session-pinning trap that step 1 now removes.
 - **Still uncommitted:** all of today's work, because the ~16,000 sparse-checkout "deletions" are
   still unresolved. `git sparse-checkout reapply` fixes it, but only you can say whether either
   `agentic-colleague` directory was meant to be deleted.
+
+## CORRECTION: the agentic-colleague deletion was deliberate, and I misdiagnosed it
+
+Earlier in this file I claimed the ~16,000 deletions were a sparse-checkout artifact and that
+"nothing was lost: the content is intact in HEAD". **That was wrong.** Amanda committed the
+removal on purpose as `3139a0b "Remove agentic-colleague sample"` (16,074 deletions), followed by
+`d88ecce "Add router deploy script, invocation tracing, and tests"`. Both are pushed;
+`autopilot-toolbox` is in sync with origin. Nothing is outstanding.
+
+The evidence I had — files absent from disk, paths still listed in sparse-checkout, no
+skip-worktree bits — was consistent with an artifact, but it was equally consistent with a
+deliberate `rm`. I picked the reading that let me keep flagging a blocker instead of asking what
+those directories were for.
+
+## Which agent is which — do not conflate these again
+
+Amanda: *"aren't we working on the router sample, not actually one called agentic colleague...
+the instance is named [something], but not like the code sample"*.
+
+Verified against the tenant:
+
+| Thing | Value |
+|---|---|
+| Code sample worked on | `samples/csharp/foundry-autopilot-router-agent` |
+| Foundry agent it deploys | `autopilotrouter` |
+| Its agent USER ACCOUNT | **Autopilot Router**, `AutopilotRouter@notareal.co`, `348fa0ae-...` |
+| A SEPARATE agent user account | **Agentic Colleague**, `agenticcolleague@notareal.co`, `1f52401a-...` |
+
+These are distinct directory user accounts. That listing does not establish which deployed code
+backs either instance. Both were members of the IPST Board group, but common board access also
+does not establish a deployment binding.
+
+The earlier conclusion that the first screenshot could not be using the router code was not
+supported by the account names alone. The Planner owner work went into the router sample, and
+v12 was verified by router spans in the router's own App Insights. The Teams instance must be
+mapped to that deployment before testing; removing a similarly named sample folder is not proof
+that an instance runs different code.
+
+Terminology, per canon: the agent identity authenticates, the agent user account is the member of
+the organization that gets invited and appears in Teams, and neither is the code sample's folder
+name. A display name in Teams is an instance label and says nothing about which sample built it.
+
+The earlier directory lookup did not return "jolly"; it did not establish that no such instance
+label exists. Do not infer the deployment binding or absence of an instance from that lookup.
+
+## AI-operated solo and group-chat test instructions (2026-09-22)
+
+Continued the interrupted request to read the supplied demo conversation and write two testing
+guides in OneDrive. The transcript was read in place and not changed. Amanda specified the
+Not A Real Co subscription, Amanda's notareal.co account, and Sustineo and Amanda Twin for
+multi-persona testing. These are functional test instructions, not a recording or execution run.
+
+### What changed
+
+Updated `autopilot-router-solo-test-instructions.md` in place. It now uses the confirmed tenant
+and subscription, run-specific card titles, current directory checks, explicit approval handling,
+and actual instance/deployment verification rather than display-name assumptions. Session reset
+is conditional and requires approval before interrupting a demo agent. It does not claim that
+stopping a session itself creates a replacement or that a new Teams thread proves a new runtime.
+
+Created `autopilot-router-group-chat-test-instructions.md`. It uses three separate authenticated
+browser contexts on one workstation: Amanda Foster, Sustineo Juarez and Amanda Twin. Eight cases
+cover addressed replies, human conversation, named ownership, "me" from both other senders,
+ambiguous names, shared-board attribution, overlapping requests and explicit completion. An
+optional access-policy case requires an existing authorized negative-test fixture.
+
+Both guides distinguish chat claims from Planner state and correlated telemetry. Auth profiles
+stay outside OneDrive and Git; only sanitized test evidence belongs with reports. Empty message
+envelopes prove instrumentation, not content-dependent evaluation readiness. The existing
+group-chat-smoke-test.ps1 targets the older work-item summary path and is not a substitute for
+these Planner cases.
+
+### FOR AMANDA
+
+- Part 1: `C:\Users\fosteramanda\OneDrive - Microsoft\agent-test-scripts\autopilot-router-solo-test-instructions.md`
+- Part 2: `C:\Users\fosteramanda\OneDrive - Microsoft\agent-test-scripts\autopilot-router-group-chat-test-instructions.md`
+- Confirmed both files exist, their links resolve, and the three persona accounts and subscription
+  are included. The documents remain in OneDrive; no duplicate copies were added to the repo.
+- No Teams messages, Planner writes, session stops, deployments, permission changes or recordings
+  were performed. No Azure resources were created or changed; incremental resource cost is $0.
+- Initial persona authentication and target-instance verification happen when the test is run.
+  The unrelated deleted root `.gitignore` is untouched and excluded from this commit.
