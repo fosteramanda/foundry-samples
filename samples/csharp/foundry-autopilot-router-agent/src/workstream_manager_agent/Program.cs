@@ -10,6 +10,8 @@ using Microsoft.Agents.Storage;
 using System.Text;
 using Microsoft.Agents.A365.Observability.Runtime;
 using Microsoft.ApplicationInsights.Extensibility;
+using Azure.Monitor.OpenTelemetry.Exporter;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -97,6 +99,30 @@ builder.Services.AddApplicationInsightsTelemetry(options =>
 });
 
 builder.Logging.AddApplicationInsights();
+
+// Foundry trace-based evaluations read OpenTelemetry spans, which the classic Application
+// Insights SDK above does not emit for a custom ActivitySource. This adds a tracer provider for
+// exactly one source — the invoke_agent spans — and exports it to the same resource.
+//
+// Only that source is registered. AspNetCore and HTTP instrumentation are deliberately left out:
+// the classic SDK already collects requests and dependencies, and enabling both here produces two
+// copies of every one of them.
+var otelConnectionString =
+    builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"] ??
+    builder.Configuration["ApplicationInsights:ConnectionString"];
+
+if (!string.IsNullOrWhiteSpace(otelConnectionString))
+{
+    builder.Services.AddOpenTelemetry().WithTracing(tracing => tracing
+        // The reference sample's sampling_ratio=1.0. The default here is ParentBased(AlwaysOn),
+        // which defers to the INCOMING traceparent: a request arriving with sampled=0 would drop
+        // the invoke_agent span entirely and evaluations would find nothing, with no error
+        // anywhere. Note this is a different mechanism from EnableAdaptiveSampling above, which
+        // only governs the classic Application Insights pipeline.
+        .SetSampler(new AlwaysOnSampler())
+        .AddSource(WorkstreamManager.Services.AgentInvocationTracing.ActivitySourceName)
+        .AddAzureMonitorTraceExporter(options => options.ConnectionString = otelConnectionString));
+}
 
 
 var app = builder.Build();

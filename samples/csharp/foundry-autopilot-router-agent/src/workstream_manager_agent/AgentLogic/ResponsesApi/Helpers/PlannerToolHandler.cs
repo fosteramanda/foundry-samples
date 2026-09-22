@@ -3,6 +3,7 @@ namespace WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.Agents.Core.Models;
 using WorkstreamManager.Models;
 
 /// <summary>
@@ -38,6 +39,17 @@ public class PlannerToolHandler
     // GUID, and so the configured default keeps working if the plan is recreated.
     private readonly Dictionary<string, string> _planIdByTitle = new(StringComparer.OrdinalIgnoreCase);
 
+    // The group owning a plan decides who can actually open the board, which is what makes an
+    // assignment reach its owner rather than just look like it did.
+    private readonly Dictionary<string, string> _groupIdByPlanId = new(StringComparer.OrdinalIgnoreCase);
+
+    // Process-local, and deliberately STATIC: a handler is constructed per turn, so an instance
+    // field would reset on every message and re-log the same missing-permission warning forever.
+    // Same process-local pattern the activity dedupe in A365AgentApplication uses.
+    private static bool _assigneeAccessCheckUnavailable;
+
+    private IActivity? _currentActivity;
+
     public PlannerToolHandler(
         AgentMetadata agentMetadata,
         ILogger logger,
@@ -66,6 +78,12 @@ public class PlannerToolHandler
 
     private string? DefaultBoardName => _configuration["PlannerDefaultBoard"];
 
+    /// <summary>
+    /// Captures the turn's activity so "assign it to me" can resolve to the person speaking.
+    /// Call this at the start of each turn, before invoking the Responses API.
+    /// </summary>
+    public void SetCurrentActivityContext(IActivity? activity) => _currentActivity = activity;
+
     public List<JsonNode> GetToolDefinitions()
     {
         if (!IsEnabled)
@@ -86,6 +104,7 @@ public class PlannerToolHandler
                         "title": { "type": "string", "description": "The task title. Short and specific, e.g. 'Retest saved-card pagination after the fix'. Never a whole sentence of context." },
                         "notes": { "type": "string", "description": "Optional detail: why it exists, and where it came from (the meeting, the work item id, the channel message). Include the evidence so someone reading the board later can check it." },
                         "due_date": { "type": "string", "description": "Optional ISO 8601 date, e.g. 2026-09-24." },
+                        "owner": { "type": "string", "description": "Optional. Who the task belongs to: display name, email or UPN, e.g. 'Sustineo Juarez'. Pass \"me\" if the person speaking is taking it on themselves. This assigns the card to them on the board so it appears in their Planner. Pass the name the user gave you; never guess one, and never put the owner in notes instead of here." },
                         "board": { "type": "string", "description": "Optional board title. Leave empty to use the team's default board." }
                     },
                     "required": ["title"],
@@ -202,11 +221,50 @@ public class PlannerToolHandler
             body["dueDateTime"] = due.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
         }
 
+        // The owner is resolved and attached BEFORE the task exists, so Planner either stores the
+        // card with its owner or stores nothing at all. Creating first and patching the owner on
+        // afterwards is what produces the worst outcome available here: a card sitting on the
+        // board owned by nobody while the chat has already said who it was assigned to.
+        var owner = GetString(args, "owner");
+        var ownerRequested = !string.IsNullOrWhiteSpace(owner);
+        string? ownerId = null;
+
+        if (ownerRequested)
+        {
+            var (resolvedId, ownerError) = await ResolveUserIdAsync(owner!);
+
+            if (resolvedId == null)
+            {
+                return ownerError!;
+            }
+
+            ownerId = resolvedId;
+
+            // The annotation is "#microsoft.graph.plannerAssignment". Planner rejects any other
+            // namespace with a 400 "untyped value ... is invalid. Consider using a OData type
+            // annotation explicitly" — which reads like the annotation is missing rather than
+            // wrong, and sends you looking in the wrong place. Verified against a live plan.
+            body["assignments"] = new JsonObject
+            {
+                [ownerId] = new JsonObject
+                {
+                    ["@odata.type"] = "#microsoft.graph.plannerAssignment",
+                    ["orderHint"] = " !",
+                },
+            };
+        }
+
         var (ok, response, error) = await SendGraphAsync(HttpMethod.Post, "planner/tasks", body);
 
         if (!ok)
         {
-            return $"Could not add '{title}' to the board: {error}";
+            // The assignment travels in this call, so a failure means no card was created at all.
+            // Say so, or the model reports partial success and then retries without the owner.
+            var ownerHint = ownerRequested
+                ? $" Nothing was created, so '{owner}' has not been assigned anything. Report the failure; do NOT retry without the owner."
+                : string.Empty;
+
+            return $"Could not add '{title}' to the board: {error}{ownerHint}";
         }
 
         var taskId = JsonNode.Parse(response ?? "{}")?["id"]?.GetValue<string>();
@@ -226,8 +284,206 @@ public class PlannerToolHandler
             }
         }
 
-        _logger.LogInformation("Planner task created: '{Title}' plan={PlanId} id={TaskId}", title, planId, taskId);
-        return $"Added '{title}' to the board.{notesNote}";
+        _logger.LogInformation(
+            "Planner task created: '{Title}' plan={PlanId} id={TaskId} owner={Owner}",
+            title, planId, taskId, ownerRequested ? owner : "(unassigned)");
+
+        var ownerNote = ownerRequested
+            ? $" Assigned to {owner}.{await DescribeAssigneeAccessAsync(planId, ownerId!, owner!)}"
+            : string.Empty;
+
+        return $"Added '{title}' to the board.{ownerNote}{notesNote}";
+    }
+
+    /// <summary>
+    /// Flags a card assigned to someone who cannot open the board it sits on.
+    ///
+    /// Planner accepts an assignment to a non-member without complaint — verified against a live
+    /// plan — but group membership still gates who can see the board. The card is then assigned in
+    /// every view the team has while never appearing in the assignee's Planner, which is the
+    /// failure the board exists to prevent: it looks tracked and reaches nobody.
+    ///
+    /// NOTE: this needs delegated **GroupMember.Read.All**, which is NOT in the blueprint's Graph
+    /// grant today (ChatMessage.Send, ChannelMessage.Send, ChatMember.Read, ChannelMessage.Read.All,
+    /// User.Read.All, Tasks.ReadWrite). Without it the check cannot run and no warning is produced.
+    /// Assignment itself is unaffected. The failure is logged at Warning rather than swallowed, so
+    /// this shows up as a missing grant instead of a feature that quietly does nothing.
+    ///
+    /// Best-effort by design either way: the card already exists by this point, so a failed check
+    /// must not turn a successful create into a reported error.
+    /// </summary>
+    private async Task<string> DescribeAssigneeAccessAsync(string planId, string userId, string ownerLabel)
+    {
+        if (_assigneeAccessCheckUnavailable)
+        {
+            return string.Empty;
+        }
+
+        var groupId = await ResolvePlanGroupIdAsync(planId);
+
+        if (string.IsNullOrWhiteSpace(groupId))
+        {
+            return string.Empty;
+        }
+
+        var (ok, body, error) = await SendGraphAsync(
+            HttpMethod.Post,
+            $"users/{userId}/checkMemberGroups",
+            new JsonObject { ["groupIds"] = new JsonArray(groupId!) });
+
+        if (!ok)
+        {
+            // Almost always a missing grant rather than a transient fault, so stop retrying for
+            // the life of the process: otherwise every assignment pays two Graph calls and logs
+            // the same warning again, which buries the one line that explains the cause.
+            _assigneeAccessCheckUnavailable = true;
+
+            _logger.LogWarning(
+                "Cannot check whether an assignee can see the board (group {GroupId}), so cards will "
+                + "be assigned without confirming the owner can see them. This check is now DISABLED "
+                + "for this process. It needs delegated GroupMember.Read.All, which is not in the "
+                + "blueprint's Graph grant. Assignment itself is unaffected. Graph said: {Error}",
+                groupId, error);
+
+            return string.Empty;
+        }
+
+        var matched = JsonNode.Parse(body ?? "{}")?["value"] as JsonArray;
+
+        if (matched != null && matched.Count > 0)
+        {
+            return string.Empty;
+        }
+
+        _logger.LogWarning(
+            "Planner task assigned to {UserId}, who is not a member of owning group {GroupId}.",
+            userId, groupId);
+
+        return $" Note: {ownerLabel} is not in the group that owns this board, so the card is assigned"
+            + " to them but will not show up in their Planner until they are added to that group."
+            + " Tell the user this plainly — do not describe the work as visible to them.";
+    }
+
+    private async Task<string?> ResolvePlanGroupIdAsync(string planId)
+    {
+        if (_groupIdByPlanId.TryGetValue(planId, out var cached))
+        {
+            return cached;
+        }
+
+        var (ok, body, _) = await SendGraphAsync(HttpMethod.Get, $"planner/plans/{planId}");
+
+        if (!ok)
+        {
+            return null;
+        }
+
+        var container = JsonNode.Parse(body ?? "{}")?["container"];
+        var groupId = string.Equals(container?["type"]?.GetValue<string>(), "group", StringComparison.OrdinalIgnoreCase)
+            ? container?["containerId"]?.GetValue<string>()
+            : null;
+
+        if (!string.IsNullOrWhiteSpace(groupId))
+        {
+            _groupIdByPlanId[planId] = groupId!;
+        }
+
+        return groupId;
+    }
+
+    /// <summary>
+    /// Finds the directory id for a person named in chat, so a card can be assigned to them.
+    ///
+    /// Refuses rather than guesses. Taking the first of several matches is the wrong trade here:
+    /// the card looks correctly assigned on the board, so nobody checks it, and the mistake only
+    /// surfaces when the wrong person is chased for work they never agreed to. An error the model
+    /// can take back to the user costs one question; a silently misassigned card costs a week.
+    ///
+    /// The or-of-startswith shape across displayName/givenName/surname/mail/userPrincipalName is
+    /// the documented v1.0 user lookup and needs no advanced query headers. Reads use
+    /// User.Read.All, already in the blueprint's Graph grant, so this adds no new permission.
+    /// </summary>
+    private async Task<(string? UserId, string? Error)> ResolveUserIdAsync(string nameOrEmail)
+    {
+        var term = nameOrEmail.Trim();
+
+        // "me" is the one case where the speaker can be inferred without guessing: they said it
+        // about themselves. Anything less explicit stays a question — preferring the speaker for
+        // an ambiguous name would reintroduce exactly the silent misassignment this method exists
+        // to prevent.
+        if (term.Equals("me", StringComparison.OrdinalIgnoreCase)
+            || term.Equals("myself", StringComparison.OrdinalIgnoreCase)
+            || term.Equals("i", StringComparison.OrdinalIgnoreCase))
+        {
+            var speakerId = _currentActivity?.From?.AadObjectId;
+
+            return string.IsNullOrWhiteSpace(speakerId)
+                ? (null, "I could not work out who \"me\" refers to, so I did not create the card. "
+                    + "Ask the user for their name or email address and use that as the owner.")
+                : (speakerId, null);
+        }
+
+        var escaped = term.Replace("'", "''");
+
+        var filter = Uri.EscapeDataString(
+            $"startswith(displayName,'{escaped}') or startswith(givenName,'{escaped}') "
+            + $"or startswith(surname,'{escaped}') or startswith(mail,'{escaped}') "
+            + $"or startswith(userPrincipalName,'{escaped}')");
+
+        var (ok, body, error) = await SendGraphAsync(
+            HttpMethod.Get,
+            $"users?$filter={filter}&$select=id,displayName,userPrincipalName,mail&$top=5");
+
+        if (!ok)
+        {
+            return (null, $"Could not look up '{nameOrEmail}' in the directory: {error} Nothing was created.");
+        }
+
+        var users = JsonNode.Parse(body ?? "{}")?["value"] as JsonArray;
+
+        if (users == null || users.Count == 0)
+        {
+            return (null,
+                $"There is nobody in the directory matching '{nameOrEmail}', so I did not create the card. "
+                + "Ask the user for the person's full name or email address. Do NOT create it unassigned "
+                + "and do NOT record the owner in the notes instead — neither puts the work in their queue.");
+        }
+
+        if (users.Count > 1)
+        {
+            // startswith means a full, correct name can still collide with a longer one
+            // ("Amanda Foster" against an "Amanda Fosterman"). An exact hit on the name, mail or
+            // UPN is the user being precise, so honour it instead of asking a question they have
+            // already answered. A partial name like "Amanda" has no exact match and still refuses.
+            var exact = users
+                .Where(u => Matches(u, "displayName", term)
+                    || Matches(u, "userPrincipalName", term)
+                    || Matches(u, "mail", term))
+                .ToList();
+
+            if (exact.Count == 1)
+            {
+                var exactId = exact[0]?["id"]?.GetValue<string>();
+
+                if (!string.IsNullOrWhiteSpace(exactId))
+                {
+                    return (exactId, null);
+                }
+            }
+
+            var names = string.Join(", ", users.Select(u =>
+                $"'{u?["displayName"]?.GetValue<string>()}' ({u?["userPrincipalName"]?.GetValue<string>()})"));
+
+            return (null,
+                $"'{nameOrEmail}' matches several people ({names}). Nothing was created. "
+                + "Ask which one is meant, then create the card with their email address as the owner.");
+        }
+
+        var id = users[0]?["id"]?.GetValue<string>();
+
+        return string.IsNullOrWhiteSpace(id)
+            ? (null, $"The directory entry for '{nameOrEmail}' has no id, so I could not assign the card.")
+            : (id, null);
     }
 
     private async Task<string> ListTasksAsync(JsonNode? args)
@@ -557,6 +813,9 @@ public class PlannerToolHandler
         var value = args?[name];
         return value == null ? null : value.GetValue<string>();
     }
+
+    private static bool Matches(JsonNode? user, string property, string term) =>
+        string.Equals(user?[property]?.GetValue<string>(), term, StringComparison.OrdinalIgnoreCase);
 
     private static string Truncate(string value, int max) =>
         string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max];

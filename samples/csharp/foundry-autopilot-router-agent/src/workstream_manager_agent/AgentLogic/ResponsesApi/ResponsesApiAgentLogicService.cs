@@ -306,15 +306,40 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // Capture activity context for 📌 reaction on work item creation
         _workItemTools.SetCurrentActivityContext(turnContext.Activity);
 
+        // "assign it to me" on a Planner card needs to know who is speaking.
+        _plannerTools.SetCurrentActivityContext(turnContext.Activity);
+
         // A routine created this turn must post into THIS conversation when it fires, so the
         // routine tools need the activity that addresses it.
         _routineTools.SetCurrentActivityContext(turnContext.Activity);
 
-        var response = await _responsesApiClient.InvokeAsync(
-            input: incomingText ?? string.Empty,
-            conversationId: conversationId,
-            additionalTools: BuildLocalToolDefinitions(),
-            localToolExecutor: ExecuteLocalToolAsync);
+        // Root invocation span. Foundry trace-based evaluations locate a run by this span, so it
+        // wraps the model call and carries the input, output and response id. Passing no
+        // mainAgentId makes it the root: it becomes its own microsoft.gen_ai.main_agent.id, and
+        // any nested agent invocation inherits that id rather than replacing it.
+        var agentName = AgentInvocationTracing.ResolveAgentName();
+        using var invocation = AgentInvocationTracing.StartInvocation(
+            agentName,
+            AgentInvocationTracing.BuildAgentId(agentName, AgentInvocationTracing.ResolveAgentVersion()));
+
+        AgentInvocationTracing.RecordInput(invocation, incomingText);
+
+        string response;
+        try
+        {
+            response = await _responsesApiClient.InvokeAsync(
+                input: incomingText ?? string.Empty,
+                conversationId: conversationId,
+                additionalTools: BuildLocalToolDefinitions(),
+                localToolExecutor: ExecuteLocalToolAsync);
+        }
+        catch (Exception ex)
+        {
+            AgentInvocationTracing.RecordException(invocation, ex);
+            throw;
+        }
+
+        AgentInvocationTracing.RecordOutput(invocation, response);
 
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse
@@ -390,6 +415,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         // Tell WorkItemToolHandler which message to react to if a work item is captured.
         _workItemTools.SetCurrentActivityContext(turnContext.Activity);
+        _plannerTools.SetCurrentActivityContext(turnContext.Activity);
 
         var sender = turnContext.Activity.From;
         var observed =

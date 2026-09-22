@@ -262,6 +262,13 @@ internal class ResponsesApiClient
             await SaveResponseIdAsync(conversationId, responseContent, toolFingerprint);
         }
 
+        // Link the invocation span to the Responses API call that produced it. Activity.Current is
+        // the caller's invoke_agent span (AsyncLocal, so this stays correct under concurrency); it
+        // is null when nothing is listening, which RecordResponseId tolerates.
+        WorkstreamManager.Services.AgentInvocationTracing.RecordResponseId(
+            System.Diagnostics.Activity.Current,
+            TryExtractResponseId(responseContent));
+
         return ExtractOutputText(responseContent);
     }
 
