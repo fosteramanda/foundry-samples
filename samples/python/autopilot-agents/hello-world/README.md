@@ -293,7 +293,7 @@ before using real conversations.
 | Deployment or publication returns 401 or 403 | Sign both CLIs in to the intended tenant and verify the access listed in Step 1. Publication also requires a successfully deployed agent. |
 | The agent is not available in Teams | Confirm blueprint approval, your Microsoft 365 license, and tenant app policies in Steps 7 and 8. Deployment alone does not make the agent available in Teams. |
 | A channel message gets no response | Mention the agent instance in the message; untagged channel messages are not handled. |
-| Updated code is not being used | Stop existing sessions with the command under **Optional: Change the agent's code and behavior**, then send a new message. |
+| Updated code is not being used | Resume the session on the new version by following [Autopilot sample operations](../../../AUTOPILOT_OPERATIONS.md#resume-a-session-on-the-new-version). |
 | Teams works but Foundry traces have no application spans | Confirm the hosted container received `APPLICATIONINSIGHTS_CONNECTION_STRING` and inspect session logs for Microsoft OpenTelemetry exporter errors. |
 
 ## References

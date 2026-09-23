@@ -3,8 +3,8 @@
 Use these steps after you deploy updated code to an autopilot sample in this
 repository. Each sample README lists the values to substitute: the command
 that deploys a new version, the `azd` environment value that stores the
-Foundry project endpoint, the agent name, the span query to run, and the
-sample's content-capture default.
+Foundry project endpoint, the agent name, the span query to run, and how the
+sample handles message content.
 
 ## Before you begin
 
@@ -31,10 +31,12 @@ azd ext install azure.ai.agents
    azd ai agent sessions list --agent-name $agentName --output json
    ```
 
-   Find the session for your conversation and inspect its `agent_session_id`,
-   `status`, and `version_indicator.agent_version`. If the response includes a
-   continuation token, pass it to `--pagination-token` to retrieve the next
-   page. An existing session can still be running the previous version.
+   Find the session for your conversation by its timestamps, or by the
+   `sessionId` of an earlier span when your sample records one. Inspect its
+   `agent_session_id`, `status`, and `version_indicator.agent_version`. If the
+   response includes a continuation token, pass it to `--pagination-token` to
+   retrieve the next page. An existing session can still be running the
+   previous version.
 
 ## Resume a session on the new version
 
@@ -103,8 +105,9 @@ Keep these points in mind when you read the results:
 ## Protect message content
 
 Message-content capture must be a deliberate choice. Each sample README
-states its default and the setting that changes it. After you change the
-setting, deploy a new version and repeat the steps above.
+describes the setting that controls it and, where the sample sets one, its
+default. After you change the setting, deploy a new version and repeat the
+steps above.
 
 - The GenAI capture setting controls message attributes on GenAI spans. It is
   not an application-wide redaction switch: application logs, exceptions, and

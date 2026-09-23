@@ -100,11 +100,6 @@ if (!string.IsNullOrWhiteSpace(otelConnectionString))
 var app = builder.Build();
 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
-if (string.IsNullOrWhiteSpace(otelConnectionString))
-{
-    logger.LogWarning(
-        "Application Insights is not configured. Set APPLICATIONINSIGHTS_CONNECTION_STRING to enable telemetry.");
-}
 logger.LogInformation("Application starting...");
 
 // ===================================

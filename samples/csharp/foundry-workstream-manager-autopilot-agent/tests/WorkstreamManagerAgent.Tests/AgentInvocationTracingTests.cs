@@ -2,12 +2,12 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
 using Azure.Monitor.OpenTelemetry.Exporter;
-using HelloWorldA365.Services;
+using WorkstreamManager.Services;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
 using Xunit;
 
-namespace HelloWorldA365Agent.Tests;
+namespace WorkstreamManagerAgent.Tests;
 
 [CollectionDefinition("Tracing", DisableParallelization = true)]
 public class TracingCollection { }

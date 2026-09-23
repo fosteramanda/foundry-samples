@@ -28,12 +28,11 @@
   $AzureContainerRegistryEndpoint = $env:AZURE_CONTAINER_REGISTRY_ENDPOINT
   $MAIBName = $env:MAIB_NAME
 
-  $subscriptionId = if ($env:SUBSCRIPTION_ID) { $env:SUBSCRIPTION_ID } else { $env:AZURE_SUBSCRIPTION_ID }
-  $resourceGroup = if ($env:RESOURCE_GROUP) { $env:RESOURCE_GROUP } else { $env:AZURE_RESOURCE_GROUP }
-  $projectResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.CognitiveServices/accounts/$($env:ACCOUNT_NAME)/projects/$($env:PROJECT_NAME)"
-  $captureMessageContent = if ([string]::IsNullOrWhiteSpace($env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT)) { "false" } else { $env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }
+  # Message content stays off unless the azd environment opts in.
+  $azdEnvironmentArgs = if ($env:AZURE_ENV_NAME) { @("-e", $env:AZURE_ENV_NAME) } else { @() }
+  $captureMessageContent = & azd env get-value OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT @azdEnvironmentArgs 2>$null
+  $captureMessageContent = if ($LASTEXITCODE -eq 0 -and "$captureMessageContent".Trim() -eq "true") { "true" } else { "false" }
   $environmentVariables = @{
-      "FOUNDRY_PROJECT_ARM_ID" = $projectResourceId
       "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT" = $captureMessageContent
   }
   if (-not [string]::IsNullOrWhiteSpace($env:DIRECT_MESSAGE_ALLOWLIST_TABLE_SERVICE_URI)) {

@@ -283,11 +283,11 @@ requests
 | extend failureRate = todouble(failed) / total
 ```
 
-The application also emits `invoke_agent <agentName>` spans around Responses API invocations. They include `gen_ai.operation.name`, `gen_ai.agent.name`, stable `<agentName>:<agentVersion>` agent and main-agent IDs, input/output message envelopes, the final Responses API response ID, and project/session identifiers. A separate OpenTelemetry registration exports only this custom source; it does not add a second set of HTTP request or dependency collectors.
+The application also emits `invoke_agent <agentName>` spans around Responses API invocations. They include `gen_ai.operation.name`, `gen_ai.agent.name`, stable `<agentName>:<agentVersion>` agent and main-agent IDs, input/output message envelopes, the final Responses API response ID, and project/session identifiers. A separate OpenTelemetry registration exports only this custom source; it does not add a second set of HTTP request or dependency collectors. To run the tracing tests locally, use `dotnet test tests/WorkstreamManagerAgent.Tests/WorkstreamManagerAgent.Tests.csproj` from this sample directory.
 
 To confirm these spans after an update, run the guide's query for samples that emit their own `invoke_agent <agentName>` spans. They are custom `ActivityKind.Internal` spans, so they appear in `dependencies`; the `requests` queries above still apply to the classic request telemetry.
 
-**Content capture:** the new invocation spans retain message envelopes but omit conversation text by default. To opt in deliberately, set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` in the `azd` environment and run `azd provision` to deploy a new version, then repeat the session checks. Use `false` to disable it. This controls the new message attributes only. Read [Protect message content](../../AUTOPILOT_OPERATIONS.md#protect-message-content) before using real conversations.
+**Content capture:** the new invocation spans retain message envelopes but omit conversation text by default. To opt in deliberately, set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` in the `azd` environment and run `azd provision` to deploy a new version, then repeat the session checks. Use `false` to disable it. The creation script reads the value only from the `azd` environment, not from your shell. This controls the new message attributes only. Read [Protect message content](../../AUTOPILOT_OPERATIONS.md#protect-message-content) before using real conversations.
 
 ---
 

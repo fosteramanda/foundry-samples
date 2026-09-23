@@ -13,8 +13,4 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\workstream_manager_agent\WorkstreamManagerAgent.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <Compile Include="..\..\..\foundry-autopilot-agent\tests\HelloWorldA365Agent.Tests\AgentInvocationTracingTests.cs" Link="AgentInvocationTracingTests.cs" />
-    <Using Include="WorkstreamManager.Services.AgentInvocationTracing" Alias="AgentInvocationTracing" />
-  </ItemGroup>
 </Project>

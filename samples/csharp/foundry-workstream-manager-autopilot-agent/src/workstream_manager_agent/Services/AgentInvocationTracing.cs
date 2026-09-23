@@ -3,6 +3,7 @@ using System.Text.Json;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.Extensions.Hosting;
 using OpenTelemetry;
+using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 namespace WorkstreamManager.Services;
@@ -12,11 +13,24 @@ public static class AgentInvocationTracing
     public const string ActivitySourceName = "Foundry.Agent.Invocation";
     private static readonly ActivitySource Source = new(ActivitySourceName);
 
-    public static TracerProviderBuilder ConfigureTracing(TracerProviderBuilder builder) =>
+    public static TracerProviderBuilder ConfigureTracing(
+        TracerProviderBuilder builder,
+        Action<TracerProviderBuilder>? addExporters = null)
+    {
+        var instanceId = GetSetting("FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID");
         builder
-            // An unsampled incoming context must not silently suppress the invocation.
-            .SetSampler(new AlwaysOnSampler())
+            .ConfigureResource(resource => resource.AddService(
+                serviceName: GetSetting("FOUNDRY_AGENT_NAME") ?? "autopilot",
+                serviceVersion: GetSetting("FOUNDRY_AGENT_VERSION"),
+                autoGenerateServiceInstanceId: instanceId is null,
+                serviceInstanceId: instanceId))
             .AddSource(ActivitySourceName);
+        addExporters?.Invoke(builder);
+
+        // Set last: an exporter can install its own sampler, and an unsampled incoming
+        // context must not silently suppress the invocation.
+        return builder.SetSampler(new AlwaysOnSampler());
+    }
 
     public static Activity? StartInvocation(string agentName, string agentId, string? mainAgentId = null)
     {
@@ -48,10 +62,8 @@ public static class AgentInvocationTracing
 
     public static async Task<string> TraceAsync(string? input, Func<Activity?, Task<string>> invoke)
     {
-        var agentName = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_NAME");
-        var version = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_VERSION");
-        agentName = string.IsNullOrWhiteSpace(agentName) ? "autopilot" : agentName;
-        version = string.IsNullOrWhiteSpace(version) ? "unknown" : version;
+        var agentName = GetSetting("FOUNDRY_AGENT_NAME") ?? "autopilot";
+        var version = GetSetting("FOUNDRY_AGENT_VERSION") ?? "unknown";
 
         using var activity = StartInvocation(agentName, $"{agentName}:{version}");
         RecordMessages(activity, "gen_ai.input.messages", "user", input);
@@ -96,6 +108,9 @@ public static class AgentInvocationTracing
         activity?.SetTag("error.type", errorType);
     }
 
+    private static string? GetSetting(string name) =>
+        Environment.GetEnvironmentVariable(name) is { } value && !string.IsNullOrWhiteSpace(value) ? value : null;
+
     private static void RecordMessages(Activity? activity, string attribute, string role, string? text)
     {
         if (activity is null)
@@ -128,8 +143,9 @@ internal sealed class AgentInvocationTracingService(string connectionString) : I
     public Task StartAsync(CancellationToken cancellationToken)
     {
         // Do not merge with another SDK's DI-managed provider and its HTTP sources.
-        _provider = AgentInvocationTracing.ConfigureTracing(Sdk.CreateTracerProviderBuilder())
-            .AddAzureMonitorTraceExporter(options => options.ConnectionString = connectionString)
+        _provider = AgentInvocationTracing.ConfigureTracing(
+                Sdk.CreateTracerProviderBuilder(),
+                builder => builder.AddAzureMonitorTraceExporter(options => options.ConnectionString = connectionString))
             .Build();
         return Task.CompletedTask;
     }
