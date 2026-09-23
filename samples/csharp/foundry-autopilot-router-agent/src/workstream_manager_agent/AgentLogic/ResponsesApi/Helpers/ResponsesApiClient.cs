@@ -58,6 +58,7 @@ internal class ResponsesApiClient
     /// default board, so the prompt never describes a board the agent cannot reach.
     /// </summary>
     internal bool PlannerEnabled { get; set; }
+    internal bool DigestCardsEnabled { get; set; }
 
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
@@ -104,7 +105,8 @@ internal class ResponsesApiClient
             RoutinesEnabled,
             WorkItemsEnabled,
             MeetingRegistryEnabled,
-            PlannerEnabled);
+            PlannerEnabled,
+            DigestCardsEnabled);
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.
@@ -937,4 +939,3 @@ internal class ResponsesApiClient
 }
 
 internal record ResponsesApiFunctionCall(string CallId, string Name, string Arguments);
-

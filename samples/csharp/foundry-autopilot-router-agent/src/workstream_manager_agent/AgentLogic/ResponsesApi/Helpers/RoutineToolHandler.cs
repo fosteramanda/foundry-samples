@@ -340,16 +340,19 @@ public class RoutineToolHandler
 
             "both" =>
                 $"{instruction}\n\n"
-                + "Post this into the chat using SendMessageToChat, passing anyone with an open item "
-                + "in the mentions argument so they are really pinged, AND email the same content to "
+                + "For a Teams digest or briefing, use send_teams_digest when available, with "
+                + "mention_owners=true to notify owners. Otherwise use SendMessageToChat with "
+                + "the owners in its mentions argument. Post once, AND email the same content to "
                 + $"{recipient} using your mail tools. If there is nothing to report, do neither.",
 
             _ =>
                 $"{instruction}\n\n"
-                + "Post this into the chat using SendMessageToChat. Your automatic reply is not "
+                + "For a Teams digest or briefing, use send_teams_digest when available, with "
+                + "mention_owners=true to notify owners. Otherwise use SendMessageToChat. "
+                + "Post once. Your automatic reply is not "
                 + "delivered on a scheduled run, so you must call the tool. Pass anyone with an open "
-                + "item in the mentions argument so they are genuinely pinged rather than just named. "
-                + "If SendMessageToChat fails, say why in an email instead. If there is nothing to "
+                + "item in the mentions argument when using SendMessageToChat. "
+                + "If delivery is uncertain, do not resend via another tool. If there is nothing to "
                 + "report, post nothing.",
         };
     }

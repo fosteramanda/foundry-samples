@@ -4220,3 +4220,81 @@ were never deployed, so the next version ships those too.
 - Deploying creates a new version of the live Office of Amanda agent and stops its active
   sessions. On Amanda's go-ahead, Copilot deploys, stops the session, and after her next message
   confirms `invoke_agent autopilotroutera2a` spans in `dependencies`.
+
+## Router routine digests as Adaptive Cards (2026-09-22)
+
+Amanda asked to improve the long Teams routine digests, with
+`https://github.com/davrous/FoundryChartsAgent` as the reference. The change is in
+`samples/csharp/foundry-autopilot-router-agent`, not the Office of Amanda sibling.
+
+### Implementation
+
+`send_teams_digest` is a local tool that posts one Adaptive Card to the current Teams chat using
+the agent's existing delegated Graph token. Scheduled runs previously sent their content through
+the remote Teams MCP tool, bypassing the ordinary reply formatter, so changing that formatter
+alone would not have fixed the screenshot.
+
+`TeamsDigestCard` renders a title, local update time, open/past-due/no-owner counts, short
+activity and decision sections, and up to six task rows ordered by due date. It uses a fresh
+Planner snapshot rather than parsing the model's prose. The snapshot reads all task pages;
+completed tasks are excluded and test cards remain included. A preview states how many of the
+full total are shown and links to Planner. Past due is calculated by date in
+`MeetingDisplayTimeZone`, not by the server's UTC date.
+
+The presentation and delivery separation follows the reference, but no chart infrastructure was
+copied. This path uses Graph, whose documented card actions are OpenUrl only. There are no
+unimplemented expand, submit or task-update buttons. The renderer uses schema 1.2, wrapping text,
+semantic host colors and conservative application payload budgets (20 KiB card, 28 KiB message).
+
+The card can notify each distinct owner once, up to a stated cap of 20, when requested. It does
+not repeat an @mention on every task. Model arguments cannot supply arbitrary card JSON or a
+different destination. The service suppresses its automatic text reply after a confirmed card
+send. HTTP rejection, timeout and invalid/missing receipt are explicit outcomes; an attempted
+POST is not automatically repeated.
+
+New and existing routine instructions prefer the card tool for Teams digests. No stored routine
+was rewritten. Email-only delivery, generic chat messages, channel conversations and the legacy
+work-item summary command retain their existing paths. Board writes are not part of card posting.
+
+### Verification and target binding
+
+All 45 sample tests pass, including 31 new card/data/delivery cases. Synthetic fixtures rendered
+with the Adaptive Cards JavaScript renderer in light/dark and 360/720-pixel layouts. Long Latin
+and CJK text wraps without horizontal overflow. These are local renderer previews, not screenshots
+claiming live Teams delivery.
+
+Router telemetry at 2026-09-23 02:00 UTC identifies the scheduled recipient as agent user
+`1f52401a-1abd-4534-808e-2afaecd38a40`, the Agentic Colleague instance, in its existing group chat.
+This directly confirms the screenshot's instance is backed by the router deployment. The earlier
+inference from directory display names alone was not valid.
+
+The tester's Azure CLI token cannot list or send Teams messages: Graph returned 403 for missing
+chat scopes. One attempted labelled preview request was rejected, so it sent no message. The
+agent's blueprint already grants ChatMessage.Send and Tasks.ReadWrite; those grants were not
+changed. The current routine CLI returns an empty/null listing even though scheduled executions
+are visible in telemetry. Updating its local extension from beta.4 to beta.6 did not change that.
+No routines were recreated to work around the listing.
+
+### Deployment and cost
+
+v13 is active at 100% traffic, image
+`sha256:1b1dab162ee2b926852c2c7b9710e1f356fd61337e5867dc3eb5800fea48448d`
+(ACR build `dtf`). Existing sessions were idle; the deploy stopped zero sessions. v12 remains
+the pre-card rollback version.
+
+The final malformed-receipt guard is built as
+`sha256:47738d22d7d4f3f06b5372eb3488b6c99950555954dccc740fdc45fe208a1938`
+(ACR build `dtg`), pending the final version update. A bounded read-only monitor is checking the
+next existing scheduled run; live card delivery is not yet confirmed.
+
+No new Azure resource, schedule or permission grant was added. Two short builds ran in the
+existing registry; estimated incremental build cost is under $0.05, excluding the agent's usual
+runtime/model usage and existing resource charges.
+
+### FOR AMANDA
+
+- Local preview:
+  `C:\Users\fosteramanda\.copilot\session-state\cb8e99e6-9f1a-4416-b0fb-73dfe58058ff\files\digest-card-preview\digest-light-720.png`
+- Mobile preview: `digest-light-360.png` in that same folder.
+- The test cards already on the board were not removed or hidden.
+- The unrelated deleted root `.gitignore` remains untouched and will not be staged.

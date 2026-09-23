@@ -30,7 +30,8 @@ public static class AgentInstructions
         bool routinesEnabled = false,
         bool workItemsEnabled = true,
         bool meetingRegistryEnabled = false,
-        bool plannerEnabled = false) =>
+        bool plannerEnabled = false,
+        bool digestCardsEnabled = false) =>
         $"""
 
              You are the Agentic Colleague.
@@ -85,7 +86,7 @@ public static class AgentInstructions
              Do NOT ask onboarding or setup questions (like which document to use) when
              you are greeted, welcomed, or introduced in a group chat — thank them in one
              short sentence and get to work.
-             {BuildPlannerSection(plannerEnabled)}{BuildWorkItemSection(workItemsEnabled)}
+             {BuildPlannerSection(plannerEnabled)}{BuildDigestSection(digestCardsEnabled)}{BuildWorkItemSection(workItemsEnabled)}
              # Bias to action — do not interrogate the user
              When asked to draft, create, save, summarize, or send something, just do it
              with sensible defaults. Do NOT ask clarifying questions about file names,
@@ -386,6 +387,32 @@ public static class AgentInstructions
 """;
     }
 
+    private static string BuildDigestSection(bool enabled) => !enabled ? string.Empty : """
+
+
+             # Readable Teams digests
+             For a scheduled or on-demand Teams digest, briefing, or board summary, call
+             send_teams_digest. It posts one Adaptive Card into this chat and reads the live
+             Planner board itself. Use short, plain-text sections for activity, decisions and
+             blockers, with evidence already obtained from your approved sources. Do not
+             repeat the task list or task counts in those sections; the card supplies them.
+             Missing access is not "no activity": state the coverage gap explicitly.
+
+             Set include_board to false for a briefing unrelated to Planner. Set mention_owners
+             to true only if the request or standing routine asks to notify owners. The tool
+             mentions each owner once; do not add repeated inline mentions yourself.
+
+             Prefer this card tool even when an older routine instruction says SendMessageToChat.
+             It changes only Teams presentation, not the requested delivery destination or
+             whether an email must also be sent. Do not send an unsolicited digest when the
+             routine says to stay silent if there is nothing to report.
+
+             After the card is sent, do not also return or post the digest as text. Email it
+             separately only when requested. On a delivery failure, report the failure; if the
+             result is uncertain, do not retry through another tool and risk duplicate posts.
+
+        """;
+
     /// <summary>
     /// Builds the standing-work (routines) section. Omitted entirely when routines are not
     /// configured, so an agent that cannot schedule anything never offers to — the same rule the
@@ -577,6 +604,5 @@ public static class AgentInstructions
         """;
     }
 }
-
 
 

@@ -29,6 +29,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly RoutineToolHandler _routineTools;
     private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
     private readonly PlannerToolHandler _plannerTools;
+    private readonly TeamsDigestToolHandler _digestTools;
 
     /// <summary>
     /// Whether the chat work-item tools are offered to the model.
@@ -99,6 +100,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // alongside it: both record commitments, and running both splits the record so
         // neither is the answer to "what is the team tracking".
         _plannerTools = new PlannerToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
+        _digestTools = new TeamsDigestToolHandler(_plannerTools, httpClient, _logger, _configuration, graphAccessToken);
         _responsesApiClient.PlannerEnabled = _plannerTools.IsEnabled;
         _workItemToolsOffered = !_plannerTools.IsEnabled
             && _configuration.GetValue("EnableWorkItemTools", true);
@@ -120,6 +122,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             tools.AddRange(_workItemTools.GetToolDefinitions());
         }
         tools.AddRange(_plannerTools.GetToolDefinitions());
+        tools.AddRange(_digestTools.GetToolDefinitions());
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
         tools.AddRange(_routineTools.GetToolDefinitions());
         if (_meetingRegistryTools != null)
@@ -134,7 +137,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     /// handler recognises the name, which the caller reports back to the model.
     /// </summary>
     private async Task<string?> ExecuteLocalToolAsync(string toolName, string arguments)
-        => await _plannerTools.TryExecuteAsync(toolName, arguments)
+        => await _digestTools.TryExecuteAsync(toolName, arguments)
+           ?? await _plannerTools.TryExecuteAsync(toolName, arguments)
            ?? await _workItemTools.TryExecuteAsync(toolName, arguments)
            ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
            ?? await _routineTools.TryExecuteAsync(toolName, arguments)
@@ -187,6 +191,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
+        _digestTools.SetCurrentActivityContext(turnContext.Activity);
+        _responsesApiClient.DigestCardsEnabled = _digestTools.IsEnabled;
         var incomingText = turnContext.Activity.Text;
         _logger.LogInformation("New activity received (Responses API): {IncomingText}", incomingText);
 
@@ -234,8 +240,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             incomingText = isScheduledRun
                 ? "This is a scheduled run, not a live chat turn. Nobody is watching, and your "
                   + "reply is NOT delivered anywhere on its own. You MUST send the output with a "
-                  + "tool or it reaches no one: use your mail tool to email it, or SendMessageToChat "
-                  + "to post it into a chat you belong to — posting is the only way to @mention "
+                  + "tool or it reaches no one: use your mail tool to email it. For Teams digests "
+                  + "or board summaries, prefer send_teams_digest when available, even if an older "
+                  + "stored instruction names SendMessageToChat. That card tool posts to this chat "
+                  + "and supports notifying owners. Use SendMessageToChat for other messages "
+                  + "into a chat you belong to. Posting is the only way to @mention "
                   + "someone so they are really pinged. Follow whatever the instruction says, send "
                   + "it once, then stop.\n"
                   + $"Instruction: {incomingText}"
@@ -245,8 +254,9 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 // find one, and prefix its answer with "I couldn't post directly to that chat" —
                 // leaking plumbing into a user-visible reply.
                 : $"You are replying in Teams chat {turnContext.Activity.Conversation.Id}. " +
-                  "Your answer is delivered automatically, so do not look for a tool to send " +
-                  "or post it, and never mention posting or delivery.\n" +
+                  "Your answer is delivered automatically. For a digest or board summary, use " +
+                  "send_teams_digest when available; it posts the card instead of a text reply. " +
+                  "Otherwise do not look for a tool to send or post it. Never mention delivery plumbing.\n" +
                   $"From: {sender?.Name} ({sender?.Id})\n" +
                   $"Message: {incomingText}";
         }
@@ -340,6 +350,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         }
 
         AgentInvocationTracing.RecordOutput(invocation, response);
+
+        if (_digestTools.HasDelivered)
+        {
+            return;
+        }
 
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse
@@ -839,4 +854,3 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     }
 
 }
-

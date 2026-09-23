@@ -53,6 +53,7 @@ Write-Host "Building image using ACR Build in registry: $registryName"
 # Build image using ACR Build (builds in the cloud)
 az acr build `
     --registry $registryName `
+    --no-logs `
     --subscription $env:SUBSCRIPTION_ID `
     --image $imageName `
     --file "./foundry-infra/Dockerfile" `
@@ -74,4 +75,3 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Image built and pushed successfully: $acrLoginServer/$imageName"
 
 Remove-Item "./publish" -Recurse -Force -ErrorAction SilentlyContinue
-
