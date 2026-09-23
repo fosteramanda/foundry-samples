@@ -1,8 +1,8 @@
-Set-Location  "$($PSScriptRoot)/../src/workstream_manager_agent"
+Set-Location  "$($PSScriptRoot)/../src/autopilot_router_agent"
 
 Remove-Item "./publish" -Recurse -Force -ErrorAction SilentlyContinue
 
-dotnet publish "./WorkstreamManagerAgent.csproj" -c Release -o "./publish"
+dotnet publish "./AutopilotRouterAgent.csproj" -c Release -o "./publish"
 
 
 $authorityEndpoint = "https://login.microsoftonline.com/$($env:TENANT_ID)"

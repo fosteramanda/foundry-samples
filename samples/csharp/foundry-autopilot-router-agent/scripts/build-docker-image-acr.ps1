@@ -1,21 +1,21 @@
 # Build Docker image using Azure Container Registry (ACR) Build
 # This script uses ACR Tasks to build the image in the cloud instead of locally
 
-Set-Location "$($PSScriptRoot)/../src/workstream_manager_agent"
+Set-Location "$($PSScriptRoot)/../src/autopilot_router_agent"
 
 Remove-Item "./publish" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "./.vs" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "./bin" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "./obj" -Recurse -Force -ErrorAction SilentlyContinue
 
-dotnet publish "./WorkstreamManagerAgent.csproj" -c Release -o "./publish"
+dotnet publish "./AutopilotRouterAgent.csproj" -c Release -o "./publish"
 
 $authorityEndpoint = "https://login.microsoftonline.com/$($env:TENANT_ID)"
 $azureOpenAIEndpoint = "https://$($env:ACCOUNT_NAME).openai.azure.com/"
 
 $modelDeploymentName = $env:MODEL_DEPLOYMENT_NAME
 if ([string]::IsNullOrWhiteSpace($modelDeploymentName)) {
-    $appSettingsPath = Join-Path $PSScriptRoot "../src/workstream_manager_agent/appsettings.json"
+    $appSettingsPath = Join-Path $PSScriptRoot "../src/autopilot_router_agent/appsettings.json"
     if (Test-Path $appSettingsPath) {
         $appSettings = Get-Content $appSettingsPath -Raw | ConvertFrom-Json
         $modelDeploymentName = $appSettings.ModelDeployment

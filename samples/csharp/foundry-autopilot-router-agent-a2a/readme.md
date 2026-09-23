@@ -1,4 +1,4 @@
-# 🤖 Workstream Manager Agent
+# 🤖 Autopilot Router Agent A2A
 
 > A Foundry A365 agent that tracks work items, provides workstream summaries, and operates in manager-only direct message mode.
 
@@ -64,7 +64,7 @@ The autopilot agent is designed to live in Teams group chats and Teams 1:1 DMs. 
 - **Built-in Microsoft 365 (WorkIQ) tools** — Pre-wired with Microsoft 365 tools: Word, Excel, Outlook calendar, OneDrive/SharePoint. Ask it to draft an email, summarize a spec, or pull last week's notes, and it goes straight to the source. Ask it to create a Word document, and it does so in its own OneDrive.
 - **Replies to email** — Email the agent, or loop it into a thread, and it reads the message and answers over email on its own — no Teams required. It works from a clean plain-text view of the mail (sender, subject, body) and treats the content strictly as data, so quoted history or instructions buried in a thread can't hijack it. Office's own auto-notifications (a comment @-mention, task assignment, or share) are skipped so it doesn't double-reply to something the document-comment path already handled — re-enable with `RespondToOfficeNotificationEmails: true`.
 - **Comments on Word documents** — @-mention the agent in a Word comment and it reads the document and the comment thread via the Word / OneDrive-SharePoint MCP tools, then posts a concise reply straight onto that thread (through the document's `ReplyToComment` tool, as plain text — comment threads don't render HTML or Markdown). The same handler is wired for Excel and PowerPoint comments (currently behind a flag).
-- **Responds only when addressed** — In group chats and channels the agent doesn't answer every message. It always responds in 1:1 DMs and when explicitly @-mentioned. Messages that @-mention only other people and contain no second-person reference are skipped by a free deterministic pre-filter; the remaining ambiguous messages go to a lightweight LLM judge that decides whether the message is actually directed at the agent in context (e.g. a "can you update that ETA?" follow-up right after the agent spoke), and the agent stays silent otherwise. See [AddressedToAgentGate.cs](./src/workstream_manager_agent/AgentLogic/ResponsesApi/Helpers/AddressedToAgentGate.cs) for the full criteria.
+- **Responds only when addressed** — In group chats and channels the agent doesn't answer every message. It always responds in 1:1 DMs and when explicitly @-mentioned. Messages that @-mention only other people and contain no second-person reference are skipped by a free deterministic pre-filter; the remaining ambiguous messages go to a lightweight LLM judge that decides whether the message is actually directed at the agent in context (e.g. a "can you update that ETA?" follow-up right after the agent spoke), and the agent stays silent otherwise. See [AddressedToAgentGate.cs](./src/autopilot_router_agent_a2a/AgentLogic/ResponsesApi/Helpers/AddressedToAgentGate.cs) for the full criteria.
 - **Mirrors your addressing style** — If you @-mention the agent, it @-mentions you back in its reply. When it joins the conversation implicitly (the judge inferred it was being addressed), it replies with a quoted-reply block but skips the @-mention so it doesn't ping you.
 - **Reacts to messages** — Messages it decides to reply to receive a 👍 reaction while it works on the answer; messages it logs as work items get 📌 (whether or not it replies). Messages with neither a reply nor a captured work item get no reaction.
 
@@ -72,8 +72,8 @@ The autopilot agent is designed to live in Teams group chats and Teams 1:1 DMs. 
 
 **During agent development** (persona: developer)
 
-- **Agent instructions:** [AgentInstructions.cs](./src/workstream_manager_agent/AgentLogic/AgentInstructions.cs)
-- **MCP tools:** [ToolingManifest.json](./src/workstream_manager_agent/ToolingManifest.json) — [Learn more](https://learn.microsoft.com/en-us/microsoft-agent-365/tooling-servers-overview)
+- **Agent instructions:** [AgentInstructions.cs](./src/autopilot_router_agent_a2a/AgentLogic/AgentInstructions.cs)
+- **MCP tools:** [ToolingManifest.json](./src/autopilot_router_agent_a2a/ToolingManifest.json) — [Learn more](https://learn.microsoft.com/en-us/microsoft-agent-365/tooling-servers-overview)
 - **Group-chat access response:** Set `GroupChatUnauthorizedResponse` to customize the message shown when a group chat includes unapproved participants (`{Manager}`, `{UnauthorizedCount}`, `{UnauthorizedParticipants}` placeholders).
 - **Cross-tenant access guard:** Set `CrossTenantUnauthorizedResponse` to customize the canned no-op response for users outside the digital worker tenant.
 - **When-to-respond gating:** Four settings control the addressed-to-agent gate and what happens to skipped messages:

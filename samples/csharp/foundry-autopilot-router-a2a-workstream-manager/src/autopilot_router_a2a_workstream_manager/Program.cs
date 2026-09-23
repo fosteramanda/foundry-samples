@@ -100,14 +100,6 @@ builder.Services.AddApplicationInsightsTelemetry(options =>
 
 builder.Logging.AddApplicationInsights();
 
-// The classic SDK already collects HTTP telemetry; export only our invocation source here.
-var otelConnectionString =
-    builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"] ??
-    builder.Configuration["ApplicationInsights:ConnectionString"];
-if (!string.IsNullOrWhiteSpace(otelConnectionString))
-{
-    builder.Services.AddHostedService(_ => new AgentInvocationTracingService(otelConnectionString));
-}
 
 var app = builder.Build();
 
@@ -142,11 +134,11 @@ app.MapPost("/api/messages", async (HttpRequest request, HttpResponse response, 
     await adapter.ProcessAsync(request, response, agent, cancellationToken);
 });
 
-app.MapGet("/", () => "Hello World from WorkstreamManagerAgent!");
+app.MapGet("/", () => "Hello World from AutopilotRouterA2AWorkstreamManager!");
 
-app.MapGet("/liveness", () => "Hello World from WorkstreamManagerAgent!");
+app.MapGet("/liveness", () => "Hello World from AutopilotRouterA2AWorkstreamManager!");
 
-app.MapGet("/readiness", () => "Hello World from WorkstreamManagerAgent!");
+app.MapGet("/readiness", () => "Hello World from AutopilotRouterA2AWorkstreamManager!");
 
 
 if (!app.Environment.IsDevelopment())
