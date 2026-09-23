@@ -2,9 +2,11 @@ namespace WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
 
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Agents.Core.Models;
 using WorkstreamManager.Models;
+using WorkstreamManager.Services;
 
 /// <summary>
 /// Posts the team's work onto a Microsoft Planner board.
@@ -496,16 +498,13 @@ public class PlannerToolHandler
         }
 
         var includeCompleted = args?["include_completed"]?.GetValue<bool>() ?? false;
-        var (ok, response, error) = await SendGraphAsync(HttpMethod.Get, $"planner/plans/{planId}/tasks");
-
-        if (!ok)
+        var (tasks, error) = await ReadTaskRowsAsync(planId);
+        if (tasks == null)
         {
             return $"Could not read the board: {error}";
         }
 
-        var tasks = JsonNode.Parse(response ?? "{}")?["value"] as JsonArray;
-
-        if (tasks == null || tasks.Count == 0)
+        if (tasks.Count == 0)
         {
             return "The board is empty.";
         }
@@ -536,6 +535,124 @@ public class PlannerToolHandler
         }
 
         return $"{lines.Count} open task(s) on the board:\n{string.Join("\n", lines)}";
+    }
+
+    public async Task<(PlannerDigestSnapshot? Snapshot, string? Error)> ReadDigestSnapshotAsync(string? requestedBoard)
+    {
+        if (!IsEnabled)
+        {
+            return (null, "Planner is not configured or its Graph token is unavailable.");
+        }
+        var (planId, planError) = await ResolvePlanAsync(requestedBoard);
+        if (planId == null)
+        {
+            return (null, planError);
+        }
+        var (rows, error) = await ReadTaskRowsAsync(planId);
+        if (rows == null)
+        {
+            return (null, error);
+        }
+
+        try
+        {
+            var tasks = new List<DigestTask>();
+            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var row in rows)
+            {
+                var percent = row["percentComplete"]?.GetValue<int>() ?? 0;
+                if (percent >= 100)
+                {
+                    continue;
+                }
+                var owners = new List<DigestOwner>();
+                if (row["assignments"] is JsonObject assignments)
+                {
+                    foreach (var assignment in assignments.Where(assignment => assignment.Value != null))
+                    {
+                        if (!names.TryGetValue(assignment.Key, out var name))
+                        {
+                            name = await ResolveUserDisplayNameAsync(assignment.Key) ?? assignment.Key;
+                            names[assignment.Key] = name;
+                        }
+                        owners.Add(new DigestOwner(assignment.Key, name));
+                    }
+                }
+
+                DateTimeOffset? dueDate = null;
+                var rawDue = row["dueDateTime"]?.GetValue<string>();
+                if (!string.IsNullOrWhiteSpace(rawDue))
+                {
+                    if (!DateTimeOffset.TryParse(rawDue, System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None, out var parsedDue))
+                    {
+                        throw new JsonException("Planner returned an invalid due date.");
+                    }
+                    dueDate = parsedDue;
+                }
+                tasks.Add(new DigestTask(
+                    row["id"]?.GetValue<string>() ?? throw new JsonException("Planner returned a task without an ID."),
+                    row["title"]?.GetValue<string>() ?? "(untitled)", percent, dueDate, owners));
+            }
+
+            return (new PlannerDigestSnapshot(
+                string.IsNullOrWhiteSpace(requestedBoard) ? DefaultBoardName! : requestedBoard, tasks), null);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            _logger.LogWarning(ex, "Planner returned invalid digest data.");
+            return (null, "Planner returned invalid task data; no digest was prepared.");
+        }
+    }
+
+    private async Task<(List<JsonObject>? Tasks, string? Error)> ReadTaskRowsAsync(string planId)
+    {
+        var tasks = new List<JsonObject>();
+        string? path = $"planner/plans/{Uri.EscapeDataString(planId)}/tasks";
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (path != null)
+        {
+            if (!visited.Add(path) || visited.Count > 100)
+            {
+                _logger.LogWarning("Planner task pagination repeated or exceeded the page budget.");
+                return (null, "Planner task pagination could not be completed.");
+            }
+            var (ok, body, error) = await SendGraphAsync(HttpMethod.Get, path);
+            if (!ok)
+            {
+                return (null, error);
+            }
+            try
+            {
+                var page = JsonNode.Parse(body ?? "{}");
+                if (page?["value"] is not JsonArray rows || rows.Any(row => row is not JsonObject))
+                {
+                    throw new JsonException("Planner returned no valid task collection.");
+                }
+                tasks.AddRange(rows.Select(row => row!.AsObject()));
+                var next = page["@odata.nextLink"]?.GetValue<string>();
+                path = null;
+                if (!string.IsNullOrWhiteSpace(next))
+                {
+                    if (!Uri.TryCreate(next, UriKind.Absolute, out var uri)
+                        || uri.Scheme != Uri.UriSchemeHttps
+                        || uri.Host != "graph.microsoft.com"
+                        || !uri.IsDefaultPort
+                        || !string.IsNullOrEmpty(uri.UserInfo)
+                        || !uri.AbsolutePath.StartsWith("/v1.0/", StringComparison.Ordinal))
+                    {
+                        throw new JsonException("Planner returned an invalid next-page URL.");
+                    }
+                    path = uri.PathAndQuery["/v1.0/".Length..];
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+            {
+                _logger.LogWarning(ex, "Could not parse Planner task page.");
+                return (null, "Planner returned an invalid task page; the board is not known to be empty.");
+            }
+        }
+        return (tasks, null);
     }
 
     /// <summary>
