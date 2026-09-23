@@ -282,7 +282,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             input: incomingText ?? string.Empty,
             conversationId: conversationId,
             additionalTools: BuildLocalToolDefinitions(),
-            localToolExecutor: ExecuteLocalToolAsync);
+            localToolExecutor: ExecuteLocalToolAsync,
+            traceInvocation: true);
 
         // Append the delegation cue, if this turn delegated at all. Deliberately host-rendered
         // rather than left to the model: the prompt asks the model to name the agent it
@@ -487,7 +488,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 prompt,
                 conversationId,
                 additionalTools: _workIqA2ATools.GetToolDefinitions(),
-                localToolExecutor: _workIqA2ATools.TryExecuteAsync);
+                localToolExecutor: _workIqA2ATools.TryExecuteAsync,
+                traceInvocation: true);
 
             // Same delegation cue as the chat path. Email renders HTML, and the reply is
             // already built as HTML, so the cue lands the same way it does in Teams.
@@ -719,7 +721,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 ? $"You are replying to the comment from {commenterName}: '{commentText}'."
                 : $"You are replying to the comment: '{commentText}'.");
 
-            var modelOutput = await _responsesApiClient.InvokeAsync(prompt.ToString(), conversationId);
+            var modelOutput = await _responsesApiClient.InvokeAsync(prompt.ToString(), conversationId, traceInvocation: true);
 
             // The reply is posted on the comment thread by the MCP ReplyToComment tool, so there is
             // nothing to send back through the activity protocol. The model's final text (if any) is
