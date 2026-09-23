@@ -4189,3 +4189,34 @@ usageLocation yet.
 - E5 cannot be assigned in Not A Real Co because the tenant has none. Choose: run the same three
   steps with `TEST_SPE_E7` standing in for E5, or add E5 to the tenant first (for example a trial
   in the Microsoft 365 admin center) and then have Copilot run it.
+
+## Office of Amanda (autopilotroutera2a): invocation tracing added, not deployed (2026-09-22)
+
+Amanda asked for the router sample's tracing fix in Office of Amanda
+(`foundry-autopilot-router-agent-a2a`). It uses the corrected pattern from the public autopilot
+samples (microsoft-foundry/foundry-samples PR #1022), not the earlier router version.
+
+- `Services/AgentInvocationTracing.cs` emits `invoke_agent {agentName}` with the GenAI attributes,
+  a stable `name:version` id, the response id, and the runtime's project and session ids. An
+  isolated tracer provider, started as a hosted service, exports only this source, so classic
+  Application Insights and the optional A365 tracing are unchanged. The sampler is set after the
+  Azure Monitor exporter, which installs its own.
+- Only calls that answer someone are traced: Teams turns, email replies and document comment
+  replies pass `traceInvocation: true`. The addressed-to-agent judge and passive work-item
+  detection use the same client and are deliberately not traced, so evaluations do not see
+  internal classifier calls as replies.
+- Message content stays off unless `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` is set
+  in the `autopilotroutera2a` azd environment. The creation script reads azd, not the shell.
+- `FOUNDRY_PROJECT_ARM_ID` is read, never set. Microsoft Learn says Foundry reserves and injects all
+  `FOUNDRY_*` variables, which contradicts the earlier router note that it is not injected. The
+  first deployed span settles it.
+- New `tests/WorkstreamManagerAgent.Tests`: 17 tests pass, and the Release build succeeds.
+
+Not deployed. Office of Amanda is still on v40, and its tree already holds earlier fixes that
+were never deployed, so the next version ships those too.
+
+### FOR AMANDA
+
+- Deploying creates a new version of the live Office of Amanda agent and stops its active
+  sessions. On Amanda's go-ahead, Copilot deploys, stops the session, and after her next message
+  confirms `invoke_agent autopilotroutera2a` spans in `dependencies`.
