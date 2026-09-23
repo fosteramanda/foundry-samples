@@ -4277,15 +4277,31 @@ No routines were recreated to work around the listing.
 
 ### Deployment and cost
 
-v13 is active at 100% traffic, image
+The first card build deployed as v13 at 100% traffic, image
 `sha256:1b1dab162ee2b926852c2c7b9710e1f356fd61337e5867dc3eb5800fea48448d`
-(ACR build `dtf`). Existing sessions were idle; the deploy stopped zero sessions. v12 remains
-the pre-card rollback version.
+(ACR build `dtf`). Existing sessions were idle; that deploy stopped zero sessions.
 
 The final malformed-receipt guard is built as
 `sha256:47738d22d7d4f3f06b5372eb3488b6c99950555954dccc740fdc45fe208a1938`
-(ACR build `dtg`), pending the final version update. A bounded read-only monitor is checking the
-next existing scheduled run; live card delivery is not yet confirmed.
+(ACR build `dtg`), deployed as **v14, active, 100% traffic**. The successful v13 session was then
+stopped so subsequent turns can load the final build. v13 is the immediate rollback version;
+v12 is the pre-card rollback version.
+
+### Actual scheduled delivery confirmed
+
+The existing 20:00 Pacific routine ran on v13 without a manual trigger or any schedule change.
+At 2026-09-23 03:01:41 UTC, Graph returned **201** for the card POST in operation
+`9718127acc55dd6c9ff69dea85d8f9c7`. The handler logged
+`Teams digest card posted` with message ID `1790132501278` in the existing chat. One card POST
+was recorded in that operation, the invocation succeeded, and no error-level trace was found.
+
+The evidence is server-side card delivery plus local native-renderer previews. The screenshot
+of the received card in Teams has not been inspected. v14 retains this renderer and adds only
+the guarded malformed-receipt failure case; that guard and its tests were built before v14.
+
+The deploy script's final recent-log warning is stale after it successfully stops sessions:
+recent activity is not proof that the stopped process is still serving. The session stop was
+confirmed; no additional idle-wait instruction was given.
 
 No new Azure resource, schedule or permission grant was added. Two short builds ran in the
 existing registry; estimated incremental build cost is under $0.05, excluding the agent's usual
