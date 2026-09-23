@@ -85,7 +85,7 @@ This deployment orchestrates four key components to create a fully functional Au
 
 ### 1️⃣ Creating a Foundry Project
 
-Creates a Foundry project configured to support hosted agents with appropriate permissions on an Azure Container Registry for building and storing Docker images.
+Creates a Foundry project configured to support hosted agents with appropriate permissions on an Azure Container Registry for building and storing Docker images. It also creates Application Insights with a Log Analytics workspace and connects them to the project, so Foundry sends the agent's telemetry there.
 
 📚 [Learn more about prerequisites](https://github.com/microsoft/container_agents_docs?tab=readme-ov-file#11---prerequisites)
 
@@ -125,11 +125,11 @@ curl -N \
   "https://$ACCOUNT_NAME.services.ai.azure.com/api/projects/$PROJECT_NAME/agents/$AGENT_NAME/sessions/$FOUNDRY_AGENT_SESSION_ID:logstream?api-version=2025-11-15-preview"
 ```
 
-The agent also sends ASP.NET Core requests, outgoing HTTP dependencies, exceptions, and `ILogger` entries to Application Insights. Request correlation is preserved when `CloudAdapter` moves an activity to its background queue, so telemetry from `A365AgentApplication` shares the `/activity/messages` `operation_Id`. Foundry injects `APPLICATIONINSIGHTS_CONNECTION_STRING` into the hosted container. Set the same environment variable when running locally if you want local telemetry in Application Insights.
+The agent also sends ASP.NET Core requests, outgoing HTTP dependencies, exceptions, and `ILogger` entries to Application Insights. Request correlation is preserved when `CloudAdapter` moves an activity to its background queue, so telemetry from `A365AgentApplication` shares the `/activity/messages` `operation_Id`. Foundry injects `APPLICATIONINSIGHTS_CONNECTION_STRING` into the hosted container because `azd provision` connects Application Insights to the project; without that connection, the agent sends no telemetry. Set the same environment variable when running locally if you want local telemetry in Application Insights.
 
 The Responses API invocation also emits an `invoke_agent <agentName>` span with `gen_ai.operation.name`, `gen_ai.agent.name`, a stable `<agentName>:<agentVersion>` in `gen_ai.agent.id` and `microsoft.gen_ai.main_agent.id`, input/output message envelopes, and the final `gen_ai.response.id`. The runtime supplies `FOUNDRY_PROJECT_ARM_ID` for `microsoft.foundry.project.id`, along with the agent name, version, and session ID. The additional exporter listens only to this custom source, leaving the existing request and dependency collectors unchanged. To run the tracing tests locally, use `dotnet test tests/HelloWorldA365Agent.Tests/HelloWorldA365Agent.Tests.csproj` from this sample directory.
 
-To verify an update, follow [Autopilot sample operations](../../AUTOPILOT_OPERATIONS.md) with these values: deploy a new version with `azd provision`, use `AZURE_AI_PROJECT_ENDPOINT` as the endpoint setting and the agent name stored in `AGENT_NAME`, and run the query for samples that emit their own `invoke_agent <agentName>` spans. This sample's spans are custom `ActivityKind.Internal` spans, so they appear in `dependencies`.
+To verify an update, follow [Autopilot sample operations](../../AUTOPILOT_OPERATIONS.md) with these values: deploy a new version with `azd provision`, which prints it on its `Agent Version:` line, use `AZURE_AI_PROJECT_ENDPOINT` as the endpoint setting and the agent name stored in `AGENT_NAME`, and run the query for samples that emit their own `invoke_agent <agentName>` spans. This sample's spans are custom `ActivityKind.Internal` spans, so they appear in `dependencies`.
 
 **Content capture:** the new invocation spans omit conversation text by default while retaining the message envelopes. To opt in deliberately, set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` in the `azd` environment and run `azd provision` to create an updated version, then repeat the verification. Setting it to `false` disables that capture. The creation script reads the value only from the `azd` environment, not from your shell. Read [Protect message content](../../AUTOPILOT_OPERATIONS.md#protect-message-content) before using real conversations.
 

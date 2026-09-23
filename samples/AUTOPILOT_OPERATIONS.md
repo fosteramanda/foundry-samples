@@ -4,7 +4,8 @@ Use these steps after you deploy updated code to an autopilot sample in this
 repository. Each sample README lists the values to substitute: the command
 that deploys a new version, the `azd` environment value that stores the
 Foundry project endpoint, the agent name, the span query to run, and how the
-sample handles message content.
+sample handles message content. The last section explains how the C# samples
+create their invocation spans, so you can add the same span to your own agent.
 
 ## Before you begin
 
@@ -116,3 +117,71 @@ steps above.
   retention before you use real conversations.
 - Message envelopes without text keep a trace structurally complete, but they
   do not give quality evaluators the conversation content they need.
+
+## How the C# samples create invocation spans
+
+The C# Foundry Autopilot and Workstream Manager samples add one
+`invoke_agent <agentName>` span around each Responses API call that answers a
+message. The span follows the OpenTelemetry semantic conventions for
+generative AI, so invocations can be grouped by agent and version. Each
+sample implements it in `Services/AgentInvocationTracing.cs` and registers it
+in `Program.cs`. To add the same span to your own agent:
+
+1. Create an `ActivitySource` named `Foundry.Agent.Invocation`. Nothing else
+   in the process writes to that source.
+2. Build a separate OpenTelemetry tracer provider that listens only to that
+   source and exports with the Azure Monitor exporter. The samples already
+   send requests, dependencies, exceptions, and logs through the Application
+   Insights SDK, so a provider that also listened to HTTP or ASP.NET Core
+   sources would record that telemetry twice. The samples build the provider
+   with `Sdk.CreateTracerProviderBuilder()` inside a hosted service, which
+   starts it with the host and disposes it on shutdown so that pending spans
+   are flushed.
+3. Give the exporter the `APPLICATIONINSIGHTS_CONNECTION_STRING` setting.
+   Foundry injects it into the hosted container only when monitoring is
+   configured on the project, which is why each sample's `azd provision`
+   creates Application Insights and connects it to the project. When the
+   setting is absent, the samples skip the hosted service and run without the
+   span.
+4. Name the agent in the provider's resource: `service.name` from
+   `FOUNDRY_AGENT_NAME`, `service.version` from `FOUNDRY_AGENT_VERSION`, and
+   `service.instance.id` from `FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID`.
+   Foundry sets these at runtime and reserves every `FOUNDRY_*` variable, so
+   don't set them yourself.
+5. Set `AlwaysOnSampler` after you add the exporter. The Azure Monitor
+   exporter installs its own sampler, which replaces a sampler that you set
+   earlier. With the sampler set last, an invocation is recorded even when
+   the incoming request's trace context isn't sampled.
+6. In the method that calls the Responses API, start an `Internal` activity
+   named `invoke_agent <agentName>` and set these attributes:
+
+   - `gen_ai.operation.name`: `invoke_agent`
+   - `gen_ai.agent.name`: the agent name
+   - `gen_ai.agent.id` and `microsoft.gen_ai.main_agent.id`:
+     `<agentName>:<agentVersion>`
+   - `microsoft.foundry.project.id`: the value of `FOUNDRY_PROJECT_ARM_ID`
+   - `azure.ai.agentserver.session_id`: the value of
+     `FOUNDRY_AGENT_SESSION_ID`
+   - `gen_ai.input.messages` and `gen_ai.output.messages`: the message
+     envelopes
+   - `gen_ai.response.id`: the ID of the final Responses API response
+
+7. Record failures on the span. The samples set the span status to Error and
+   add `error.type` for HTTP errors, failed or cancelled responses, responses
+   without output text, a tool-call loop that reaches its limit, and
+   exceptions.
+8. Leave message text out unless someone opts in. Each envelope records the
+   role and a text part, and adds the text only when
+   `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is `true`. The
+   samples' creation scripts read that value only from the `azd` environment
+   and pass `false` when it isn't set.
+
+Because the span is `Internal`, Application Insights stores it in
+`dependencies` with `type` set to `InProc`. When the incoming request's trace
+context reaches the model call, the span shares that request's
+`operation_Id`. To reuse the samples' code, add the `OpenTelemetry` and
+`Azure.Monitor.OpenTelemetry.Exporter` packages, copy
+`AgentInvocationTracing.cs`, register `AgentInvocationTracingService` when the
+connection string is present, and route your model call through
+`AgentInvocationTracing.TraceAsync`. The tests in each sample's `tests` folder
+show the expected span for a successful call, a failure, and content capture.

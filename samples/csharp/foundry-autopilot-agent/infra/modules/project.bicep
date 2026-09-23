@@ -18,6 +18,15 @@ param publicNetworkAccess string = 'Enabled'
 param modelName string
 param modelVersion string
 
+@description('Enable monitoring via Application Insights and Log Analytics')
+param enableMonitoring bool = true
+
+@description('Name of the Log Analytics workspace (used when monitoring is enabled)')
+param logAnalyticsName string = '${accountName}-logs'
+
+@description('Name of the Application Insights instance (used when monitoring is enabled)')
+param applicationInsightsName string = '${accountName}-appi'
+
 // Cognitive Services Account
 resource account 'Microsoft.CognitiveServices/accounts@2025-09-01' = {
   name: accountName
@@ -113,9 +122,47 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   }
 }
 
+// =================================================================================================
+// Monitoring (optional) - Log Analytics + Application Insights for agent tracing and evaluations
+// =================================================================================================
+
+module monitoring 'monitoring.bicep' = if (enableMonitoring) {
+  name: 'monitoring-deployment'
+  params: {
+    logAnalyticsName: logAnalyticsName
+    applicationInsightsName: applicationInsightsName
+    location: location
+    tags: tags
+    projectMIPrincipalId: project.identity.principalId
+  }
+}
+
+// AppInsights connection on the Foundry project so agents emit traces to App Insights.
+resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = if (enableMonitoring) {
+  parent: project
+  name: applicationInsightsName
+  properties: {
+    category: 'AppInsights'
+    target: monitoring.outputs.id
+    authType: 'ApiKey'
+    isSharedToAll: false
+    credentials: {
+      key: monitoring.outputs.connectionString
+    }
+    metadata: {
+      ApiType: 'Azure'
+      ResourceId: monitoring.outputs.id
+    }
+  }
+}
+
 
 output acrloginServer string = containerRegistry.properties.loginServer
 
 output foundryProjectEndpoint string = project.properties.endpoints['AI Foundry API']
 
 output foundryProjectPrincipalId string = project.identity.principalId
+
+output applicationInsightsConnectionString string = enableMonitoring ? monitoring.outputs.connectionString : ''
+
+output applicationInsightsResourceId string = enableMonitoring ? monitoring.outputs.id : ''

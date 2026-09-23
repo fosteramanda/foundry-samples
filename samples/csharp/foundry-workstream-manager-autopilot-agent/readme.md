@@ -181,7 +181,7 @@ azd provision
 
 > **⚠️ Traffic routing & draining:** Creating a new agent version does not instantly move every live session onto it. Existing sessions can continue on the previous version after endpoint routing changes. Confirm the intended version is selected for new invocations, then follow the session checks in [Autopilot sample operations](../../AUTOPILOT_OPERATIONS.md) rather than treating an idle timeout or traffic pin as proof that your conversation uses the new code.
 
-Use these values with that guide: deploy a new version with `azd provision`, use `AZURE_AI_PROJECT_ENDPOINT` as the endpoint setting and the agent name stored in `AGENT_NAME`, and run the span query described in [Monitoring & Observability](#-monitoring--observability).
+Use these values with that guide: deploy a new version with `azd provision`, which prints it on its `Agent Version:` line, use `AZURE_AI_PROJECT_ENDPOINT` as the endpoint setting and the agent name stored in `AGENT_NAME`, and run the span query described in [Monitoring & Observability](#-monitoring--observability).
 
 ---
 

@@ -45,6 +45,15 @@ param modelName string = 'gpt-chat-latest'
 @description('Model version')
 param modelVersion string = '2026-05-28'
 
+@description('Enable monitoring via Application Insights and Log Analytics')
+param enableMonitoring bool = true
+
+@description('Name of the Log Analytics workspace')
+param logAnalyticsName string = '${environmentName}-logs'
+
+@description('Name of the Application Insights instance')
+param applicationInsightsName string = '${environmentName}-appi'
+
 // =================================================================================================
 // Common parameters
 // =================================================================================================
@@ -69,6 +78,9 @@ module project 'modules/project.bicep' = {
     containerRegistrySku: containerRegistrySku
     modelName: modelName
     modelVersion: modelVersion
+    enableMonitoring: enableMonitoring
+    logAnalyticsName: logAnalyticsName
+    applicationInsightsName: applicationInsightsName
   }
 }
 
@@ -99,3 +111,9 @@ output TENANT_ID string = tenant().tenantId
 output PROJECT_PRINCIPAL_ID string = project.outputs.foundryProjectPrincipalId
 
 output MODEL_NAME string = modelName
+
+@description('Application Insights connection string (empty when monitoring is disabled)')
+output APPLICATIONINSIGHTS_CONNECTION_STRING string = project.outputs.applicationInsightsConnectionString
+
+@description('Application Insights resource ID (empty when monitoring is disabled)')
+output APPLICATIONINSIGHTS_RESOURCE_ID string = project.outputs.applicationInsightsResourceId
