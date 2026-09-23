@@ -158,11 +158,11 @@ app.MapPost("/api/messages", async (HttpRequest request, HttpResponse response, 
     await adapter.ProcessAsync(request, response, agent, cancellationToken);
 });
 
-app.MapGet("/", () => "Hello World from WorkstreamManagerAgent!");
+app.MapGet("/", () => "Hello World from AutopilotRouterAgent!");
 
-app.MapGet("/liveness", () => "Hello World from WorkstreamManagerAgent!");
+app.MapGet("/liveness", () => "Hello World from AutopilotRouterAgent!");
 
-app.MapGet("/readiness", () => "Hello World from WorkstreamManagerAgent!");
+app.MapGet("/readiness", () => "Hello World from AutopilotRouterAgent!");
 
 
 if (!app.Environment.IsDevelopment())

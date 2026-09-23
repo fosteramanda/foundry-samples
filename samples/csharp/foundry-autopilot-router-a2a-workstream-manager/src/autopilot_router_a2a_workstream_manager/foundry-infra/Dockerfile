@@ -26,5 +26,5 @@ ENV WorkItemsTableServiceUri=${WORK_ITEMS_TABLE_SERVICE_URI}
 ENV WorkItemsTableName=${WORK_ITEMS_TABLE_NAME}
 
 # Start the application
-ENTRYPOINT ["dotnet", "WorkstreamManagerAgent.dll"]
+ENTRYPOINT ["dotnet", "AutopilotRouterA2AWorkstreamManager.dll"]
 
