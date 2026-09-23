@@ -4128,8 +4128,29 @@ resolves. No public GitHub code, Learn page or WorkIQ result contains the reques
   removed. Verified afterwards: 0 secrets, 0 preauthorized clients. Local token files deleted.
 - No registration, agent identity, agent user account, license or routine changed. Cost $0.
 
+### One client left untested: Microsoft's Agent 365 CLI app
+
+Amanda offered to sign in. Signing in through the test app again would only reproduce the 403
+already measured for her account, so the one different caller worth trying is Microsoft's
+first-party **Agent 365 CLI** app, `f54280f4-395e-4ea8-9e48-bf2d4952aa14` (service principal
+`f94aa7c4-...` in this tenant, no delegated grants yet). A device code was issued for it and
+expired unused at 00:09 UTC, so whether AgentX accepts that app is still unknown. Other Microsoft
+first-party client IDs were deliberately not tried: borrowing another product's client to get
+past AgentX's caller check would be circumventing an access control, not testing the API.
+
+`agentx-signin-probe.py`, in this session's files folder, does the sign-in in a browser. Then it
+makes the two read-only GETs against the canary registration. It sends one empty POST to
+`agentUserInstances`, to collect validation errors, only if AgentX lets the caller through. It
+writes `agentx-probe-results.txt` next to itself and keeps the token out of that file. It was
+dry-run with a fake token: it compiles, reaches AgentX, and got the expected 401s.
+
 ### FOR AMANDA
 
+- To finish the sign-in, run
+  `python "C:\Users\fosteramanda\.copilot\session-state\9bc6280f-942b-4616-bb60-29dedb3abf96\files\agentx-signin-probe.py"`,
+  choose amanda@notareal.co in the browser and accept the Agent 365 CLI consent if asked. A
+  pre-authorization error or "RESULT: AgentX rejected" is the final answer; "RESULT: AgentX
+  accepted" means tell Copilot within the hour so it can work out the body from the saved token.
 - The Graph `agentUserInstances` API is not in the Graph schema for this tenant, and the AgentX
   original accepts only callers Microsoft has allowlisted. Only the owners can unblock this: ask in
   "Foundry customers calling registration api for agent user" for the request body and the Graph
