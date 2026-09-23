@@ -4158,3 +4158,34 @@ dry-run with a fake token: it compiles, reaches AgentX, and got the expected 401
 - The test app is inert while AgentX rejects it. It was kept for a possible allowlist; deleting it
   needs your OK.
 - The canary registration `T_f2a10ea0-...` persists, and the Teams Settings retest is still open.
+
+## License SKU IDs: E5 is global, the preview license is unconfirmed (2026-09-22)
+
+Standing rule from Amanda for this work: do not update the "Create an Autopilot Instance Using the
+Entra APIs" document unless she asks. Validation results go here and in chat.
+
+Amanda asked whether there is one global skuId for Microsoft 365 E5 and one for the preview license.
+
+- **Microsoft 365 E5: yes.** Microsoft's published licensing reference ("Product names and service
+  plan identifiers for licensing", file dated 19 Aug 2026) lists one GUID for `SPE_E5`:
+  `06ebc4ee-1bb5-47dd-8120-11324bc54e06`. It has not been seen in a tenant here, because Not A Real
+  Co has no E5.
+- **Preview license: not validated.** In Not A Real Co it is `MICROSOFT_AGENT_365_ROW`,
+  `03e5b5d6-17d2-42ae-b60b-945c00555416` (33 enabled, 12 consumed). It is not in the published
+  reference. WorkIQ denies `/subscribedSkus` for the Microsoft tenant, so no second tenant could be
+  compared, and no internal content lists the ID. The reference's `AGENT_365` "Agent 365",
+  `796a6fb4-740b-4d36-bf56-9c12ca7fa069`, is a different product that this tenant does not have.
+- The E-plan used in earlier validation, `TEST_SPE_E7` `588f2bd5-...`, is a test SKU. The published
+  Microsoft 365 E7 is `MICROSOFT_365_E7` `9a18296a-025f-4e37-9ffa-30bf8d1ce775`.
+
+The requested E5 sequence (assign E5, remove it, assign the preview license) was not run: Not A
+Real Co's subscribedSkus contain no E5 in any form, and the rule is not to substitute the nearest
+thing. Planned target once Amanda decides: **Manager Inline Test 260922195601**,
+`76ba97a5-630d-43a1-9e16-52995a49c864`. It is a test agent user with no license and no
+usageLocation yet.
+
+### FOR AMANDA
+
+- E5 cannot be assigned in Not A Real Co because the tenant has none. Choose: run the same three
+  steps with `TEST_SPE_E7` standing in for E5, or add E5 to the tenant first (for example a trial
+  in the Microsoft 365 admin center) and then have Copilot run it.
