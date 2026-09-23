@@ -290,7 +290,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             input: incomingText ?? string.Empty,
             conversationId: conversationId,
             additionalTools: BuildLocalToolDefinitions(),
-            localToolExecutor: ExecuteLocalToolAsync);
+            localToolExecutor: ExecuteLocalToolAsync,
+            traceInvocation: true);
 
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse
@@ -467,7 +468,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 "Email body:\n" +
                 body;
 
-            var response = await _responsesApiClient.InvokeAsync(prompt, conversationId);
+            var response = await _responsesApiClient.InvokeAsync(prompt, conversationId, traceInvocation: true);
 
             var responseActivity = EmailResponse.CreateEmailResponseActivity(response);
 
@@ -691,7 +692,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 ? $"You are replying to the comment from {commenterName}: '{commentText}'."
                 : $"You are replying to the comment: '{commentText}'.");
 
-            var modelOutput = await _responsesApiClient.InvokeAsync(prompt.ToString(), conversationId);
+            var modelOutput = await _responsesApiClient.InvokeAsync(prompt.ToString(), conversationId, traceInvocation: true);
 
             // The reply is posted on the comment thread by the MCP ReplyToComment tool, so there is
             // nothing to send back through the activity protocol. The model's final text (if any) is

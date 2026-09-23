@@ -75,7 +75,7 @@ internal class ResponsesApiClient
         _statePartitionKey = $"{_agentMetadata.TenantId}:{_agentMetadata.UserId}";
     }
 
-    internal async Task<string> InvokeAsync(
+    internal Task<string> InvokeAsync(
         string input,
         string conversationId,
         string? instructionsOverride = null,
@@ -84,7 +84,34 @@ internal class ResponsesApiClient
         string? modelDeploymentOverride = null,
         bool usePreviousResponseId = true,
         List<JsonNode>? additionalTools = null,
-        Func<string, string, Task<string?>>? localToolExecutor = null)
+        Func<string, string, Task<string?>>? localToolExecutor = null,
+        bool traceInvocation = false)
+    {
+        // Only turns that answer someone are agent invocations. The addressed-to-agent judge and
+        // passive work-item detection also call this client; tracing them would show internal
+        // classifier calls to trace-based evaluations as if the agent had replied.
+        if (!traceInvocation)
+        {
+            return InvokeCoreAsync(input, conversationId, instructionsOverride, includeMcpTools, persistResponseId,
+                modelDeploymentOverride, usePreviousResponseId, additionalTools, localToolExecutor, invocation: null);
+        }
+
+        return AgentInvocationTracing.TraceAsync(input, invocation =>
+            InvokeCoreAsync(input, conversationId, instructionsOverride, includeMcpTools, persistResponseId,
+                modelDeploymentOverride, usePreviousResponseId, additionalTools, localToolExecutor, invocation));
+    }
+
+    private async Task<string> InvokeCoreAsync(
+        string input,
+        string conversationId,
+        string? instructionsOverride,
+        bool includeMcpTools,
+        bool persistResponseId,
+        string? modelDeploymentOverride,
+        bool usePreviousResponseId,
+        List<JsonNode>? additionalTools,
+        Func<string, string, Task<string?>>? localToolExecutor,
+        System.Diagnostics.Activity? invocation)
     {
         var endpoint = _configuration["AzureOpenAIEndpoint"] ?? throw new InvalidOperationException("AzureOpenAIEndpoint not configured");
         var deployment = string.IsNullOrWhiteSpace(modelDeploymentOverride)
@@ -207,6 +234,7 @@ internal class ResponsesApiClient
 
         if (!success)
         {
+            AgentInvocationTracing.RecordError(invocation, "responses_api_error");
             return responseContent;
         }
 
@@ -221,6 +249,7 @@ internal class ResponsesApiClient
             var currentResponseId = TryExtractResponseId(responseContent);
             if (string.IsNullOrWhiteSpace(currentResponseId))
             {
+                AgentInvocationTracing.RecordError(invocation, "missing_response_id");
                 _logger.LogError("Responses API returned function calls without a response id.");
                 return "I encountered an error processing your request.";
             }
@@ -245,8 +274,15 @@ internal class ResponsesApiClient
                 () => BuildRequestBody(toolOutputs, deployment, instructions, includeMcpTools, mcpTools, localTools, currentResponseId));
             if (!success)
             {
+                AgentInvocationTracing.RecordError(invocation, "responses_api_error");
                 return responseContent;
             }
+        }
+
+        if (ExtractFunctionCalls(responseContent).Count > 0)
+        {
+            AgentInvocationTracing.RecordError(invocation, "tool_iteration_limit");
+            _logger.LogWarning("Responses API tool-call limit reached before a final response.");
         }
 
         if (persistResponseId)
@@ -255,7 +291,7 @@ internal class ResponsesApiClient
             await SaveResponseIdAsync(conversationId, responseContent, toolFingerprint);
         }
 
-        return ExtractOutputText(responseContent);
+        return ExtractOutputText(responseContent, invocation);
     }
 
     /// <summary>
@@ -853,12 +889,13 @@ internal class ResponsesApiClient
         }
     }
 
-    private string ExtractOutputText(string responseJson)
+    private string ExtractOutputText(string responseJson, System.Diagnostics.Activity? invocation)
     {
         try
         {
             using var doc = JsonDocument.Parse(responseJson);
             var root = doc.RootElement;
+            AgentInvocationTracing.RecordResponse(invocation, root);
 
             if (root.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Array)
             {
@@ -891,11 +928,13 @@ internal class ResponsesApiClient
             }
 
             _logger.LogWarning("Could not extract output text from Responses API response");
+            AgentInvocationTracing.RecordError(invocation, "missing_response_output");
             return string.Empty;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error parsing Responses API response");
+            AgentInvocationTracing.RecordError(invocation, "invalid_response");
             return string.Empty;
         }
     }

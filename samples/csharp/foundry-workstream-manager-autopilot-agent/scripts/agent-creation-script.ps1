@@ -56,6 +56,12 @@ $environmentVariables.FoundryProjectEndpoint = $env:AZURE_AI_PROJECT_ENDPOINT
 $environmentVariables.FoundryAgentName = $env:AGENT_NAME
   }
 
+  # Message content stays off unless the azd environment opts in. It is read from azd, not the
+  # shell, so a local debugging variable cannot turn capture on for the hosted agent.
+  $azdEnvironmentArgs = if ($env:AZURE_ENV_NAME) { @("-e", $env:AZURE_ENV_NAME) } else { @() }
+  $captureMessageContent = & azd env get-value OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --cwd (Split-Path -Parent $PSScriptRoot) @azdEnvironmentArgs 2>$null
+  $environmentVariables.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = if ($LASTEXITCODE -eq 0 -and "$captureMessageContent".Trim() -eq "true") { "true" } else { "false" }
+
   $agentUrl = "$($AzureAIProjectEndpoint)/agents/$($AgentName)/versions?api-version=2025-11-15-preview"
 
   $agentCreationBody = @{
