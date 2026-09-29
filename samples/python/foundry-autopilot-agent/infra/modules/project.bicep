@@ -41,6 +41,10 @@ resource project 'Microsoft.CognitiveServices/accounts/projects@2026-03-01' = {
   properties: {
     displayName: projectName
   }
+  // The account rejects concurrent project and model deployment operations.
+  dependsOn: [
+    modelDeployment
+  ]
 }
 
 // Azure Container Registry
