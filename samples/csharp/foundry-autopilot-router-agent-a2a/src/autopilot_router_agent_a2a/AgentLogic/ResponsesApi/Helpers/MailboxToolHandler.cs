@@ -115,6 +115,14 @@ public class MailboxToolHandler
         ];
         if (!ActsAsManager)
         {
+            tools.Add(JsonNode.Parse("""
+            {
+                "type": "function",
+                "name": "get_manager_contact",
+                "description": "Resolve the manager's actual email address from your own agent user account's manager relationship. Use this when an approved request says share with me, email me, or invite me and the manager's address is not already known. This only reads directory contact information.",
+                "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+            }
+            """)!);
             tools[0]["name"] = "send_email_as_agent";
             tools[0]["description"] = "Send email from your own agent mailbox, as yourself. Never impersonate the manager. Use only when an approved user asks you to send email to specified recipients; do not use it for your ordinary chat reply.";
             tools[0]["parameters"]!["properties"]!["body_html"]!["description"] = "Body as HTML, written as the agent itself, not in the manager's voice.";
@@ -131,6 +139,14 @@ public class MailboxToolHandler
         if (!IsEnabled)
         {
             return null;
+        }
+
+        if (!ActsAsManager && toolName == "get_manager_contact")
+        {
+            var contact = await ResolveManagerMailboxAsync();
+            return contact == null
+                ? "The manager's contact could not be resolved. No address was guessed."
+                : new JsonObject { ["email"] = contact, ["role"] = "agent manager" }.ToJsonString();
         }
 
         var operation = ActsAsManager ? toolName : toolName switch

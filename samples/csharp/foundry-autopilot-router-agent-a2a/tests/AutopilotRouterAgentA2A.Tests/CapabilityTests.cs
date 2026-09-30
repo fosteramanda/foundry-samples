@@ -45,7 +45,7 @@ public class CapabilityTests
             NullLogger.Instance, http, Config(), "test-token");
         Assert.False(tools.ActsAsManager);
         Assert.Equal(
-            ["send_email_as_agent", "create_calendar_event_for_agent", "list_agent_calendar"],
+            ["send_email_as_agent", "create_calendar_event_for_agent", "list_agent_calendar", "get_manager_contact"],
             tools.GetToolDefinitions().Select(tool => tool["name"]!.GetValue<string>()));
         Assert.All(tools.GetToolDefinitions(),
             tool => Assert.DoesNotContain("FROM the manager", tool["description"]!.GetValue<string>()));
@@ -242,6 +242,57 @@ public class CapabilityTests
         Assert.False(await access.IsNotificationSenderApprovedAsync(
             new ChannelAccount { Id = Guid.NewGuid().ToString(), TenantId = Guid.NewGuid().ToString() }));
         Assert.Empty(handler.Calls);
+    }
+
+    [Fact]
+    public async Task ManagerContactIsResolvedWithoutSendingOrCreatingAnything()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.OK,
+            """{"mail":"manager@example.com","displayName":"Manager"}""");
+        using var http = new HttpClient(handler);
+        var tools = new MailboxToolHandler(new AgentMetadata { UserId = Guid.NewGuid() },
+            NullLogger.Instance, http, Config(), "test-token");
+        var result = await tools.TryExecuteAsync("get_manager_contact", "{}");
+        Assert.Equal("manager@example.com", JsonNode.Parse(result!)!["email"]!.GetValue<string>());
+        Assert.EndsWith("/manager", Assert.Single(handler.Calls).Uri.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task ScheduledChatUsesTheAgentGraphTokenAndRequiresAReceipt()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.Created, """{"id":"message-1"}""");
+        using var http = new HttpClient(handler);
+        var delivery = new ScheduledChatDelivery(http, "agent-user-token", NullLogger.Instance);
+        var activity = new Activity
+        {
+            Type = ActivityTypes.Message, ChannelId = "msteams",
+            Conversation = new ConversationAccount { Id = "19:test@unq.gbl.spaces" }
+        };
+        await delivery.SendAsync(activity, "<p>Scheduled check-in</p>", CancellationToken.None);
+        var call = Assert.Single(handler.Calls);
+        Assert.EndsWith("/messages", call.Uri.AbsolutePath);
+        Assert.Contains("19%3Atest", call.Uri.AbsoluteUri);
+        Assert.Equal("Scheduled check-in", System.Text.RegularExpressions.Regex.Replace(
+            JsonNode.Parse(call.Body!)!["body"]!["content"]!.GetValue<string>(), "<[^>]+>", ""));
+        activity.Id = "user-message";
+        Assert.False(ScheduledChatDelivery.IsScheduledChat(activity));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, """{"error":{"code":"Unauthorized"}}""")]
+    [InlineData(HttpStatusCode.Created, """{}""")]
+    public async Task ScheduledDeliveryNeverRetriesAnUnconfirmedPost(HttpStatusCode status, string body)
+    {
+        var handler = new RecordingHandler(status, body);
+        using var http = new HttpClient(handler);
+        var delivery = new ScheduledChatDelivery(http, "agent-user-token", NullLogger.Instance);
+        var activity = new Activity
+        {
+            Type = ActivityTypes.Message, ChannelId = "msteams",
+            Conversation = new ConversationAccount { Id = "19:test@unq.gbl.spaces" }
+        };
+        await Assert.ThrowsAnyAsync<Exception>(() => delivery.SendAsync(activity, "Test", CancellationToken.None));
+        Assert.Single(handler.Calls);
     }
 
     private sealed class RecordingHandler(

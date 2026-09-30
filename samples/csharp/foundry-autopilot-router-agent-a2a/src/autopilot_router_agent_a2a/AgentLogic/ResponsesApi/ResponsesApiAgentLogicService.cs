@@ -31,6 +31,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly ReactionService _reactionService;
     private readonly AgentMetadata _agentMetadata;
     private readonly PendingDelegationStore? _pendingDelegations;
+    private readonly ScheduledChatDelivery _scheduledChatDelivery;
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -63,6 +64,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         }
         _responsesApiClient = new ResponsesApiClient(agentMetadata, _logger, _configuration, accessToken, mcpServers, httpClient, conversationState);
         _reactionService = new ReactionService(_logger, graphAccessToken, httpClient);
+        _scheduledChatDelivery = new ScheduledChatDelivery(httpClient, graphAccessToken, _logger);
 
         // Initialize WorkItemToolHandler
         WorkItemService? workItemService = null;
@@ -298,6 +300,12 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         if (!string.IsNullOrEmpty(delegationCue) && !string.IsNullOrWhiteSpace(response))
         {
             response += delegationCue;
+        }
+
+        if (ScheduledChatDelivery.IsScheduledChat(turnContext.Activity) && !string.IsNullOrWhiteSpace(response))
+        {
+            await _scheduledChatDelivery.SendAsync(turnContext.Activity, response, cancellationToken);
+            return;
         }
 
         // For Teams group chat / channel we send a regular activity so the groupchat features
