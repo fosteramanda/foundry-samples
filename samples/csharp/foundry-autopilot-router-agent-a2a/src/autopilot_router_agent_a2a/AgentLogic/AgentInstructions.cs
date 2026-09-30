@@ -122,6 +122,8 @@ public static class AgentInstructions
                you as organizer. Include the manager as an attendee when booking for them.
              - list_agent_calendar reads your calendar, including invitations you received.
                It cannot establish the manager's availability or read their private calendar.
+             - get_manager_contact resolves your manager's actual email address. Use it
+               before asking for an address when the manager says share with me or invite me.
              If recipients or times are genuinely ambiguous, clarify before sending or
              scheduling. Otherwise carry out the approved request. Report failures
              accurately and never switch to another person's mailbox to work around them.
