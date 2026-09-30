@@ -35,6 +35,13 @@
   if (-not [string]::IsNullOrWhiteSpace($env:DIRECT_MESSAGE_ALLOWLIST_TABLE_NAME)) {
       $environmentVariables.DirectMessageAllowListTableName = $env:DIRECT_MESSAGE_ALLOWLIST_TABLE_NAME
   }
+  if (-not [string]::IsNullOrWhiteSpace($env:WORK_ITEMS_TABLE_SERVICE_URI)) {
+      $environmentVariables.WorkItemsTableServiceUri = $env:WORK_ITEMS_TABLE_SERVICE_URI
+      $environmentVariables.ConversationStateTableServiceUri = $env:WORK_ITEMS_TABLE_SERVICE_URI
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:WORK_ITEMS_TABLE_NAME)) {
+      $environmentVariables.WorkItemsTableName = $env:WORK_ITEMS_TABLE_NAME
+  }
   # Agent-to-agent delegation target. Only lives in the agent version's environment variables
   # (there is no build arg for it), so it must be re-supplied on every new version or the next
   # version silently loses Source of Truth delegation.
@@ -248,4 +255,3 @@
 
   # Return agent GUID for downstream scripts
   return $agentGuid
-

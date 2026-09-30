@@ -23,7 +23,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly WorkItemToolHandler _workItemTools;
     private readonly WorkIqA2AToolHandler _workIqA2ATools;
     private readonly RoutineToolHandler _routineTools;
-    private readonly ManagerMailboxToolHandler _managerMailboxTools;
+    private readonly MailboxToolHandler _mailboxTools;
     private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
     private readonly TeamsActivityHelper _teamsHelper;
     private readonly AccessControlService _accessControl;
@@ -75,8 +75,9 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _workIqA2ATools = new WorkIqA2AToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration);
         _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
         _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
-        _managerMailboxTools = new ManagerMailboxToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
-        _responsesApiClient.ManagerMailboxEnabled = _managerMailboxTools.IsEnabled;
+        _mailboxTools = new MailboxToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
+        _responsesApiClient.ManagerMailboxEnabled = _mailboxTools.IsEnabled && _mailboxTools.ActsAsManager;
+        _responsesApiClient.AgentMailboxEnabled = _mailboxTools.IsEnabled && !_mailboxTools.ActsAsManager;
 
         // Only constructed when durable storage exists. A capture decision that cannot be written
         // down must not be offered at all, because the agent would otherwise report a permission
@@ -149,7 +150,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
         tools.AddRange(_routineTools.GetToolDefinitions());
-        tools.AddRange(_managerMailboxTools.GetToolDefinitions());
+        tools.AddRange(_mailboxTools.GetToolDefinitions());
         if (_meetingRegistryTools != null)
         {
             tools.AddRange(_meetingRegistryTools.GetToolDefinitions());
@@ -165,7 +166,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         => await _workItemTools.TryExecuteAsync(toolName, arguments)
            ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
            ?? await _routineTools.TryExecuteAsync(toolName, arguments)
-           ?? await _managerMailboxTools.TryExecuteAsync(toolName, arguments)
+           ?? await _mailboxTools.TryExecuteAsync(toolName, arguments)
            ?? (_meetingRegistryTools != null
                 ? await _meetingRegistryTools.TryExecuteAsync(toolName, arguments)
                 : null);
@@ -435,6 +436,10 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     public async Task HandleEmailNotificationAsync(ITurnContext turnContext, ITurnState turnState, AgentNotificationActivity emailEvent)
     {
         _logger.LogInformation("Processing email notification (Responses API) - NotificationType: {NotificationType}", emailEvent.NotificationType);
+        if (!await _accessControl.IsNotificationSenderApprovedAsync(emailEvent.From ?? turnContext.Activity.From))
+        {
+            return;
+        }
 
         // Office sends an auto-generated email notification when someone @-mentions the agent in a
         // document comment, assigns it a task, or shares a doc. Those collaboration events are
@@ -635,6 +640,10 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     public async Task HandleCommentNotificationAsync(ITurnContext turnContext, ITurnState turnState, AgentNotificationActivity commentEvent)
     {
         _logger.LogInformation("Processing comment notification (Responses API) - NotificationType: {NotificationType}", commentEvent.NotificationType);
+        if (!await _accessControl.IsNotificationSenderApprovedAsync(commentEvent.From ?? turnContext.Activity.From))
+        {
+            return;
+        }
 
         // Prefer the SDK-populated WpxCommentNotification; fall back to parsing the
         // "wpxcomment" entity directly off the activity (documentId / commentId / parentCommentId).
@@ -819,4 +828,3 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     }
 
 }
-

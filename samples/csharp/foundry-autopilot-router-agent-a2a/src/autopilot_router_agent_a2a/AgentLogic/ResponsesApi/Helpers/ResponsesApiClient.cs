@@ -57,6 +57,7 @@ internal class ResponsesApiClient
     /// state so the prompt never offers to send mail or book meetings the agent cannot send.
     /// </summary>
     internal bool ManagerMailboxEnabled { get; set; }
+    internal bool AgentMailboxEnabled { get; set; }
 
     /// <summary>
     /// Whether the meeting registry tools are attached this turn. Derived from the handler, which
@@ -134,10 +135,14 @@ internal class ResponsesApiClient
             _configuration["SourceOfTruthAgentId"],
             _configuration["SourceOfTruthAgentName"],
             _configuration["ToolboxName"],
-            RoutinesEnabled,
-            WorkItemsEnabled,
-            ManagerMailboxEnabled,
-            MeetingRegistryEnabled);
+            RoutinesEnabled && HasLocalTool("create_routine"),
+            WorkItemsEnabled && HasLocalTool("create_work_item"),
+            ManagerMailboxEnabled && HasLocalTool("send_email_as_manager"),
+            MeetingRegistryEnabled && HasLocalTool("track_meeting"),
+            AgentMailboxEnabled && HasLocalTool("send_email_as_agent"));
+
+        bool HasLocalTool(string name) =>
+            additionalTools?.Any(tool => tool["name"]?.GetValue<string>() == name) == true;
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.
@@ -975,4 +980,3 @@ internal class ResponsesApiClient
 }
 
 internal record ResponsesApiFunctionCall(string CallId, string Name, string Arguments);
-

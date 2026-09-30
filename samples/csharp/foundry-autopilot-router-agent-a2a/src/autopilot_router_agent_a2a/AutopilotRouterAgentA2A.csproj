@@ -8,6 +8,9 @@
     <UserSecretsId>6d3109d3-6ff5-438e-aa23-cddd3703b4cb</UserSecretsId>
     <NoWarn></NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AutopilotRouterAgentA2A.Tests" />
+  </ItemGroup>
     
     <PropertyGroup>
         <OpenTelemetryVersion>1.15.3</OpenTelemetryVersion>

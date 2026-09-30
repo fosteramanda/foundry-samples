@@ -165,6 +165,35 @@ internal class AccessControlService
 
     private sealed record GroupChatParticipant(string? DisplayName, List<string> IdCandidates);
 
+    internal async Task<bool> IsNotificationSenderApprovedAsync(ChannelAccount? sender)
+    {
+        var tenants = GetSenderTenantIdCandidates(sender);
+        if (tenants.Count > 0 && !tenants.Any(tenant => TenantIdsMatch(tenant, _agentMetadata.TenantId)))
+        {
+            _logger.LogWarning("Notification access denied: sender belongs to another tenant.");
+            return false;
+        }
+        var candidates = TeamsActivityHelper.GetSenderIdCandidates(sender);
+        var manager = await TryResolveManagerIdentityAsync(CancellationToken.None);
+        if (manager == null)
+        {
+            _logger.LogWarning("Notification access denied: the manager could not be resolved.");
+            return false;
+        }
+        var allowList = await LoadDirectMessageAllowListAsync(CancellationToken.None);
+        foreach (var candidate in candidates)
+        {
+            var identity = await TryResolveDirectoryUserIdentityAsync(candidate, CancellationToken.None);
+            if (identity != null && (string.Equals(identity.Id, manager.Id, StringComparison.OrdinalIgnoreCase)
+                || allowList.Users.Any(user => string.Equals(user.Id, identity.Id, StringComparison.OrdinalIgnoreCase))))
+            {
+                return true;
+            }
+        }
+        _logger.LogWarning("Notification access denied: sender is not the manager or an approved teammate.");
+        return false;
+    }
+
     internal async Task<bool> TryHandleRestrictedGroupChatAsync(
         ITurnContext turnContext,
         CancellationToken cancellationToken)
@@ -1350,4 +1379,3 @@ internal class AccessControlService
     }
 
 }
-
