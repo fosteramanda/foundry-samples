@@ -88,6 +88,24 @@ internal class ResponsesApiClient
         _statePartitionKey = $"{_agentMetadata.TenantId}:{_agentMetadata.UserId}";
     }
 
+    internal string BuildTurnInstructions(List<JsonNode>? additionalTools)
+    {
+        bool HasLocalTool(string name) =>
+            additionalTools?.Any(tool => tool["name"]?.GetValue<string>() == name) == true;
+
+        return AgentInstructions.GetInstructions(
+            _agentMetadata,
+            _configuration["SourceOfTruthAgentId"],
+            _configuration["SourceOfTruthAgentName"],
+            _configuration["ToolboxName"],
+            RoutinesEnabled && HasLocalTool("create_routine"),
+            WorkItemsEnabled && HasLocalTool("create_work_item"),
+            ManagerMailboxEnabled && HasLocalTool("send_email_as_manager"),
+            MeetingRegistryEnabled && HasLocalTool("track_meeting"),
+            AgentMailboxEnabled && HasLocalTool("send_email_as_agent"),
+            HasLocalTool("ask_workiq_agent"));
+    }
+
     internal Task<string> InvokeAsync(
         string input,
         string conversationId,
@@ -130,19 +148,7 @@ internal class ResponsesApiClient
         var deployment = string.IsNullOrWhiteSpace(modelDeploymentOverride)
             ? _configuration["ModelDeployment"] ?? throw new InvalidOperationException("ModelDeployment not configured")
             : modelDeploymentOverride.Trim();
-        var instructions = instructionsOverride ?? AgentInstructions.GetInstructions(
-            _agentMetadata,
-            _configuration["SourceOfTruthAgentId"],
-            _configuration["SourceOfTruthAgentName"],
-            _configuration["ToolboxName"],
-            RoutinesEnabled && HasLocalTool("create_routine"),
-            WorkItemsEnabled && HasLocalTool("create_work_item"),
-            ManagerMailboxEnabled && HasLocalTool("send_email_as_manager"),
-            MeetingRegistryEnabled && HasLocalTool("track_meeting"),
-            AgentMailboxEnabled && HasLocalTool("send_email_as_agent"));
-
-        bool HasLocalTool(string name) =>
-            additionalTools?.Any(tool => tool["name"]?.GetValue<string>() == name) == true;
+        var instructions = instructionsOverride ?? BuildTurnInstructions(additionalTools);
 
         // Skip tool sources that are already quarantined from an earlier connector failure, so a
         // known-bad server does not fail this turn on the way to being discovered again.
