@@ -260,12 +260,25 @@ public class MailboxToolHandler
         }
     }
 
-    private async Task<string> SendMailAsync(string mailbox, JsonNode? args)
+    private async Task<string> SendMailAsync(string mailbox, JsonNode? args) =>
+        (await SendMailCoreAsync(mailbox, args)).Detail;
+
+    internal Task<(bool Accepted, string Detail)> SendStandingMailAsync(IReadOnlyList<string> recipients, string subject, string html)
+    {
+        if (!IsEnabled || ActsAsManager)
+            throw new InvalidOperationException("Standing jobs require the agent's own enabled mailbox tools.");
+        var to = new JsonArray();
+        foreach (var recipient in recipients) to.Add(recipient);
+        return SendMailCoreAsync(_agentUserId.ToString("D"),
+            new JsonObject { ["to"] = to, ["subject"] = subject, ["body_html"] = html });
+    }
+
+    private async Task<(bool Accepted, string Detail)> SendMailCoreAsync(string mailbox, JsonNode? args)
     {
         var toRaw = ReadAddresses(args, "to");
         if (toRaw.Count == 0)
         {
-            return "At least one recipient is required.";
+            return (false, "At least one recipient is required.");
         }
 
         var (to, toFailed) = await ResolvePeopleAsync(toRaw);
@@ -273,13 +286,13 @@ public class MailboxToolHandler
         var allFailed = toFailed.Concat(ccFailed).ToList();
         if (allFailed.Count > 0)
         {
-            return $"I could not find {string.Join(" or ", allFailed.Select(f => $"'{f}'"))} in the directory. "
+            return (false, $"I could not find {string.Join(" or ", allFailed.Select(f => $"'{f}'"))} in the directory. "
                  + "Ask the user for that person's email address, or for a more complete name. Do not send to "
-                 + "anyone else and do not guess.";
+                 + "anyone else and do not guess.");
         }
         if (to.Count == 0)
         {
-            return "At least one recipient is required.";
+            return (false, "At least one recipient is required.");
         }
 
         var message = new JsonObject
@@ -311,12 +324,12 @@ public class MailboxToolHandler
 
         if (!ok)
         {
-            return DescribeFailure("send mail from", mailbox, error);
+            return (false, DescribeFailure("send mail from", mailbox, error));
         }
 
         _logger.LogInformation("Sent mail from {Mailbox} to {Count} recipient(s).", mailbox, to.Count);
         var sender = ActsAsManager ? mailbox : "my own agent mailbox";
-        return $"Sent from {sender} to {string.Join(", ", to)}. Tell the user in one short line what was sent and to whom.";
+        return (true, $"Sent from {sender} to {string.Join(", ", to)}. Tell the user in one short line what was sent and to whom.");
     }
 
     private async Task<string> CreateEventAsync(string mailbox, JsonNode? args)

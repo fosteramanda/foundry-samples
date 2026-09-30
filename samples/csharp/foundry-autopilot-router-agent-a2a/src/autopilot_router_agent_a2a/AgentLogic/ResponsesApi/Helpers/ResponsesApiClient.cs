@@ -58,6 +58,7 @@ internal class ResponsesApiClient
     /// </summary>
     internal bool ManagerMailboxEnabled { get; set; }
     internal bool AgentMailboxEnabled { get; set; }
+    internal bool LastInvocationSucceeded { get; private set; }
 
     /// <summary>
     /// Whether the meeting registry tools are attached this turn. Derived from the handler, which
@@ -103,7 +104,8 @@ internal class ResponsesApiClient
             ManagerMailboxEnabled && HasLocalTool("send_email_as_manager"),
             MeetingRegistryEnabled && HasLocalTool("track_meeting"),
             AgentMailboxEnabled && HasLocalTool("send_email_as_agent"),
-            HasLocalTool("ask_workiq_agent"));
+            HasLocalTool("ask_workiq_agent"),
+            HasLocalTool("get_standing_job"));
     }
 
     internal Task<string> InvokeAsync(
@@ -144,6 +146,7 @@ internal class ResponsesApiClient
         Func<string, string, Task<string?>>? localToolExecutor,
         System.Diagnostics.Activity? invocation)
     {
+        LastInvocationSucceeded = false;
         var endpoint = _configuration["AzureOpenAIEndpoint"] ?? throw new InvalidOperationException("AzureOpenAIEndpoint not configured");
         var deployment = string.IsNullOrWhiteSpace(modelDeploymentOverride)
             ? _configuration["ModelDeployment"] ?? throw new InvalidOperationException("ModelDeployment not configured")
@@ -315,7 +318,20 @@ internal class ResponsesApiClient
             await SaveResponseIdAsync(conversationId, responseContent, toolFingerprint);
         }
 
-        return ExtractOutputText(responseContent, invocation);
+        var output = ExtractOutputText(responseContent, invocation);
+        try
+        {
+            using var final = JsonDocument.Parse(responseContent);
+            LastInvocationSucceeded = ExtractFunctionCalls(responseContent).Count == 0
+                && final.RootElement.TryGetProperty("status", out var finalStatus)
+                && finalStatus.GetString() == "completed"
+                && (!final.RootElement.TryGetProperty("error", out var finalError) || finalError.ValueKind == JsonValueKind.Null);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Responses API completion state could not be parsed.");
+        }
+        return output;
     }
 
     /// <summary>

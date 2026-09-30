@@ -57,6 +57,7 @@ builder.Services.AddSingleton<ConversationStateStore>();
 // them proactively into the original conversation.
 builder.Services.AddSingleton<PendingDelegationStore>();
 builder.Services.AddSingleton<MeetingRegistryStore>();
+builder.Services.AddSingleton<StandingJobStore>();
 builder.Services.AddHostedService<DelegationFollowUpService>();
 
 // Register OpenAPI for external agents
@@ -167,4 +168,3 @@ app.UseHttpsRedirection();
 app.MapControllers();
 
 app.Run();
-

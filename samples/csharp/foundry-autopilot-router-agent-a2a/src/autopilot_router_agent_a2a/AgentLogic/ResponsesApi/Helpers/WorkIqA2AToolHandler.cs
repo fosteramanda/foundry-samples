@@ -640,6 +640,34 @@ internal class WorkIqA2AToolHandler
     /// the model can pass an id it got from somewhere other than discovery, and showing the
     /// raw id is honest, whereas showing nothing would hide that a hand-off happened.
     /// </summary>
+    internal async Task<string> AskForStandingJobAsync(string agentId, string question)
+    {
+        var pendingBefore = _pendingHandoffs.Count;
+        var answer = await TryExecuteAsync("ask_workiq_agent",
+            JsonSerializer.Serialize(new { agent_id = agentId, message = question }));
+        var pending = _pendingHandoffs.Skip(pendingBefore).ToArray();
+        if (pending.Length > 0)
+        {
+            // Job receipts own this result; the ordinary proactive poller must not promise
+            // delivery through an unrelated conversation or bypass the job's recipient policy.
+            _pendingHandoffs.RemoveRange(pendingBefore, pending.Length);
+            return JsonSerializer.Serialize(new
+            {
+                outcome = "pending", agent_id = agentId, agent_name = ResolveDisplayName(agentId),
+                task_ids = pending.Select(item => item.TaskId),
+                detail = "The specialist is still working. No completed answer or later delivery is confirmed. Do not resend automatically."
+            });
+        }
+        var answered = !string.IsNullOrWhiteSpace(answer) && !answer.StartsWith("Agent '", StringComparison.Ordinal)
+            && !answer.StartsWith("Error", StringComparison.OrdinalIgnoreCase);
+        return JsonSerializer.Serialize(new
+        {
+            outcome = answered ? "answered" : "no_answer", agent_id = agentId,
+            agent_name = ResolveDisplayName(agentId), answer = answered ? answer : null,
+            detail = answered ? null : answer
+        });
+    }
+
     private string ResolveDisplayName(string agentId) =>
         _nameCache.TryGetValue(agentId, out var name) && !string.IsNullOrWhiteSpace(name)
             ? name

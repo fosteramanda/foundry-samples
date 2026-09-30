@@ -13,7 +13,7 @@ internal sealed class ScheduledChatDelivery(HttpClient httpClient, string? graph
         && string.IsNullOrWhiteSpace(activity.Id)
         && !string.IsNullOrWhiteSpace(activity.Conversation?.Id);
 
-    internal async Task SendAsync(IActivity activity, string html, CancellationToken cancellationToken)
+    internal async Task<string> SendAsync(IActivity activity, string html, CancellationToken cancellationToken)
     {
         if (!IsScheduledChat(activity) || string.IsNullOrWhiteSpace(graphToken) || string.IsNullOrWhiteSpace(html))
         {
@@ -42,5 +42,6 @@ internal sealed class ScheduledChatDelivery(HttpClient httpClient, string? graph
             throw new InvalidOperationException("Scheduled chat delivery is unconfirmed.");
         }
         logger.LogInformation("Scheduled chat delivered through Graph: chat={ChatId} message={MessageId}", chatId, id);
+        return id;
     }
 }

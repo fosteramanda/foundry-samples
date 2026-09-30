@@ -325,6 +325,41 @@ public class RoutineToolHandler
     /// has to be in the text: where the output goes, and to whom. "Email me" cannot survive that
     /// boundary; "email amanda@example.com" can.
     /// </summary>
+    internal async Task<(bool Ok, string Detail)> ConfigureStandingScheduleAsync(StandingJob job, bool enabled)
+    {
+        if (!IsEnabled || _currentActivity == null)
+            return (false, "A configured Foundry agent and a real manager conversation are required.");
+        var input = BuildActivityInput(
+            $"{StandingReviewCoordinator.Marker(job.Id)} Check this standing job using its durable mandate and recorded evidence.");
+        if (input == null)
+            return (false, "The standing job lacks a valid conversation route.");
+        var body = new JsonObject
+        {
+            ["description"] = $"Standing job: {job.Title}",
+            ["enabled"] = enabled,
+            ["triggers"] = new JsonObject
+            {
+                [job.RoutineName] = new JsonObject
+                {
+                    ["type"] = "schedule",
+                    ["cron_expression"] = job.CronExpression,
+                    ["time_zone"] = job.TimeZone
+                }
+            },
+            ["action"] = new JsonObject
+            {
+                ["type"] = "invoke_agent_activityprotocol_api",
+                ["agent_name"] = _agentName,
+                ["input"] = input
+            }
+        };
+        var (ok, _, error) = await SendAsync(HttpMethod.Put,
+            $"routines/{Uri.EscapeDataString(job.RoutineName)}", body);
+        if (!ok)
+            _logger.LogWarning("Standing-job schedule configuration failed for {JobId}: {Error}", job.Id, error);
+        return (ok, ok ? $"Schedule {(enabled ? "enabled" : "paused")}." : error ?? "No schedule receipt.");
+    }
+
     private static string BuildStoredInstruction(string instruction, string delivery, string? recipient)
     {
         return delivery switch

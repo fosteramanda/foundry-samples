@@ -19,7 +19,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
     AgentTokenHelper tokenHelper,
     ConversationStateStore conversationState,
     PendingDelegationStore pendingDelegations,
-    MeetingRegistryStore meetingRegistry)
+    MeetingRegistryStore meetingRegistry,
+    StandingJobStore standingJobs)
 {
     private static readonly HttpClient HttpClient = new();
 
@@ -135,7 +136,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
             conversationState,
             tokenHelper,
             pendingDelegations,
-            meetingRegistry);
+            meetingRegistry,
+            standingJobs);
 
         return service;
     }
@@ -272,4 +274,3 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         return servers;
     }
 }
-
