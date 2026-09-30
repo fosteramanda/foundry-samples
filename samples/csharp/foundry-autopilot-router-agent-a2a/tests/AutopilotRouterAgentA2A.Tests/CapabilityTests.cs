@@ -156,6 +156,56 @@ public class CapabilityTests
         Assert.DoesNotContain("Delegation goes through the Work IQ `ask` tool", prompt);
     }
 
+    [Fact]
+    public void ADisabledDelegationPathDoesNotAdvertiseADelegateOrItsTools()
+    {
+        var prompt = AgentInstructions.GetInstructions(new AgentMetadata(),
+            sourceOfTruthAgentId: "specialist-id", sourceOfTruthAgentName: "Specialist",
+            delegationEnabled: false);
+        Assert.DoesNotContain("ask_workiq_agent", prompt);
+        Assert.DoesNotContain("list_workiq_agents", prompt);
+        Assert.DoesNotContain("specialist-id", prompt);
+    }
+
+    [Fact]
+    public void PinnedDelegateUsesTheActualA2ASchema()
+    {
+        var prompt = AgentInstructions.GetInstructions(new AgentMetadata(),
+            sourceOfTruthAgentId: "specialist-id", sourceOfTruthAgentName: "Specialist");
+        Assert.Contains("ask_workiq_agent A2A tool", prompt);
+        Assert.Contains("agent_id=\"specialist-id\"", prompt);
+        Assert.DoesNotContain("Reach it with the Work IQ `ask`", prompt);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TurnInstructionsOnlyAdvertiseAttachedLocalTools(bool includeDelegation)
+    {
+        var handler = new RecordingHandler();
+        using var http = new HttpClient(handler);
+        var client = new ResponsesApiClient(new AgentMetadata(), NullLogger.Instance,
+            Config(("AzureOpenAIEndpoint", "https://example.openai.azure.com"), ("ModelDeployment", "test")),
+            "test-token", [], http)
+        {
+            AgentMailboxEnabled = true,
+            ManagerMailboxEnabled = true,
+            RoutinesEnabled = true,
+            MeetingRegistryEnabled = true,
+            WorkItemsEnabled = true,
+        };
+        List<JsonNode>? tools = includeDelegation
+            ? [JsonNode.Parse("""{"type":"function","name":"ask_workiq_agent","parameters":{"type":"object","properties":{}}}""")!]
+            : null;
+        var prompt = client.BuildTurnInstructions(tools);
+        Assert.Empty(handler.Calls);
+        Assert.Equal(includeDelegation, prompt.Contains("ask_workiq_agent", StringComparison.Ordinal));
+        foreach (var absent in new[] { "send_email_as_agent", "send_email_as_manager", "create_routine", "create_work_item", "track_meeting" })
+        {
+            Assert.DoesNotContain(absent, prompt);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

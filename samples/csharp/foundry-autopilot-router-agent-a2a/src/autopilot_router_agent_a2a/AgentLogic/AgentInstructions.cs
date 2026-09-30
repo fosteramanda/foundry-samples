@@ -12,8 +12,8 @@ public static class AgentInstructions
     /// </summary>
     /// <param name="agent">The agent metadata.</param>
     /// <param name="sourceOfTruthAgentId">
-    /// Optional M365 agent ID of the documentation delegate agent, reached via the Work IQ
-    /// MCP `ask` tool. When null or empty, the delegation section is omitted.
+    /// Optional M365 agent ID of the documentation delegate, reached through the generic
+    /// A2A tool. When null or empty, the pinned-delegate section is omitted.
     /// </param>
     /// <param name="sourceOfTruthAgentName">Display name for the delegate agent.</param>
     /// <param name="toolboxName">
@@ -31,7 +31,8 @@ public static class AgentInstructions
         bool workItemsEnabled = true,
         bool managerMailboxEnabled = false,
         bool meetingRegistryEnabled = false,
-        bool agentMailboxEnabled = false) =>
+        bool agentMailboxEnabled = false,
+        bool delegationEnabled = true) =>
         $"""
 
              You are a Chief of Staff autopilot.
@@ -50,7 +51,7 @@ public static class AgentInstructions
              - Track what was promised and by whom, and surface it before it slips.
              - Say plainly when you do not know or could not find something. Never fill the
                gap with a plausible answer.
-             {BuildRoutingSection(toolboxName)}{BuildDelegationSection(sourceOfTruthAgentId, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}{BuildAgentMailboxSection(agentMailboxEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}
+             {BuildRoutingSection(toolboxName, delegationEnabled)}{BuildDelegationSection(delegationEnabled ? sourceOfTruthAgentId : null, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}{BuildAgentMailboxSection(agentMailboxEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}
              # Onboarding
              When the manager explicitly starts onboarding in a 1:1 chat, inquire about:
              - Document to track leads
@@ -107,12 +108,6 @@ public static class AgentInstructions
                "here is a reply you could send" followed by a confirmation question.
 
              For teams messages, only use teams mcp tool when a user asks to send a teams message. Otherwise, do not use it.
-
-             # Delegation results
-             Use the single generic ask_workiq_agent A2A tool after discovering the
-             intended specialist. Do not substitute an MCP ask tool or your own knowledge.
-             A successful HTTP status is not an answer. If the tool reports no answer or
-             a pending result, say so plainly and never invent the specialist's response.
 
         """.Trim();
 
@@ -502,9 +497,7 @@ public static class AgentInstructions
     }
 
     /// <summary>
-    /// Builds the dynamic agent-routing section. Always emitted: it tells the agent to find a
-    /// specialist for itself rather than waiting to be told, which is the whole point of A2A
-    /// discovery returning agent cards with descriptions.
+    /// Builds the routing section only on paths that actually attach the A2A tools.
     ///
     /// Kept separate from <see cref="BuildDelegationSection"/>, which pins one known delegate
     /// and only appears when that agent id is configured.
@@ -515,11 +508,13 @@ public static class AgentInstructions
     /// not exist without a toolbox, and warning about a tool the agent was never given is the
     /// same defect as advertising one.
     /// </param>
-    private static string BuildRoutingSection(string? toolboxName) =>
-        $"""
+    private static string BuildRoutingSection(string? toolboxName, bool enabled) =>
+        enabled ? $"""
 
 
              # Delegating to other agents
+             Use the single generic ask_workiq_agent A2A tool after discovering the
+             intended specialist. A successful status without an answer is not success.
              You are one agent among several in this tenant. Some requests are better answered
              by a specialist than by you, and finding that specialist is your job — the manager
              should not have to know who exists or name them.
@@ -575,7 +570,7 @@ public static class AgentInstructions
              finishes, so do NOT promise to check back yourself, do NOT ask the user to wait
              before sending anything else, and do NOT attempt to answer the question meanwhile.
              The user is free to ask you other things in the meantime.
-        """;
+        """ : string.Empty;
 
     /// <summary>
     /// Guard against delegating through the toolbox's Work IQ MCP `ask` tool instead of the A2A
@@ -637,8 +632,8 @@ public static class AgentInstructions
              # Product documentation questions — delegate to {name}
              You have a specialist agent named {name} that answers factual questions about
              Microsoft Foundry and Microsoft Agent 365 from current Microsoft Learn documentation
-             and returns citations. Reach it with the Work IQ `ask` tool by passing
-             agentId="{agentId.Trim()}" along with the question. Pass the user's question through
+             and returns citations. Reach it with the generic ask_workiq_agent A2A tool,
+             passing agent_id="{agentId.Trim()}" and the question as message. Pass the user's question through
              essentially as asked.
 
              Delegate to it when someone asks how a Microsoft Foundry or Agent 365 capability
