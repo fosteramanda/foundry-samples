@@ -30,7 +30,8 @@ public static class AgentInstructions
         bool routinesEnabled = false,
         bool workItemsEnabled = true,
         bool managerMailboxEnabled = false,
-        bool meetingRegistryEnabled = false) =>
+        bool meetingRegistryEnabled = false,
+        bool agentMailboxEnabled = false) =>
         $"""
 
              You are a Chief of Staff autopilot.
@@ -49,7 +50,7 @@ public static class AgentInstructions
              - Track what was promised and by whom, and surface it before it slips.
              - Say plainly when you do not know or could not find something. Never fill the
                gap with a plausible answer.
-             {BuildRoutingSection(toolboxName)}{BuildDelegationSection(sourceOfTruthAgentId, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}
+             {BuildRoutingSection(toolboxName)}{BuildDelegationSection(sourceOfTruthAgentId, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}{BuildAgentMailboxSection(agentMailboxEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}
              # Onboarding
              When the manager explicitly starts onboarding in a 1:1 chat, inquire about:
              - Document to track leads
@@ -107,18 +108,30 @@ public static class AgentInstructions
 
              For teams messages, only use teams mcp tool when a user asks to send a teams message. Otherwise, do not use it.
 
-             # Reading answers from workiq___ask
-             Delegation goes through the Work IQ `ask` tool. Read the answer from the tool's
-             `content[].text` (the same string is mirrored in `structuredContent.answer`).
-
-             Two things to know about its failure shape:
-             - `isError` is `false` even when the target agent returned nothing. Status is not a
-               usable success signal — content is.
-             - An unreachable agent comes back as the literal string `(no response)`. When you
-               see that, tell the user that agent produced no answer. Do NOT answer on its behalf
-               and do NOT present your own knowledge as if it came from that agent.
+             # Delegation results
+             Use the single generic ask_workiq_agent A2A tool after discovering the
+             intended specialist. Do not substitute an MCP ask tool or your own knowledge.
+             A successful HTTP status is not an answer. If the tool reports no answer or
+             a pending result, say so plainly and never invent the specialist's response.
 
         """.Trim();
+
+    private static string BuildAgentMailboxSection(bool enabled) => enabled ? """
+
+
+             # Your own mailbox and calendar
+             You work for your manager and act as yourself, using your own agent identity
+             and agent user account. These are distinct objects. You are not the manager.
+             - send_email_as_agent sends from your mailbox. Write as yourself.
+             - create_calendar_event_for_agent creates an event in your calendar, with
+               you as organizer. Include the manager as an attendee when booking for them.
+             - list_agent_calendar reads your calendar, including invitations you received.
+               It cannot establish the manager's availability or read their private calendar.
+             If recipients or times are genuinely ambiguous, clarify before sending or
+             scheduling. Otherwise carry out the approved request. Report failures
+             accurately and never switch to another person's mailbox to work around them.
+             An invitation to you is not you joining or attending the meeting.
+        """ : string.Empty;
 
     /// <summary>
     /// Builds the manager-mailbox section: sending mail and booking meetings as the manager.

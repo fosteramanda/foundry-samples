@@ -56,8 +56,7 @@ public class ConversationStateStore
 
         // Reuse the work-items table account: same lifetime, same per-instance RBAC grant, and
         // one less thing to provision. The table name is separately configurable.
-        var tableServiceUri = configuration["ConversationStateTableServiceUri"]
-            ?? configuration["WorkItemsTableServiceUri"];
+        var tableServiceUri = ResolveTableServiceUri(configuration);
         var tableName = configuration["ConversationStateTableName"] ?? "conversationstate";
 
         if (string.IsNullOrWhiteSpace(tableServiceUri))
@@ -91,6 +90,14 @@ public class ConversationStateStore
 
     /// <summary>True when durable storage is available; false means the local-file fallback is in use.</summary>
     public bool IsDurable => _tableClient != null;
+
+    internal static string? ResolveTableServiceUri(IConfiguration configuration)
+    {
+        var configured = configuration["ConversationStateTableServiceUri"];
+        return string.IsNullOrWhiteSpace(configured)
+            ? configuration["WorkItemsTableServiceUri"]
+            : configured;
+    }
 
     /// <summary>
     /// Loads the chain pointer for a conversation. Returns null when absent, when storage is

@@ -3,42 +3,28 @@ namespace WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Globalization;
 using WorkstreamManager.Models;
 
 /// <summary>
-/// Sends mail and creates calendar events in the MANAGER'S mailbox, not the agent's own.
-///
-/// Why this exists as a separate handler: an autopilot has its own mailbox, and every default
-/// path leads there. `/me/sendMail` sends from the agent. `/me/events` writes to the agent's
-/// empty calendar. Both succeed, and neither does what the manager asked for. Acting on the
-/// manager's behalf means naming the manager's mailbox explicitly on every call.
-///
-/// Two separate permission systems both have to be in place, and they fail differently:
-///
-///   1. Microsoft Graph delegated scopes on the blueprint: Calendars.ReadWrite.Shared and
-///      Mail.Send.Shared. Missing these fails at token acquisition, so no call is made.
-///
-///   2. An Exchange grant on the manager's mailbox: calendar delegation, and Send on Behalf
-///      (or Send As) for mail. Missing these fails at send time with ErrorAccessDenied.
-///
-/// Microsoft Graph cannot report which mailboxes the caller holds permissions for, so neither
-/// this code nor the model can check (2) in advance. The only signal is the 403 at send time,
-/// which is why it is translated into a specific message below rather than surfaced raw.
+/// Acts on the agent user's own mailbox and calendar. The legacy delegated-manager
+/// experiment is available only with EnableManagerMailboxTools explicitly enabled.
 /// </summary>
-public class ManagerMailboxToolHandler
+public class MailboxToolHandler
 {
     private readonly ILogger _logger;
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
     private readonly string? _graphAccessToken;
     private readonly Guid _agentUserId;
+    public bool ActsAsManager { get; }
 
     // Resolved once per handler instance. The manager relationship does not change mid-turn,
     // and resolving it is a Graph round trip.
     private string? _managerMailbox;
     private bool _managerResolved;
 
-    public ManagerMailboxToolHandler(
+    public MailboxToolHandler(
         AgentMetadata agentMetadata,
         ILogger logger,
         HttpClient httpClient,
@@ -50,6 +36,7 @@ public class ManagerMailboxToolHandler
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _graphAccessToken = graphAccessToken;
         _agentUserId = agentMetadata?.UserId ?? Guid.Empty;
+        ActsAsManager = configuration.GetValue("EnableManagerMailboxTools", false);
     }
 
     /// <summary>
@@ -65,7 +52,7 @@ public class ManagerMailboxToolHandler
             return [];
         }
 
-        return
+        List<JsonNode> tools =
         [
             JsonNode.Parse("""
             {
@@ -126,6 +113,17 @@ public class ManagerMailboxToolHandler
             }
             """)!,
         ];
+        if (!ActsAsManager)
+        {
+            tools[0]["name"] = "send_email_as_agent";
+            tools[0]["description"] = "Send email from your own agent mailbox, as yourself. Never impersonate the manager. Use only when an approved user asks you to send email to specified recipients; do not use it for your ordinary chat reply.";
+            tools[0]["parameters"]!["properties"]!["body_html"]!["description"] = "Body as HTML, written as the agent itself, not in the manager's voice.";
+            tools[1]["name"] = "create_calendar_event_for_agent";
+            tools[1]["description"] = "Create an event in your own agent calendar. You are the organizer. Include the manager among the attendees when scheduling a meeting for them. Do not claim to read or write the manager's calendar.";
+            tools[2]["name"] = "list_agent_calendar";
+            tools[2]["description"] = "Read your own agent calendar for a date range, including meetings you were invited to. This does not reveal the manager's private calendar or their availability.";
+        }
+        return tools;
     }
 
     public async Task<string?> TryExecuteAsync(string toolName, string arguments)
@@ -135,7 +133,14 @@ public class ManagerMailboxToolHandler
             return null;
         }
 
-        if (toolName is not ("send_email_as_manager" or "create_calendar_event_for_manager" or "list_manager_calendar"))
+        var operation = ActsAsManager ? toolName : toolName switch
+        {
+            "send_email_as_agent" => "send_email_as_manager",
+            "create_calendar_event_for_agent" => "create_calendar_event_for_manager",
+            "list_agent_calendar" => "list_manager_calendar",
+            _ => null,
+        };
+        if (operation is not ("send_email_as_manager" or "create_calendar_event_for_manager" or "list_manager_calendar"))
         {
             return null;
         }
@@ -145,13 +150,18 @@ public class ManagerMailboxToolHandler
         {
             args = JsonNode.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
         }
-        catch (Exception ex)
+        catch (System.Text.Json.JsonException ex)
         {
-            _logger.LogWarning(ex, "Manager mailbox tool {Tool} called with unparseable arguments.", toolName);
+            _logger.LogWarning(ex, "Mailbox tool {Tool} called with unparseable arguments.", toolName);
             return $"Could not parse arguments for {toolName}.";
         }
 
-        var mailbox = await ResolveManagerMailboxAsync();
+        if (args is not JsonObject)
+        {
+            _logger.LogWarning("Mailbox tool {Tool} requires an argument object.", toolName);
+            return $"Arguments for {toolName} must be a JSON object.";
+        }
+        var mailbox = ActsAsManager ? await ResolveManagerMailboxAsync() : _agentUserId.ToString("D");
         if (mailbox == null)
         {
             return "I could not work out which mailbox to act on. No manager is set on my account and no "
@@ -159,7 +169,7 @@ public class ManagerMailboxToolHandler
                  + "plainly rather than sending anything from my own mailbox.";
         }
 
-        return toolName switch
+        return operation switch
         {
             "send_email_as_manager" => await SendMailAsync(mailbox, args),
             "create_calendar_event_for_manager" => await CreateEventAsync(mailbox, args),
@@ -278,9 +288,6 @@ public class ManagerMailboxToolHandler
             ["saveToSentItems"] = true,
         };
 
-        // Sent through the MANAGER'S mailbox, which is what makes it come from them. The same
-        // call against /me would send from the agent's own mailbox and look like a different
-        // sender entirely.
         var (ok, _, error) = await SendGraphAsync(
             HttpMethod.Post,
             $"users/{Uri.EscapeDataString(mailbox)}/sendMail",
@@ -291,8 +298,9 @@ public class ManagerMailboxToolHandler
             return DescribeFailure("send mail from", mailbox, error);
         }
 
-        _logger.LogInformation("Sent mail on behalf of {Mailbox} to {Count} recipient(s).", mailbox, to.Count);
-        return $"Sent from {mailbox} to {string.Join(", ", to)}. Tell the user in one short line what was sent and to whom.";
+        _logger.LogInformation("Sent mail from {Mailbox} to {Count} recipient(s).", mailbox, to.Count);
+        var sender = ActsAsManager ? mailbox : "my own agent mailbox";
+        return $"Sent from {sender} to {string.Join(", ", to)}. Tell the user in one short line what was sent and to whom.";
     }
 
     private async Task<string> CreateEventAsync(string mailbox, JsonNode? args)
@@ -380,8 +388,22 @@ public class ManagerMailboxToolHandler
             timeZone = "Pacific Standard Time";
         }
 
-        var start = GetString(args, "start");
-        var end = GetString(args, "end");
+        string start;
+        string end;
+        try
+        {
+            start = CalendarRangeUtc(GetString(args, "start"), timeZone);
+            end = CalendarRangeUtc(GetString(args, "end"), timeZone);
+            if (string.CompareOrdinal(start, end) >= 0)
+            {
+                throw new ArgumentException("The calendar range must end after it starts.");
+            }
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException or TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            _logger.LogWarning(ex, "Invalid calendar range.");
+            return $"Cannot read this calendar range: {ex.Message}";
+        }
         var path = $"users/{Uri.EscapeDataString(mailbox)}/calendarView"
                  + $"?startDateTime={Uri.EscapeDataString(start)}&endDateTime={Uri.EscapeDataString(end)}"
                  + "&$select=subject,start,end,organizer,attendees,isAllDay,showAs,webLink&$orderby=start/dateTime&$top=50";
@@ -394,7 +416,17 @@ public class ManagerMailboxToolHandler
             return DescribeFailure("read the calendar of", mailbox, error);
         }
 
-        var items = JsonNode.Parse(response ?? "{}")?["value"] as JsonArray;
+        var page = JsonNode.Parse(response ?? "{}");
+        var items = page?["value"] as JsonArray;
+        if (page?["@odata.nextLink"] != null)
+        {
+            return new JsonObject
+            {
+                ["events"] = items?.DeepClone(),
+                ["partial"] = true,
+                ["message"] = "This range contains more than 50 events. Narrow the date range; do not present this page as the complete calendar.",
+            }.ToJsonString();
+        }
         if (items == null || items.Count == 0)
         {
             return $"Nothing on {mailbox}'s calendar between {start} and {end}.";
@@ -402,6 +434,25 @@ public class ManagerMailboxToolHandler
 
         _logger.LogInformation("Read {Count} event(s) from {Mailbox}.", items.Count, mailbox);
         return items.ToJsonString();
+    }
+
+    internal static string CalendarRangeUtc(string value, string timeZone)
+    {
+        var offsetMarker = value.LastIndexOfAny(['+', '-']);
+        var timeMarker = value.IndexOf('T');
+        if (value.EndsWith('Z') || (timeMarker >= 0 && offsetMarker > timeMarker))
+        {
+            return DateTimeOffset.Parse(value, CultureInfo.InvariantCulture)
+                .UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+        }
+        var local = DateTime.SpecifyKind(DateTime.Parse(value, CultureInfo.InvariantCulture), DateTimeKind.Unspecified);
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(timeZone);
+        if (zone.IsInvalidTime(local) || zone.IsAmbiguousTime(local))
+        {
+            throw new ArgumentException("Specify an explicit UTC offset for an ambiguous or invalid local time.");
+        }
+        return TimeZoneInfo.ConvertTimeToUtc(local, zone)
+            .ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
     }
 
     private async Task<(bool Ok, string? Response, string? Error)> SendGraphAsync(
@@ -454,6 +505,12 @@ public class ManagerMailboxToolHandler
     {
         _logger.LogWarning("Failed to {Action} {Mailbox}: {Error}", action, mailbox, error);
 
+        if (!ActsAsManager)
+        {
+            return $"I could not {action} my own agent mailbox: {error}. No action succeeded. "
+                 + "Report the actual failure; do not attribute it to a particular permission without evidence "
+                 + "and do not switch to the manager's mailbox.";
+        }
         if (error != null && (error.Contains("403") || error.Contains("ErrorAccessDenied", StringComparison.OrdinalIgnoreCase)))
         {
             return $"I could not {action} {mailbox}: access was denied by Exchange. This is a mailbox "
