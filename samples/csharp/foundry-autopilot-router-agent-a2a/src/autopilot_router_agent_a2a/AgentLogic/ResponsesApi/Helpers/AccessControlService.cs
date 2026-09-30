@@ -5,6 +5,7 @@ using Azure.Data.Tables;
 using Azure.Identity;
 using WorkstreamManager.AgentLogic.ResponsesApi;
 using WorkstreamManager.Models;
+using WorkstreamManager.Services;
 using Microsoft.Agents.Builder;
 using Microsoft.Agents.Core.Models;
 using Microsoft.Extensions.Configuration;
@@ -446,7 +447,7 @@ internal class AccessControlService
 
     private sealed record DirectMessageAccessCommand(DirectMessageAccessCommandKind Kind, string? Argument);
 
-    private async Task<ManagerIdentity?> TryResolveManagerIdentityAsync(CancellationToken cancellationToken)
+    private async Task<ManagerIdentity?> TryResolveManagerIdentityAsync(CancellationToken cancellationToken, bool refresh = false)
     {
         if (string.IsNullOrWhiteSpace(_graphAccessToken))
         {
@@ -455,7 +456,7 @@ internal class AccessControlService
         }
 
         var cacheKey = $"{_agentMetadata.TenantId:D}:{_agentMetadata.UserId:D}";
-        if (ManagerIdentityCache.TryGetValue(cacheKey, out var cached))
+        if (!refresh && ManagerIdentityCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
         }
@@ -508,6 +509,66 @@ internal class AccessControlService
             _logger.LogWarning(ex, "DM access control: exception while resolving manager identity.");
             return null;
         }
+    }
+
+    internal async Task<StandingJobCaller?> ResolveStandingJobCallerAsync(ChannelAccount? sender, CancellationToken token)
+    {
+        var tenants = GetSenderTenantIdCandidates(sender);
+        if (tenants.Count > 0 && !tenants.Any(tenant => TenantIdsMatch(tenant, _agentMetadata.TenantId)))
+            return null;
+        var manager = await TryResolveManagerIdentityAsync(token, refresh: true);
+        if (manager == null || !Guid.TryParse(manager.Id, out var managerId)) return null;
+        var allowed = await LoadDirectMessageAllowListAsync(token);
+        foreach (var candidate in TeamsActivityHelper.GetSenderIdCandidates(sender))
+        {
+            var actor = await TryResolveDirectoryUserIdentityAsync(candidate, token);
+            if (actor != null && Guid.TryParse(actor.Id, out var actorId)
+                && (actorId == managerId || allowed.Users.Any(user => string.Equals(user.Id, actor.Id, StringComparison.OrdinalIgnoreCase))))
+                return new StandingJobCaller(actorId.ToString("D"), managerId.ToString("D"), actor.UserPrincipalName);
+        }
+        _logger.LogWarning("Standing-job caller could not be resolved as a manager or approved teammate.");
+        return null;
+    }
+
+    internal async Task<StandingJobMember?> ResolveStandingJobMemberAsync(string identifier)
+    {
+        if (string.IsNullOrWhiteSpace(_graphAccessToken)) return null;
+        var direct = Guid.TryParse(identifier, out _) || identifier.Contains('@');
+        var url = direct
+            ? $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(identifier)}?$select=id,mail,userPrincipalName"
+            : "https://graph.microsoft.com/v1.0/users?$filter="
+              + Uri.EscapeDataString($"displayName eq '{identifier.Replace("'", "''")}'")
+              + "&$select=id,mail,userPrincipalName&$top=2";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _graphAccessToken);
+        using var response = await _httpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Standing-job directory contact lookup failed: HTTP {Status}.", (int)response.StatusCode);
+            return null;
+        }
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var person = document.RootElement;
+        if (!direct)
+        {
+            if (!person.TryGetProperty("value", out var people) || people.ValueKind != JsonValueKind.Array || people.GetArrayLength() != 1)
+            {
+                _logger.LogWarning("Standing-job directory name did not resolve to exactly one contact.");
+                return null;
+            }
+            person = people[0];
+        }
+        if (!person.TryGetProperty("id", out var idProperty) || !Guid.TryParse(idProperty.GetString(), out var id))
+            throw new InvalidOperationException("Directory contact response has no valid user ID.");
+        var email = person.TryGetProperty("mail", out var mail) && mail.ValueKind == JsonValueKind.String
+            ? mail.GetString() : null;
+        email ??= person.TryGetProperty("userPrincipalName", out var upn) && upn.ValueKind == JsonValueKind.String ? upn.GetString() : null;
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            _logger.LogWarning("Standing-job directory contact has no email or UPN.");
+            return null;
+        }
+        return new StandingJobMember(id.ToString("D"), email.ToLowerInvariant());
     }
 
     private string GetDirectMessageUnauthorizedResponseText(string managerLabel)

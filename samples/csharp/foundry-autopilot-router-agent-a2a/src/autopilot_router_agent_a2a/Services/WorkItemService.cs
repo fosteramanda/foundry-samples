@@ -23,6 +23,12 @@ public class WorkItemEntity : ITableEntity
     public string DateCreated { get; set; } = string.Empty;
     public string Status { get; set; } = "open";
     public string Changelog { get; set; } = "[]";
+    public string StandingJobId { get; set; } = string.Empty;
+    public string DecisionId { get; set; } = string.Empty;
+    public string DependencyIdsJson { get; set; } = "[]";
+    public string CompletionEvidence { get; set; } = string.Empty;
+    public string CompletionConfirmedBy { get; set; } = string.Empty;
+    public DateTimeOffset? LastFollowUpUtc { get; set; }
 }
 
 /// <summary>
@@ -62,14 +68,17 @@ public class WorkItemService
     /// <summary>
     /// Creates a new work item.
     /// </summary>
-    public async Task<string> CreateWorkItemAsync(string partitionKey, string name, string description, string owner, string ownerAadObjectId, string eta)
+    public virtual async Task<string> CreateWorkItemAsync(string partitionKey, string name, string description, string owner, string ownerAadObjectId, string eta,
+        string? standingJobId = null, string? decisionId = null, string? stableId = null, string[]? dependencyIds = null)
     {
         if (_tableClient == null)
             return "Error: WorkItemsTableServiceUri is not configured.";
 
         try
         {
-            var rowKey = Guid.NewGuid().ToString();
+            var rowKey = stableId == null ? Guid.NewGuid().ToString() : Guid.Parse(stableId).ToString("D");
+            if (standingJobId != null)
+                standingJobId = Guid.Parse(standingJobId).ToString("D");
             var now = DateTimeOffset.UtcNow.ToString("o");
 
             var changelogEntry = new[]
@@ -88,10 +97,23 @@ public class WorkItemService
                 ETA = eta,
                 DateCreated = now,
                 Status = "open",
-                Changelog = JsonSerializer.Serialize(changelogEntry)
+                Changelog = JsonSerializer.Serialize(changelogEntry),
+                StandingJobId = standingJobId ?? string.Empty,
+                DecisionId = decisionId ?? string.Empty,
+                DependencyIdsJson = JsonSerializer.Serialize(dependencyIds ?? [])
             };
 
-            await _tableClient.AddEntityAsync(entity);
+            try
+            {
+                await _tableClient.AddEntityAsync(entity);
+            }
+            catch (Azure.RequestFailedException ex) when (ex.Status == 409 && stableId != null)
+            {
+                var existing = MapTableEntity((await _tableClient.GetEntityAsync<TableEntity>(partitionKey, rowKey)).Value);
+                if (existing.StandingJobId != entity.StandingJobId || existing.DecisionId != entity.DecisionId)
+                    throw new InvalidOperationException("The stable task ID belongs to a different job or decision.");
+                return JsonSerializer.Serialize(new { success = true, id = rowKey, message = "This commitment already exists; no duplicate was created." });
+            }
             _logger.LogInformation("Created work item {RowKey} in partition {PartitionKey}", rowKey, partitionKey);
             return JsonSerializer.Serialize(new { success = true, id = rowKey, message = $"Work item '{name}' created successfully." });
         }
@@ -105,7 +127,8 @@ public class WorkItemService
     /// <summary>
     /// Lists work items with optional filtering by status, owner, or name.
     /// </summary>
-    public async Task<string> ListWorkItemsAsync(string partitionKey, string? statusFilter = null, string? ownerFilter = null, string? nameFilter = null)
+    public virtual async Task<string> ListWorkItemsAsync(string partitionKey, string? statusFilter = null, string? ownerFilter = null, string? nameFilter = null,
+        string? standingJobId = null)
     {
         if (_tableClient == null)
             return "Error: WorkItemsTableServiceUri is not configured.";
@@ -113,6 +136,8 @@ public class WorkItemService
         try
         {
             var filter = $"PartitionKey eq '{partitionKey}'";
+            if (standingJobId != null)
+                filter += TableClient.CreateQueryFilter($" and StandingJobId eq {Guid.Parse(standingJobId).ToString("D")}");
 
             if (!string.IsNullOrEmpty(statusFilter))
                 filter += $" and Status eq '{statusFilter}'";
@@ -124,6 +149,8 @@ public class WorkItemService
             await foreach (var row in _tableClient.QueryAsync<TableEntity>(filter))
             {
                 var entity = MapTableEntity(row);
+                if (standingJobId == null && !IsLegacyVisible(entity))
+                    continue;
 
                 // Client-side name filter (Table Storage doesn't support contains)
                 if (!string.IsNullOrEmpty(nameFilter) &&
@@ -139,6 +166,12 @@ public class WorkItemService
                     eta = entity.ETA,
                     dateCreated = entity.DateCreated,
                     status = entity.Status,
+                    standingJobId = entity.StandingJobId,
+                    decisionId = entity.DecisionId,
+                    dependencyIds = JsonSerializer.Deserialize<string[]>(entity.DependencyIdsJson),
+                    completionEvidence = entity.CompletionEvidence,
+                    completionConfirmedBy = entity.CompletionConfirmedBy,
+                    lastFollowUpUtc = entity.LastFollowUpUtc,
                     lastModified = entity.Timestamp?.ToString("o") ?? ""
                 });
             }
@@ -156,7 +189,8 @@ public class WorkItemService
     /// <summary>
     /// Updates a work item's fields and appends to its changelog.
     /// </summary>
-    public async Task<string> UpdateWorkItemAsync(string partitionKey, string rowKey, string? name = null, string? description = null, string? owner = null, string? ownerAadObjectId = null, string? eta = null, string? status = null)
+    public virtual async Task<string> UpdateWorkItemAsync(string partitionKey, string rowKey, string? name = null, string? description = null, string? owner = null, string? ownerAadObjectId = null, string? eta = null, string? status = null,
+        string? standingJobId = null, string? completionEvidence = null, string? completionConfirmedBy = null, DateTimeOffset? lastFollowUpUtc = null)
     {
         if (_tableClient == null)
             return "Error: WorkItemsTableServiceUri is not configured.";
@@ -166,6 +200,7 @@ public class WorkItemService
             var response = await _tableClient.GetEntityAsync<TableEntity>(partitionKey, rowKey);
             var row = response.Value;
             var entity = MapTableEntity(row);
+            ValidateStandingUpdate(entity, standingJobId, status, completionEvidence, completionConfirmedBy);
 
             var now = DateTimeOffset.UtcNow.ToString("o");
             var changelog = JsonSerializer.Deserialize<List<object>>(entity.Changelog) ?? new List<object>();
@@ -200,6 +235,19 @@ public class WorkItemService
             {
                 changes.Add(new { timestamp = now, field = "Status", oldValue = entity.Status, newValue = status });
                 row["Status"] = status;
+            }
+            void Record(string field, string oldValue, string? value)
+            {
+                if (value == null || value == oldValue) return;
+                changes.Add(new { timestamp = now, field, oldValue, newValue = value });
+                row[field] = value;
+            }
+            Record("CompletionEvidence", entity.CompletionEvidence, completionEvidence);
+            Record("CompletionConfirmedBy", entity.CompletionConfirmedBy, completionConfirmedBy);
+            if (lastFollowUpUtc.HasValue && lastFollowUpUtc != entity.LastFollowUpUtc)
+            {
+                changes.Add(new { timestamp = now, field = "LastFollowUpUtc", oldValue = entity.LastFollowUpUtc, newValue = lastFollowUpUtc });
+                row["LastFollowUpUtc"] = lastFollowUpUtc.Value;
             }
 
             if (changes.Count == 0)
@@ -243,7 +291,8 @@ public class WorkItemService
         var filter = $"PartitionKey eq '{partitionKey}' and Status ne 'closed'";
         await foreach (var row in _tableClient.QueryAsync<TableEntity>(filter))
         {
-            items.Add(MapTableEntity(row));
+            var entity = MapTableEntity(row);
+            if (IsLegacyVisible(entity)) items.Add(entity);
         }
         return items;
     }
@@ -260,7 +309,8 @@ public class WorkItemService
         var filter = $"PartitionKey eq '{partitionKey}' and Timestamp ge datetime'{since:o}'";
         await foreach (var row in _tableClient.QueryAsync<TableEntity>(filter))
         {
-            items.Add(MapTableEntity(row));
+            var entity = MapTableEntity(row);
+            if (IsLegacyVisible(entity)) items.Add(entity);
         }
         return items;
     }
@@ -268,7 +318,7 @@ public class WorkItemService
     /// <summary>
     /// Gets a single work item by ID, including its full changelog.
     /// </summary>
-    public async Task<string> GetWorkItemAsync(string partitionKey, string rowKey)
+    public virtual async Task<string> GetWorkItemAsync(string partitionKey, string rowKey)
     {
         if (_tableClient == null)
             return "Error: WorkItemsTableServiceUri is not configured.";
@@ -288,6 +338,12 @@ public class WorkItemService
                 eta = entity.ETA,
                 dateCreated = entity.DateCreated,
                 status = entity.Status,
+                standingJobId = entity.StandingJobId,
+                decisionId = entity.DecisionId,
+                dependencyIds = JsonSerializer.Deserialize<string[]>(entity.DependencyIdsJson),
+                completionEvidence = entity.CompletionEvidence,
+                completionConfirmedBy = entity.CompletionConfirmedBy,
+                lastFollowUpUtc = entity.LastFollowUpUtc,
                 lastModified = entity.Timestamp?.ToString("o") ?? "",
                 changelog = JsonSerializer.Deserialize<object>(entity.Changelog)
             };
@@ -305,7 +361,19 @@ public class WorkItemService
         }
     }
 
-    private static WorkItemEntity MapTableEntity(TableEntity row)
+    internal static void ValidateStandingUpdate(WorkItemEntity entity, string? jobId, string? status, string? evidence, string? confirmedBy)
+    {
+        if (string.IsNullOrEmpty(entity.StandingJobId)) return;
+        if (!string.Equals(entity.StandingJobId, jobId, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("This commitment belongs to a standing job. Use update_standing_commitment so its authority and evidence are checked.");
+        if (string.Equals(status, "closed", StringComparison.OrdinalIgnoreCase)
+            && (string.IsNullOrWhiteSpace(evidence) || !Guid.TryParse(confirmedBy, out _)))
+            throw new ArgumentException("Closing a standing commitment requires recorded evidence and its confirming actor.");
+    }
+
+    internal static bool IsLegacyVisible(WorkItemEntity entity) => string.IsNullOrEmpty(entity.StandingJobId);
+
+    internal static WorkItemEntity MapTableEntity(TableEntity row)
     {
         return new WorkItemEntity
         {
@@ -320,8 +388,13 @@ public class WorkItemService
             ETA = row.TryGetValue("ETA", out var etaVal) ? etaVal?.ToString() ?? string.Empty : string.Empty,
             DateCreated = row.GetString("DateCreated") ?? string.Empty,
             Status = row.GetString("Status") ?? "open",
-            Changelog = row.GetString("Changelog") ?? "[]"
+            Changelog = row.GetString("Changelog") ?? "[]",
+            StandingJobId = row.GetString("StandingJobId") ?? string.Empty,
+            DecisionId = row.GetString("DecisionId") ?? string.Empty,
+            DependencyIdsJson = row.GetString("DependencyIdsJson") ?? "[]",
+            CompletionEvidence = row.GetString("CompletionEvidence") ?? string.Empty,
+            CompletionConfirmedBy = row.GetString("CompletionConfirmedBy") ?? string.Empty,
+            LastFollowUpUtc = row.GetDateTimeOffset("LastFollowUpUtc")
         };
     }
 }
-
