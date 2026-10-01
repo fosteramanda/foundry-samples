@@ -40,7 +40,7 @@ internal sealed class StandingJobToolHandler(
 
     internal List<JsonNode> GetConfigurationToolDefinitions() => GetToolDefinitions()
         .Where(tool => tool["name"]!.GetValue<string>() is "list_standing_jobs" or "get_standing_job"
-            or "resolve_standing_member" or "create_standing_job" or "update_standing_job").ToList();
+            or "resolve_standing_member" or "create_standing_job" or "update_standing_job" or "set_standing_job_enabled").ToList();
 
     internal List<JsonNode> GetToolDefinitions()
     {
@@ -71,6 +71,8 @@ internal sealed class StandingJobToolHandler(
         };
         if (!Automatic && Turn!.Caller.IsManager)
         {
+            tools.Add(Tool("set_standing_job_enabled", "Pause or resume the standing job without changing its mandate, participants, recipients, sources, specialist permission or decision channel. Use this for a pause/resume request.",
+                """{"job_id":{"type":"string"},"enabled":{"type":"boolean"}}""", ["job_id", "enabled"]));
             tools.Add(Tool("resolve_standing_member", "Resolve a participant's real tenant directory ID and email before configuring a job. Use an email, ID or exact display name; ambiguous names are not guessed.",
                 """{"identifier":{"type":"string"}}""", ["identifier"]));
             tools.Add(Tool("create_standing_job", "Save a manager-owned standing responsibility and create its periodic check. Configure it in the manager's personal Teams chat. Members, recipients and document/mail bindings are separate; this never grants platform or resource permissions.",
@@ -126,16 +128,21 @@ internal sealed class StandingJobToolHandler(
             var job = await coordinator.GetAsync(id, Turn.Caller);
             if (job.ManagerId != Turn.Caller.ManagerId && name != "update_standing_job")
                 throw new UnauthorizedAccessException("The current manager must reauthorize this standing job.");
-            if (job.Paused && name is not ("get_standing_job" or "update_standing_job"))
+            if (job.Paused && name is not ("get_standing_job" or "update_standing_job" or "set_standing_job_enabled"))
                 throw new InvalidOperationException("This standing job is paused.");
             if (Turn.Event != null && name != "get_standing_job")
                 await coordinator.CaptureAsync(id, Turn.Caller,
-                    name == "update_standing_job" ? Turn.Event with { Kind = "configuration" } : Turn.Event);
+                    name is "update_standing_job" or "set_standing_job_enabled" ? Turn.Event with { Kind = "configuration" } : Turn.Event);
             await coordinator.EnsureRunAsync(id, Turn.LeaseId);
             return name switch
             {
                 "get_standing_job" => await ReadAsync(job, args),
                 "update_standing_job" => Json(await UpdateAsync(job, args)),
+                "set_standing_job_enabled" => Json(await UpdateAsync(job, new JsonObject
+                {
+                    ["enabled"] = args["enabled"]?.GetValue<bool>()
+                        ?? throw new ArgumentException("The enabled value is required.")
+                })),
                 "record_standing_input" => await InputAsync(job, args),
                 "record_standing_decision" => Json(await coordinator.RecordDecisionAsync(id, Turn.Caller,
                     EventId(args), Text(args, "statement_quote", 4000), Text(args, "rationale", 4000, allowEmpty: true),
@@ -200,8 +207,11 @@ internal sealed class StandingJobToolHandler(
     private async Task<StandingJob> UpdateAsync(StandingJob job, JsonObject args)
     {
         RequireHumanManager();
-        var members = args.ContainsKey("members") || job.ManagerId != Turn!.Caller.ManagerId
+        var reauthorizing = job.ManagerId != Turn!.Caller.ManagerId;
+        var members = args["members"] != null || reauthorizing
             ? await MembersAsync(args, Turn!.Caller) : null;
+        var derivedBindings = reauthorizing ? [] : (await coordinator.RecordsAsync<StandingJobBrief>(job.Id, "brief"))
+            .Select(brief => "word:" + Guid.Parse(brief.DocumentId).ToString("D")).ToArray();
         var updated = await coordinator.ChangeAsync(job.Id, Turn!.Caller, current =>
         {
             if (current.ManagerId != Turn.Caller.ManagerId)
@@ -216,19 +226,20 @@ internal sealed class StandingJobToolHandler(
                 current.DecisionDelivery = "chat";
                 current.Paused = true;
             }
-            if (args.ContainsKey("mandate")) current.Mandate = Text(args, "mandate", 4000);
+            if (args["mandate"] != null) current.Mandate = Text(args, "mandate", 4000);
             if (members != null) current.Members = members;
-            if (args.ContainsKey("recipients")) current.Recipients = Strings(args, "recipients", 50).Select(Email).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            if (args.ContainsKey("source_bindings")) current.Bindings = Bindings(args);
-            if (args.ContainsKey("specialist_agent_ids")) current.SpecialistAgentIds = Strings(args, "specialist_agent_ids", 30);
-            if (args.ContainsKey("review_utc")) current.ReviewUtc = Utc(args, "review_utc");
+            if (args["recipients"] != null) current.Recipients = Strings(args, "recipients", 50).Select(Email).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (args["source_bindings"] != null) current.Bindings = Bindings(args);
+            current.Bindings = current.Bindings.Concat(derivedBindings).Distinct(StringComparer.Ordinal).ToList();
+            if (args["specialist_agent_ids"] != null) current.SpecialistAgentIds = Strings(args, "specialist_agent_ids", 30);
+            if (args["review_utc"] != null) current.ReviewUtc = Utc(args, "review_utc");
             if (Optional(args, "decision_delivery") is { } delivery)
             {
                 if (delivery is not ("chat" or "email")) throw new ArgumentException("Decisions must use chat or email.");
                 current.DecisionDelivery = delivery;
             }
             current.RoutineName = RoutineToolHandler.BuildStandingRoutineName(current.Id);
-            if (args.ContainsKey("enabled")) current.Paused = true;
+            if (args["enabled"] != null) current.Paused = true;
         });
         if (args["enabled"] is JsonValue enabled)
         {

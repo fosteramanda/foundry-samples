@@ -168,6 +168,59 @@ public class StandingJobTests
     }
 
     [Fact]
+    public async Task PauseHasANarrowToolAndPreservesPublishedBindingsAndAllPermissions()
+    {
+        var h = await Harness.CreateAsync();
+        var brief = new StandingJobBrief(1, "Review.docx", "one", Guid.NewGuid().ToString(),
+            "https://tenant.sharepoint.com/review", "facts", h.Clock.GetUtcNow());
+        await h.Coordinator.RegisterBriefAsync(h.Job.Id, h.Manager, brief);
+        h.SetTurn(h.Manager, "pause", "Pause the review. Keep its record.");
+        var definition = h.Tools.GetToolDefinitions().Single(tool => tool["name"]!.GetValue<string>() == "set_standing_job_enabled");
+        Assert.Equal(new[] { "job_id", "enabled" }, definition["parameters"]!["properties"]!.AsObject().Select(p => p.Key));
+        await h.Call("set_standing_job_enabled", new { job_id = h.Job.Id, enabled = false });
+        var job = await h.Coordinator.GetAsync(h.Job.Id, h.Manager);
+        Assert.True(job.Paused);
+        Assert.Equal(h.Job.Members, job.Members);
+        Assert.Equal(h.Job.Recipients, job.Recipients);
+        Assert.Equal(h.Job.SpecialistAgentIds, job.SpecialistAgentIds);
+        Assert.Contains("word:" + brief.DocumentId, job.Bindings);
+        Assert.Contains(h.Job.Bindings[0], job.Bindings);
+    }
+
+    [Fact]
+    public async Task NullableConfigurationFieldsDoNotEraseTheCurrentJob()
+    {
+        var h = await Harness.CreateAsync();
+        h.SetTurn(h.Manager, "update", "Keep the current configuration.");
+        await h.Call("update_standing_job", new
+        {
+            job_id = h.Job.Id, members = (object?)null, recipients = (object?)null,
+            source_bindings = (object?)null, specialist_agent_ids = (object?)null,
+            mandate = (string?)null, enabled = (bool?)null, review_utc = (string?)null
+        });
+        var updated = await h.Coordinator.GetAsync(h.Job.Id, h.Manager);
+        Assert.False(updated.Paused);
+        Assert.Equal(h.Job.Members, updated.Members);
+        Assert.Equal(h.Job.Recipients, updated.Recipients);
+        Assert.Equal(h.Job.Bindings, updated.Bindings);
+        Assert.Equal(h.Job.SpecialistAgentIds, updated.SpecialistAgentIds);
+        Assert.Equal(h.Job.Mandate, updated.Mandate);
+    }
+
+    [Fact]
+    public async Task VerifiedPublicationBindingsSurviveAnEmptySourceUpdate()
+    {
+        var h = await Harness.CreateAsync();
+        var brief = new StandingJobBrief(1, "Review.docx", "one", Guid.NewGuid().ToString(),
+            "https://tenant.sharepoint.com/review", "facts", h.Clock.GetUtcNow());
+        await h.Coordinator.RegisterBriefAsync(h.Job.Id, h.Manager, brief);
+        h.SetTurn(h.Manager, "update", "Remove the manually selected sources.");
+        await h.Call("update_standing_job", new { job_id = h.Job.Id, source_bindings = Array.Empty<string>() });
+        var job = await h.Coordinator.GetAsync(h.Job.Id, h.Manager);
+        Assert.Equal("word:" + brief.DocumentId, Assert.Single(job.Bindings));
+    }
+
+    [Fact]
     public async Task ActionReceiptsPreventRepeatAttemptsAcrossRestarts()
     {
         var h = await Harness.CreateAsync();
