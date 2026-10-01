@@ -300,7 +300,8 @@ internal sealed class StandingReviewCoordinator(
 
     internal async Task<StandingJobReceipt> OnceAsync(
         string id, StandingJobCaller caller, string operation, string key, string payload,
-        Func<Task<(bool? Accepted, string Detail)>> action, string? lease = null, string? scope = null)
+        Func<Task<(bool? Accepted, string Detail)>> action, string? lease = null, string? scope = null,
+        bool reconcileUncertain = false)
     {
         var job = await GetAsync(id, caller);
         if (job.Paused)
@@ -313,19 +314,27 @@ internal sealed class StandingReviewCoordinator(
         var rowKey = StandingJobStore.Key(id, "receipt", key);
         var scopeKey = StandingJobStore.Key(id, "action_scope", receipt.Scope);
         var scopeRow = await store.ReadAsync(partition, scopeKey);
+        var reconciling = false;
         if (scopeRow != null)
         {
             var prior = StandingJobStore.Value<StandingJobReceipt>(scopeRow);
-            if (prior.Key == key || prior.State is "pending" or "uncertain")
+            if (prior.Key == key && prior.State == "uncertain" && reconcileUncertain)
+            {
+                receipt.CreatedUtc = prior.CreatedUtc;
+                if (!await store.TryReplaceAsync(StandingJobStore.Row(partition, scopeKey, receipt), scopeRow.ETag))
+                    throw new InvalidOperationException("Another run claimed this uncertain action for reconciliation.");
+                reconciling = true;
+            }
+            else if (prior.Key == key || prior.State is "pending" or "uncertain")
                 return prior;
-            if (!await store.TryReplaceAsync(StandingJobStore.Row(partition, scopeKey, receipt), scopeRow.ETag))
+            else if (!await store.TryReplaceAsync(StandingJobStore.Row(partition, scopeKey, receipt), scopeRow.ETag))
                 throw new InvalidOperationException("Another run claimed this action scope; no action was attempted.");
         }
         else if (!await store.TryAddAsync(StandingJobStore.Row(partition, scopeKey, receipt)))
         {
             throw new InvalidOperationException("Another run claimed this action scope; no action was attempted.");
         }
-        if (!await store.TryAddAsync(StandingJobStore.Row(partition, rowKey, receipt)))
+        if (!reconciling && !await store.TryAddAsync(StandingJobStore.Row(partition, rowKey, receipt)))
         {
             var existing = StandingJobStore.Value<StandingJobReceipt>(
                 await store.ReadAsync(partition, rowKey) ?? throw new InvalidOperationException("Action receipt disappeared."));

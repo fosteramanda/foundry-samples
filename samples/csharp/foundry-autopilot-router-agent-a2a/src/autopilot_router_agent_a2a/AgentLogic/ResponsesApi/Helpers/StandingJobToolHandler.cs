@@ -447,7 +447,7 @@ internal sealed class StandingJobToolHandler(
                 var artifact = await publishBrief(job, nextVersion, fingerprint, content.ToString());
                 await coordinator.RegisterBriefAsync(job.Id, Turn.Caller, artifact);
                 return (true, Json(artifact));
-            }, Turn.LeaseId, "publish_brief");
+            }, Turn.LeaseId, "publish_brief", reconcileUncertain: true);
     }
 
     private async Task<StandingJobReceipt> DelegateAsync(StandingJob job, JsonObject args)

@@ -33,10 +33,12 @@ public class StandingBriefTests
                     _ => throw new InvalidOperationException("Unexpected method.")
                 };
             }
+            if (request.RequestUri.AbsolutePath.EndsWith("/root/children"))
+                return Reply("""{"value":[]}""");
             if (request.Method == HttpMethod.Get)
                 return Reply(System.Text.Json.JsonSerializer.Serialize(new
                 {
-                    id = "created-item", webUrl = "https://tenant.sharepoint.com/brief",
+                    id = "created-item", name = "Leadership review", webUrl = "https://tenant.sharepoint.com/brief",
                     createdBy = new { user = new { id = owner } }, sharepointIds = new { listItemUniqueId = document }
                 }));
             return Reply("""{"value":[{"id":"permission"}]}""");
@@ -50,10 +52,53 @@ public class StandingBriefTests
         var create = JsonNode.Parse(calls.Single(call => call.Body?.Contains("CreateDocument") == true).Body!)!;
         Assert.Equal("<h1>Review</h1>", create["params"]!["arguments"]!["contentInHtml"]!.GetValue<string>());
         var share = JsonNode.Parse(calls.Single(call => call.Path.EndsWith("/invite")).Body!)!;
-        Assert.Equal(member, share["recipients"]![0]!["objectId"]!.GetValue<string>());
+        Assert.Equal("manager@example.com", share["recipients"]![0]!["email"]!.GetValue<string>());
+        Assert.Null(share["recipients"]![0]!["objectId"]);
         Assert.Single(share["recipients"]!.AsArray());
         Assert.True(share["requireSignIn"]!.GetValue<bool>());
         Assert.False(share["sendInvitation"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task ReconcilesAnExistingExactBriefWithoutCreatingAnotherDocument()
+    {
+        var owner = Guid.NewGuid();
+        var document = Guid.NewGuid();
+        var created = false;
+        using var http = new HttpClient(new Handler(async request =>
+        {
+            var body = request.Content == null ? null : await request.Content.ReadAsStringAsync();
+            if (request.RequestUri!.Host == "word.example.com")
+            {
+                if (body?.Contains("CreateDocument") == true) created = true;
+                return Reply("""{"result":{"protocolVersion":"2025-03-26"}}""");
+            }
+            if (request.RequestUri.AbsolutePath.EndsWith("/root/children"))
+                return Reply(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    value = new[] { new
+                    {
+                        id = "existing-item", name = "Leadership review - 12345678 - v1.docx",
+                        webUrl = "https://tenant.sharepoint.com/brief",
+                        createdBy = new { user = new { id = owner } },
+                        sharepointIds = new { listItemUniqueId = document }
+                    }}
+                }));
+            return Reply("""{"value":[{"id":"permission"}]}""");
+        }));
+        var publisher = new StandingBriefPublisher(http, new McpServerConfig { Url = "https://word.example.com/mcp" },
+            "word-token", "graph-token", owner, NullLogger.Instance);
+        var job = new StandingJob
+        {
+            Id = "12345678-1234-1234-1234-123456789012", Title = "Leadership review",
+            Members = [new(Guid.NewGuid().ToString(), "manager@example.com")]
+        };
+
+        var result = await publisher.PublishAsync(job, 1, "facts", "<h1>Review</h1>");
+
+        Assert.False(created);
+        Assert.Equal("existing-item", result.ItemId);
+        Assert.Equal(document.ToString("D"), result.DocumentId);
     }
 
     [Fact]
@@ -64,6 +109,8 @@ public class StandingBriefTests
         {
             requests++;
             var body = request.Content == null ? null : await request.Content.ReadAsStringAsync();
+            if (request.RequestUri!.AbsolutePath.EndsWith("/root/children"))
+                return Reply("""{"value":[]}""");
             if (request.Method == HttpMethod.Get)
                 return Reply(System.Text.Json.JsonSerializer.Serialize(new
                 {
@@ -81,7 +128,7 @@ public class StandingBriefTests
             "word", "graph", Guid.NewGuid(), NullLogger.Instance);
         await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.PublishAsync(
             new StandingJob { Id = Guid.NewGuid().ToString(), Title = "Review" }, 1, "facts", "Content"));
-        Assert.Equal(4, requests);
+        Assert.Equal(5, requests);
     }
 
     [Fact]

@@ -204,6 +204,27 @@ public class StandingJobTests
     }
 
     [Fact]
+    public async Task AnUncertainIdempotentActionCanReconcileItsExistingResult()
+    {
+        var h = await Harness.CreateAsync();
+        var calls = 0;
+        Task<(bool? Accepted, string Detail)> Send()
+        {
+            calls++;
+            if (calls == 1) throw new HttpRequestException("Response lost after submission.");
+            return Task.FromResult<(bool?, string)>((true, "reconciled"));
+        }
+        var first = await h.Coordinator.OnceAsync(
+            h.Job.Id, h.Manager, "publish", "brief", "payload", Send, scope: "brief");
+        var second = await h.Coordinator.OnceAsync(
+            h.Job.Id, h.Manager, "publish", "brief", "payload", Send, scope: "brief", reconcileUncertain: true);
+        Assert.Equal("uncertain", first.State);
+        Assert.Equal("accepted", second.State);
+        Assert.Equal("reconciled", second.Detail);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
     public async Task ConcurrentDifferentKeysCannotBothClaimAnExternalActionScope()
     {
         var h = await Harness.CreateAsync();
