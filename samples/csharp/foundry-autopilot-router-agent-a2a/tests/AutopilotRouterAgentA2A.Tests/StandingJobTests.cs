@@ -438,6 +438,20 @@ public class StandingJobTests
 
     private static string Args(object value) => JsonSerializer.Serialize(value);
 
+    [Fact]
+    public async Task PublishedBriefAddsOnlyItsVerifiedCommentBindingWithoutChangingFactRevision()
+    {
+        var h = await Harness.CreateAsync();
+        var before = await h.Coordinator.StateFingerprintAsync(h.Job.Id);
+        var brief = new StandingJobBrief(1, "Review v1.docx", "item-one", Guid.NewGuid().ToString(),
+            "https://tenant.sharepoint.com/review", before, h.Clock.GetUtcNow());
+        await h.Coordinator.RegisterBriefAsync(h.Job.Id, h.Manager, brief);
+        await h.Coordinator.RegisterBriefAsync(h.Job.Id, h.Manager, brief);
+        Assert.Single(await h.Coordinator.RecordsAsync<StandingJobBrief>(h.Job.Id, "brief"));
+        Assert.Single(await h.Coordinator.FindAsync(h.Owner, "A review comment", "word:" + brief.DocumentId));
+        Assert.Equal(before, await h.Coordinator.StateFingerprintAsync(h.Job.Id));
+    }
+
     private sealed class TestClock : TimeProvider
     {
         private DateTimeOffset _now = new(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);

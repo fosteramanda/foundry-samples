@@ -21,7 +21,8 @@ internal sealed class StandingJobToolHandler(
     Func<StandingJob, string, Task<string>> sendChat,
     Func<string, string, Task<string?>> askAgent,
     Func<string, Task<StandingJobMember?>> resolveMember,
-    ILogger logger)
+    ILogger logger,
+    Func<StandingJob, int, string, string, Task<StandingJobBrief>>? publishBrief = null)
 {
     internal StandingJobTurn? Turn { get; set; }
     internal bool IsEnabled => coordinator.IsAvailable && Turn != null;
@@ -78,6 +79,10 @@ internal sealed class StandingJobToolHandler(
         }
         if (Automatic)
             tools.RemoveAll(tool => tool["name"]!.GetValue<string>() == "list_standing_jobs");
+        if (publishBrief != null)
+            tools.Add(Tool("publish_standing_brief", "Publish a new versioned Word decision brief and shared ledger from this job's recorded facts. It is shared only with configured job members and its comments bind back to this job. Reuses the existing revision when facts did not change; earlier revisions are never overwritten. Provide the exact CEO question and options; the host includes the evidence, decisions and commitment ledger.",
+                """{"job_id":{"type":"string"},"summary":{"type":"string"},"decision_question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}}""",
+                ["job_id", "summary", "decision_question"]));
         return tools;
     }
 
@@ -118,6 +123,7 @@ internal sealed class StandingJobToolHandler(
                 "update_standing_commitment" => await UpdateCommitmentAsync(job, args),
                 "send_standing_message" => Json(await SendAsync(job, args)),
                 "ask_standing_specialist" => Json(await DelegateAsync(job, args)),
+                "publish_standing_brief" => Json(await PublishAsync(job, args)),
                 _ => null
             };
         }
@@ -355,9 +361,7 @@ internal sealed class StandingJobToolHandler(
                 throw new InvalidOperationException("This commitment is not yet within one day of its recorded due time.");
             ValidateOwnerRecipients(job, item["ownerAadObjectId"]!.GetValue<string>(), recipients, delivery);
         }
-        var facts = await coordinator.StateFingerprintAsync(job.Id);
-        if (workItems != null)
-            facts = StandingJobStore.Hash(facts + await workItems.ListWorkItemsAsync(coordinator.Partition, standingJobId: job.Id));
+        var facts = await FactsAsync(job);
         var stamp = purpose is "request_input" or "follow_up"
             ? coordinator.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
             : facts;
@@ -382,6 +386,67 @@ internal sealed class StandingJobToolHandler(
                     ? "Graph accepted this email submission. Recipient inbox delivery is not independently verified."
                     : result.Detail);
             }, Turn.LeaseId, scope);
+    }
+
+    private async Task<string> FactsAsync(StandingJob job)
+    {
+        var tasks = workItems == null ? null : ParseWorkResult(await workItems.ListWorkItemsAsync(
+            coordinator.Partition, standingJobId: job.Id))["items"] as JsonArray;
+        var stableTasks = tasks?.Select(item => new
+        {
+            id = item?["id"]?.GetValue<string>(), name = item?["name"]?.GetValue<string>(),
+            status = item?["status"]?.GetValue<string>(), owner = item?["owner"]?.GetValue<string>(),
+            eta = item?["eta"]?.GetValue<string>(), evidence = item?["completionEvidence"]?.GetValue<string>()
+        }).OrderBy(item => item.id);
+        return StandingJobStore.Hash(await coordinator.StateFingerprintAsync(job.Id)
+            + JsonSerializer.Serialize(stableTasks, StandingJobStore.Json));
+    }
+
+    private async Task<StandingJobReceipt> PublishAsync(StandingJob job, JsonObject args)
+    {
+        if (publishBrief == null) throw new InvalidOperationException("Word publication is not configured.");
+        var fingerprint = await FactsAsync(job);
+        var existing = await coordinator.RecordsAsync<StandingJobBrief>(job.Id, "brief");
+        var nextVersion = existing.Count == 0 ? 1 : existing.Max(brief => brief.Version) + 1;
+        var content = new StringBuilder();
+        static string Html(string value) => System.Net.WebUtility.HtmlEncode(value);
+        content.Append($"<h1>{Html(job.Title)}</h1><p>Leadership review brief v{nextVersion}</p>");
+        content.Append($"<p>{Html(Text(args, "summary", 4000))}</p><h2>Decision needed</h2>");
+        content.Append($"<p>{Html(Text(args, "decision_question", 2000, allowEmpty: true))}</p><ul>");
+        foreach (var option in Strings(args, "options", 5))
+            content.Append($"<li>{Html(option)}</li>");
+        content.Append("</ul><h2>Inputs and unresolved assumptions</h2><table><tr><th>Input</th><th>Status</th><th>Evidence</th></tr>");
+        foreach (var input in await coordinator.RecordsAsync<StandingJobInput>(job.Id, "input"))
+            content.Append($"<tr><td>{Html(input.Title)}</td><td>{Html(input.State)}</td><td>{Html(input.Content)}</td></tr>");
+        content.Append("</table><h2>Decision ledger</h2>");
+        var decisions = await coordinator.RecordsAsync<StandingJobDecision>(job.Id, "decision");
+        var superseded = decisions.Where(item => item.Supersedes != null).Select(item => item.Supersedes).ToHashSet();
+        foreach (var decision in decisions.OrderBy(item => item.RecordedUtc))
+            content.Append($"<p><strong>{(superseded.Contains(decision.Id) ? "Superseded: " : "")}{Html(decision.Statement)}</strong><br/>{Html(decision.Rationale)}</p>");
+        content.Append("<h2>Commitment ledger</h2><table><tr><th>Commitment</th><th>Owner</th><th>Due</th><th>Status</th><th>Completion evidence</th></tr>");
+        if (workItems != null && ParseWorkResult(await workItems.ListWorkItemsAsync(
+            coordinator.Partition, standingJobId: job.Id))["items"] is JsonArray tasks)
+            foreach (var item in tasks)
+                content.Append("<tr>" + string.Concat(new[] { "name", "owner", "eta", "status", "completionEvidence" }
+                    .Select(field => $"<td>{Html(item?[field]?.GetValue<string>() ?? "")}</td>")) + "</tr>");
+        content.Append("</table><h2>Specialist evidence</h2>");
+        foreach (var receipt in (await coordinator.RecordsAsync<StandingJobReceipt>(job.Id, "receipt"))
+            .Where(item => item.Operation == "delegate" && item.State == "accepted"))
+        {
+            var answer = JsonNode.Parse(receipt.Detail);
+            content.Append($"<p><strong>{Html(answer?["agent_name"]?.GetValue<string>() ?? "Authorized specialist")}</strong></p>");
+            content.Append($"<p>{Html(answer?["answer"]?.GetValue<string>() ?? receipt.Detail)}</p>");
+        }
+        content.Append("<h2>Source notes</h2>");
+        foreach (var source in (await coordinator.RecordsAsync<StandingJobEvent>(job.Id, "event")).OrderBy(item => item.ReceivedUtc))
+            content.Append($"<p><strong>{Html(source.Kind)} {source.ReceivedUtc:O}</strong><br/>{Html(source.Content)}</p>");
+        return await coordinator.OnceAsync(job.Id, Turn!.Caller, "publish_brief", "brief:" + fingerprint,
+            content.ToString(), async () =>
+            {
+                var artifact = await publishBrief(job, nextVersion, fingerprint, content.ToString());
+                await coordinator.RegisterBriefAsync(job.Id, Turn.Caller, artifact);
+                return (true, Json(artifact));
+            }, Turn.LeaseId, "publish_brief");
     }
 
     private async Task<StandingJobReceipt> DelegateAsync(StandingJob job, JsonObject args)

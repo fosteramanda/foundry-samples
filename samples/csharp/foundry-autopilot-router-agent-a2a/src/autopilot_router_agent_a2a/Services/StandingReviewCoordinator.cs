@@ -187,6 +187,7 @@ internal sealed class StandingReviewCoordinator(
             inputs = await RecordsAsync<StandingJobInput>(id, "input"),
             decisions = await RecordsAsync<StandingJobDecision>(id, "decision"),
             receipts = await RecordsAsync<StandingJobReceipt>(id, "receipt"),
+            briefs = await RecordsAsync<StandingJobBrief>(id, "brief"),
             nowUtc = Now,
             attention = (await RecordsAsync<StandingJobInput>(id, "input"))
                 .Where(item => item.State is "missing" or "disputed")
@@ -220,6 +221,27 @@ internal sealed class StandingReviewCoordinator(
             inputs = inputs.OrderBy(item => item.Key),
             decisions = decisions.OrderBy(item => item.Id)
         }, StandingJobStore.Json));
+    }
+
+    internal async Task RegisterBriefAsync(string id, StandingJobCaller caller, StandingJobBrief brief)
+    {
+        await GetAsync(id, caller);
+        if (!Guid.TryParse(brief.DocumentId, out var document) || string.IsNullOrWhiteSpace(brief.ItemId))
+            throw new ArgumentException("The brief must have a real document receipt.");
+        await store.TryAddAsync(StandingJobStore.Row(partition,
+            StandingJobStore.Key(id, "brief", brief.FactsFingerprint), brief));
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var row = await store.ReadAsync(partition, StandingJobStore.JobKey(id))
+                ?? throw new InvalidOperationException("The standing job disappeared.");
+            var job = StandingJobStore.Value<StandingJob>(row);
+            var binding = "word:" + document.ToString("D");
+            if (job.Bindings.Contains(binding, StringComparer.Ordinal)) return;
+            job.Bindings.Add(binding);
+            row.Data = JsonSerializer.Serialize(job, StandingJobStore.Json);
+            if (await store.TryReplaceAsync(row, row.ETag)) return;
+        }
+        throw new InvalidOperationException("The brief exists but its comment binding was not saved; reconcile before republishing.");
     }
 
     internal async Task<string?> TryBeginRunAsync(string id, StandingJobCaller caller, bool scheduled)

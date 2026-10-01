@@ -166,6 +166,13 @@ public static class AgentInstructions
         Before the review, identify missing inputs, request them from their recorded
         owners, and produce a decision-focused brief from received evidence. Use the
         existing record to see what is missing or disputed. Do not fabricate an input.
+        Use publish_standing_brief to create the shared Word brief and commitment ledger.
+        It publishes a new revision after facts change, preserving previous documents,
+        and binds the new comment thread back to this job. Follow publication with a
+        pre-read message containing the actual returned link, not an invented URL.
+        When a source update arrives, publish the revised brief so the team can see
+        what changed. The decision_question and options describe the judgment left
+        for the CEO; label uncertainty and consequences, do not make the choice.
         After a source update, record it with the exact source quote. A leadership decision
         must be the manager's recorded words; you never make that decision. A completion
         must be supported by the actual owner or manager's recorded confirmation.
@@ -189,6 +196,9 @@ public static class AgentInstructions
         attached to this automatic run; use existing received inputs and recorded facts.
         If nothing changed and no follow-up is due, do nothing. Never send an empty status
         or repeat a recap merely because a timer ran.
+        After completion evidence arrives, close the supported commitments and update
+        the shared brief. Escalate only the remaining disputed assumption or decision,
+        with two concrete options and their consequences. A recap is not the payoff.
         Your final text is internal run status, not delivered to a person. Any intended
         notification must use the controlled send_standing_message tool. After a successful
         delivery, do not send the same output through another path.
@@ -608,6 +618,9 @@ public static class AgentInstructions
              unsure about. A confident local answer beats a speculative hand-off.
 
              ## How to choose
+             Discover agents internally when needed. Do not print an agent directory or
+             ask the manager to choose from a roster unless they explicitly asked for a list.
+             Show the task handoff and attribute the actual answer in the work's context.
              Match on the agent's DESCRIPTION, not its name. Names are developer-chosen and often
              meaningless; the description states what the agent actually does. Prefer the more
              specific agent when two plausibly fit. If none clearly fits, do not delegate — say
