@@ -54,6 +54,26 @@ public class StandingJobTests
     }
 
     [Fact]
+    public async Task ResumeMigratesLegacyRoutineNameBelowTheServiceLimit()
+    {
+        var h = await Harness.CreateAsync();
+        var legacy = await h.Coordinator.ChangeAsync(h.Job.Id, h.Manager, job =>
+        {
+            job.Paused = true;
+            job.RoutineName = "standing-" + Guid.Parse(job.Id).ToString("N");
+        });
+        h.SetTurn(h.Manager, "resume-event", "Resume the review.");
+
+        var result = await h.Call("update_standing_job", new { job_id = legacy.Id, enabled = true });
+
+        Assert.True(result["paused"]!.GetValue<bool>() is false);
+        var updated = await h.Coordinator.GetAsync(legacy.Id, h.Manager);
+        Assert.Equal(RoutineToolHandler.BuildStandingRoutineName(legacy.Id), updated.RoutineName);
+        Assert.True((updated.RoutineName.Length * 2) + 1 <= 80);
+        Assert.Equal(1, h.ScheduleCalls);
+    }
+
+    [Fact]
     public async Task ParticipantIdAndEmailMustAgreeWithTheDirectory()
     {
         var h = new Harness();
