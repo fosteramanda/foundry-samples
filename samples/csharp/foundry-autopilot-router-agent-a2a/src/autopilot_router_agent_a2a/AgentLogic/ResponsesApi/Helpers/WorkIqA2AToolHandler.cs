@@ -563,6 +563,8 @@ internal class WorkIqA2AToolHandler
             {
                 return body;
             }
+            if (card["name"]?.GetValue<string>() is { Length: > 0 } name)
+                _nameCache[agentId] = name;
 
             var removed = 0;
             foreach (var field in new[] { "iconUrl", "icon", "image" })
@@ -642,6 +644,8 @@ internal class WorkIqA2AToolHandler
     /// </summary>
     internal async Task<string> AskForStandingJobAsync(string agentId, string question)
     {
+        if (!_nameCache.ContainsKey(agentId))
+            await GetAgentCardAsync(agentId);
         var pendingBefore = _pendingHandoffs.Count;
         var answer = await TryExecuteAsync("ask_workiq_agent",
             JsonSerializer.Serialize(new { agent_id = agentId, message = question }));
@@ -658,8 +662,7 @@ internal class WorkIqA2AToolHandler
                 detail = "The specialist is still working. No completed answer or later delivery is confirmed. Do not resend automatically."
             });
         }
-        var answered = !string.IsNullOrWhiteSpace(answer) && !answer.StartsWith("Agent '", StringComparison.Ordinal)
-            && !answer.StartsWith("Error", StringComparison.OrdinalIgnoreCase);
+        var answered = HasCompletedAnswer(answer);
         return JsonSerializer.Serialize(new
         {
             outcome = answered ? "answered" : "no_answer", agent_id = agentId,
@@ -667,6 +670,13 @@ internal class WorkIqA2AToolHandler
             detail = answered ? null : answer
         });
     }
+
+    internal static bool HasCompletedAnswer(string? answer) =>
+        !string.IsNullOrWhiteSpace(answer)
+        && !answer.StartsWith("Agent '", StringComparison.Ordinal)
+        && !answer.StartsWith("Error", StringComparison.OrdinalIgnoreCase)
+        && !answer.StartsWith("The Work IQ A2A call failed:", StringComparison.OrdinalIgnoreCase)
+        && !answer.Equals("(no response)", StringComparison.OrdinalIgnoreCase);
 
     private string ResolveDisplayName(string agentId) =>
         _nameCache.TryGetValue(agentId, out var name) && !string.IsNullOrWhiteSpace(name)

@@ -103,6 +103,9 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         {
             _standingCoordinator = new StandingReviewCoordinator(standingJobs,
                 StandingJobStore.Partition(agent.TenantId, agent.UserId), _logger);
+            var briefs = new StandingBriefPublisher(httpClient,
+                mcpServers.SingleOrDefault(server => server.McpServerName == "mcp_WordServer"),
+                accessToken, graphAccessToken, agent.UserId, _logger);
             _standingTools = new StandingJobToolHandler(_standingCoordinator, workItemService,
                 _routineTools.ConfigureStandingScheduleAsync, _mailboxTools.SendStandingMailAsync,
                 (job, html) => _scheduledChatDelivery.SendAsync(new Activity
@@ -111,7 +114,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                     Conversation = new ConversationAccount { Id = job.ConversationId }
                 }, $"<p><strong>{System.Net.WebUtility.HtmlEncode(job.Title)}</strong></p>{html}", CancellationToken.None),
                 async (id, question) => await _workIqA2ATools.AskForStandingJobAsync(id, question),
-                _accessControl.ResolveStandingJobMemberAsync, _logger);
+                _accessControl.ResolveStandingJobMemberAsync, _logger, briefs.PublishAsync);
         }
     }
 
