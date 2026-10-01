@@ -157,23 +157,7 @@ public class WorkItemService
                     !entity.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                items.Add(new
-                {
-                    id = entity.RowKey,
-                    name = entity.Name,
-                    description = entity.Description,
-                    owner = entity.Owner,
-                    eta = entity.ETA,
-                    dateCreated = entity.DateCreated,
-                    status = entity.Status,
-                    standingJobId = entity.StandingJobId,
-                    decisionId = entity.DecisionId,
-                    dependencyIds = JsonSerializer.Deserialize<string[]>(entity.DependencyIdsJson),
-                    completionEvidence = entity.CompletionEvidence,
-                    completionConfirmedBy = entity.CompletionConfirmedBy,
-                    lastFollowUpUtc = entity.LastFollowUpUtc,
-                    lastModified = entity.Timestamp?.ToString("o") ?? ""
-                });
+                items.Add(ToListItem(entity));
             }
 
             _logger.LogInformation("Listed {Count} work items for partition {PartitionKey}", items.Count, partitionKey);
@@ -185,6 +169,25 @@ public class WorkItemService
             return $"Error listing work items: {ex.Message}";
         }
     }
+
+    internal static object ToListItem(WorkItemEntity entity) => new
+    {
+        id = entity.RowKey,
+        name = entity.Name,
+        description = entity.Description,
+        owner = entity.Owner,
+        ownerAadObjectId = entity.OwnerAadObjectId,
+        eta = entity.ETA,
+        dateCreated = entity.DateCreated,
+        status = entity.Status,
+        standingJobId = entity.StandingJobId,
+        decisionId = entity.DecisionId,
+        dependencyIds = JsonSerializer.Deserialize<string[]>(entity.DependencyIdsJson),
+        completionEvidence = entity.CompletionEvidence,
+        completionConfirmedBy = entity.CompletionConfirmedBy,
+        lastFollowUpUtc = entity.LastFollowUpUtc,
+        lastModified = entity.Timestamp?.ToString("o") ?? ""
+    };
 
     /// <summary>
     /// Updates a work item's fields and appends to its changelog.

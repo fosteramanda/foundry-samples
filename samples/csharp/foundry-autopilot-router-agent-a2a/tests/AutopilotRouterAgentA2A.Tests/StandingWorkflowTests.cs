@@ -160,6 +160,25 @@ public class StandingWorkflowTests
         Assert.Contains("font-weight:normal", html);
     }
 
+    [Fact]
+    public void ProductionTaskProjectionPreservesTheOwnerIdentityUsedByTheBrief()
+    {
+        var manager = Guid.NewGuid().ToString();
+        var job = new StandingJob { Title = "Review", Members = [new(manager, "manager@example.com", "Review owner")] };
+        var entity = new WorkItemEntity
+        {
+            RowKey = Guid.NewGuid().ToString(), Name = "Complete the readiness checklist",
+            Owner = "manager@example.com", OwnerAadObjectId = manager, Status = "open",
+            ETA = "2026-10-01T12:00:00Z", DependencyIdsJson = "[]"
+        };
+        var tasks = new JsonArray(JsonSerializer.SerializeToNode(WorkItemService.ToListItem(entity)));
+        Assert.Equal(manager, tasks[0]!["ownerAadObjectId"]!.GetValue<string>());
+        var html = StandingBriefRenderer.Render(job, 1, "Readiness is in progress.", "",
+            [], [], [], [], tasks, [], [], []);
+        Assert.Contains("Review owner", html);
+        Assert.DoesNotContain("Owner not confirmed", html);
+    }
+
     private static JsonNode Result(string text) => JsonSerializer.SerializeToNode(new
     {
         id = Guid.NewGuid().ToString("N"), status = "completed",
