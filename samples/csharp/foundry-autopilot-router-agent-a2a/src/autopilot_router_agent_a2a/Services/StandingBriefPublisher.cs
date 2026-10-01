@@ -22,22 +22,10 @@ internal sealed class StandingBriefPublisher(
     {
         if (wordServer == null || string.IsNullOrWhiteSpace(graphToken))
             throw new InvalidOperationException("Word publication requires the agent's Word and Graph credentials.");
-        var safeTitle = new string(job.Title.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
-        if (safeTitle.Length > 90) safeTitle = safeTitle[..90];
-        var name = $"{safeTitle} - {job.Id[..8]} - v{version}.docx";
-        var filter = Uri.EscapeDataString($"name eq '{name.Replace("'", "''")}'");
-        var matches = await GraphAsync(HttpMethod.Get,
-            $"me/drive/root/children?$filter={filter}&$select=id,name,webUrl,createdBy,sharepointIds", null);
-        var existing = matches["value"] as JsonArray
-            ?? throw new InvalidOperationException("The agent drive returned no document listing.");
-        var exact = existing.Where(item => string.Equals(
-            item?["name"]?.GetValue<string>(), name, StringComparison.Ordinal)).ToList();
-        if (exact.Count > 1)
-            throw new InvalidOperationException("More than one matching brief exists; reconcile the agent drive manually.");
-        JsonNode graphItem;
-        if (exact.Count == 1)
+        var name = FileName(job, version);
+        var graphItem = await FindExistingAsync(name);
+        if (graphItem != null)
         {
-            graphItem = exact[0]!;
             logger.LogInformation("Standing brief publication is reconciling an existing file: job={JobId} version={Version}",
                 job.Id, version);
         }
@@ -66,6 +54,51 @@ internal sealed class StandingBriefPublisher(
             graphItem = await GraphAsync(HttpMethod.Get,
                 $"me/drive/items/{Uri.EscapeDataString(createdItemId)}?$select=id,name,webUrl,createdBy,sharepointIds", null);
         }
+        return await VerifyAndShareAsync(job, version, fingerprint, name, graphItem);
+    }
+
+    internal async Task<StandingJobBrief> ReconcileAsync(
+        StandingJob job, int version, string fingerprint)
+    {
+        return await TryReconcileAsync(job, version, fingerprint)
+            ?? throw new InvalidOperationException("No existing brief was found for the uncertain publication.");
+    }
+
+    internal async Task<StandingJobBrief?> TryReconcileAsync(
+        StandingJob job, int version, string fingerprint)
+    {
+        if (string.IsNullOrWhiteSpace(graphToken))
+            throw new InvalidOperationException("Word reconciliation requires the agent's Graph credential.");
+        var name = FileName(job, version);
+        var graphItem = await FindExistingAsync(name);
+        if (graphItem == null) return null;
+        return await VerifyAndShareAsync(job, version, fingerprint, name, graphItem);
+    }
+
+    private static string FileName(StandingJob job, int version)
+    {
+        var safeTitle = new string(job.Title.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
+        if (safeTitle.Length > 90) safeTitle = safeTitle[..90];
+        return $"{safeTitle} - {job.Id[..8]} - v{version}.docx";
+    }
+
+    private async Task<JsonNode?> FindExistingAsync(string name)
+    {
+        var filter = Uri.EscapeDataString($"name eq '{name.Replace("'", "''")}'");
+        var matches = await GraphAsync(HttpMethod.Get,
+            $"me/drive/root/children?$filter={filter}&$select=id,name,webUrl,createdBy,sharepointIds", null);
+        var existing = matches["value"] as JsonArray
+            ?? throw new InvalidOperationException("The agent drive returned no document listing.");
+        var exact = existing.Where(item => string.Equals(
+            item?["name"]?.GetValue<string>(), name, StringComparison.Ordinal)).ToList();
+        if (exact.Count > 1)
+            throw new InvalidOperationException("More than one matching brief exists; reconcile the agent drive manually.");
+        return exact.Count == 1 ? exact[0] : null;
+    }
+
+    private async Task<StandingJobBrief> VerifyAndShareAsync(
+        StandingJob job, int version, string fingerprint, string name, JsonNode graphItem)
+    {
         var itemId = graphItem["id"]?.GetValue<string>()
             ?? throw new InvalidOperationException("The created document has no drive item ID.");
         var creator = graphItem["createdBy"]?["user"]?["id"]?.GetValue<string>();

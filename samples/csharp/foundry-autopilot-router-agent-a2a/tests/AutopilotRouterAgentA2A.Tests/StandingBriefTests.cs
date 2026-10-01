@@ -102,6 +102,55 @@ public class StandingBriefTests
     }
 
     [Fact]
+    public async Task ExplicitReconciliationRequiresTheExistingExactVersion()
+    {
+        var owner = Guid.NewGuid();
+        var document = Guid.NewGuid();
+        using var http = new HttpClient(new Handler(async request =>
+        {
+            _ = request.Content == null ? null : await request.Content.ReadAsStringAsync();
+            if (request.RequestUri!.AbsolutePath.EndsWith("/root/children"))
+                return Reply(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    value = new[] { new
+                    {
+                        id = "existing-item", name = "Leadership review - 12345678 - v1.docx",
+                        webUrl = "https://tenant.sharepoint.com/brief",
+                        createdBy = new { user = new { id = owner } },
+                        sharepointIds = new { listItemUniqueId = document }
+                    }}
+                }));
+            return Reply("""{"value":[{"id":"permission"}]}""");
+        }));
+        var publisher = new StandingBriefPublisher(http, null, "word-token", "graph-token", owner, NullLogger.Instance);
+        var job = new StandingJob
+        {
+            Id = "12345678-1234-1234-1234-123456789012", Title = "Leadership review",
+            Members = [new(Guid.NewGuid().ToString(), "manager@example.com")]
+        };
+
+        var result = await publisher.ReconcileAsync(job, 1, "original-facts");
+
+        Assert.Equal("original-facts", result.FactsFingerprint);
+        Assert.Equal("existing-item", result.ItemId);
+    }
+
+    [Fact]
+    public async Task OptionalReconciliationReturnsNullWhenTheVersionDoesNotExist()
+    {
+        using var http = new HttpClient(new Handler(_ =>
+            Task.FromResult(Reply("""{"value":[]}"""))));
+        var publisher = new StandingBriefPublisher(
+            http, null, "word-token", "graph-token", Guid.NewGuid(), NullLogger.Instance);
+        var job = new StandingJob
+        {
+            Id = "12345678-1234-1234-1234-123456789012", Title = "Leadership review"
+        };
+
+        Assert.Null(await publisher.TryReconcileAsync(job, 2, "facts"));
+    }
+
+    [Fact]
     public async Task WrongCreatorStopsBeforeSharing()
     {
         var requests = 0;
