@@ -8,7 +8,7 @@ using Azure.Identity;
 
 namespace WorkstreamManager.Services;
 
-internal sealed record StandingJobMember(string Id, string Email);
+internal sealed record StandingJobMember(string Id, string Email, string? DisplayName = null);
 internal sealed record StandingJobCaller(string Id, string ManagerId, string? Email)
 {
     public bool IsManager => Guid.TryParse(Id, out var actor) && actor != Guid.Empty
@@ -48,7 +48,13 @@ internal sealed class StandingJob
 
 internal sealed record StandingJobEvent(
     string Id, string Kind, string ActorId, string Binding, string Content,
-    DateTimeOffset ReceivedUtc, bool IsHuman);
+    DateTimeOffset ReceivedUtc, bool IsHuman, string? SourceUrl = null,
+    string? DocumentItemId = null, string? DriveId = null, string? CommentId = null);
+
+internal sealed record StandingBriefDraft(
+    int Version, string FactsFingerprint, string Content, DateTimeOffset CreatedUtc);
+
+internal sealed record StandingBriefChange(string EvidenceEventId, string Quote);
 
 internal sealed record StandingJobInput(
     string Key, string Title, string OwnerId, string State, string Content,

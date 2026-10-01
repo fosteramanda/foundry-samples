@@ -84,7 +84,9 @@ internal sealed class StandingReviewCoordinator(
 
     internal async Task<StandingJobEvent> CaptureAsync(string id, StandingJobCaller caller, StandingJobEvent input)
     {
-        await GetAsync(id, caller);
+        var job = await GetAsync(id, caller);
+        if (job.Paused && (input.Kind is not ("mandate" or "configuration") || !caller.IsManager))
+            throw new InvalidOperationException("The standing job is paused.");
         if (!input.IsHuman || input.ActorId != caller.Id)
             throw new UnauthorizedAccessException("A scheduled run cannot manufacture human evidence.");
         if (string.IsNullOrWhiteSpace(input.Id) || input.Content.Length > 8000)
@@ -154,7 +156,7 @@ internal sealed class StandingReviewCoordinator(
     {
         var job = await GetAsync(id, caller);
         var evidence = await EvidenceAsync(id, eventId, statement);
-        if (evidence.ActorId != job.ManagerId || evidence.Kind == "mandate")
+        if (evidence.ActorId != job.ManagerId || evidence.Kind is "mandate" or "configuration")
             throw new UnauthorizedAccessException("A confirmed decision must quote the manager's recorded input.");
         if (!string.IsNullOrWhiteSpace(rationale) && !evidence.Content.Contains(rationale, StringComparison.Ordinal))
             throw new ArgumentException("The rationale must also quote the same source; leave it empty if no rationale was given.");
@@ -208,28 +210,68 @@ internal sealed class StandingReviewCoordinator(
         return decisions.Count > 0 ? "needs_commitments" : inputs.Count > 0 ? "decision_ready" : "collecting_inputs";
     }
 
-    internal async Task<string> StateFingerprintAsync(string id)
+    internal async Task<string> StateFingerprintAsync(string id, bool includeSpecialists = true)
     {
         var inputs = await RecordsAsync<StandingJobInput>(id, "input");
         var decisions = await RecordsAsync<StandingJobDecision>(id, "decision");
         var jobRow = await store.ReadAsync(partition, StandingJobStore.JobKey(id))
             ?? throw new InvalidOperationException("Standing job not found.");
         var job = StandingJobStore.Value<StandingJob>(jobRow);
+        var specialists = includeSpecialists
+            ? (await RecordsAsync<StandingJobReceipt>(id, "receipt"))
+                .Where(item => item.Operation == "delegate" && item.State == "accepted")
+                .Select(item => new { item.Key, AnswerHash = StandingJobStore.Hash(item.Detail) })
+                .OrderBy(item => item.Key).ToArray()
+            : null;
         return StandingJobStore.Hash(JsonSerializer.Serialize(new
         {
             job.Revision,
             inputs = inputs.OrderBy(item => item.Key),
-            decisions = decisions.OrderBy(item => item.Id)
+            decisions = decisions.OrderBy(item => item.Id),
+            changes = (await RecordsAsync<StandingBriefChange>(id, "brief_change")).OrderBy(item => item.EvidenceEventId),
+            specialists
         }, StandingJobStore.Json));
     }
+
+    internal async Task RecordBriefChangeAsync(string id, StandingJobCaller caller, string eventId, string quote)
+    {
+        await GetAsync(id, caller);
+        await EvidenceAsync(id, eventId, quote);
+        await store.TryAddAsync(StandingJobStore.Row(partition,
+            StandingJobStore.Key(id, "brief_change", eventId + "\n" + quote), new StandingBriefChange(eventId, quote)));
+    }
+
+    internal async Task<StandingBriefDraft> SaveDraftAsync(string id, StandingJobCaller caller, StandingBriefDraft draft)
+    {
+        await GetAsync(id, caller);
+        var key = StandingJobStore.Key(id, "brief_draft", draft.FactsFingerprint);
+        if (await store.TryAddAsync(StandingJobStore.Row(partition, key, draft))) return draft;
+        return StandingJobStore.Value<StandingBriefDraft>(
+            await store.ReadAsync(partition, key) ?? throw new InvalidOperationException("The saved publication draft disappeared."));
+    }
+
+    internal async Task<StandingBriefDraft> ReadDraftAsync(string id, string fingerprint) =>
+        StandingJobStore.Value<StandingBriefDraft>(
+            await store.ReadAsync(partition, StandingJobStore.Key(id, "brief_draft", fingerprint))
+                ?? throw new InvalidOperationException("The prior publication has no saved draft. Reconcile it explicitly; no file was imported by name."));
 
     internal async Task RegisterBriefAsync(string id, StandingJobCaller caller, StandingJobBrief brief)
     {
         await GetAsync(id, caller);
         if (!Guid.TryParse(brief.DocumentId, out var document) || string.IsNullOrWhiteSpace(brief.ItemId))
             throw new ArgumentException("The brief must have a real document receipt.");
-        await store.TryAddAsync(StandingJobStore.Row(partition,
-            StandingJobStore.Key(id, "brief", brief.FactsFingerprint), brief));
+        var key = StandingJobStore.Key(id, "brief", brief.FactsFingerprint);
+        var versions = await RecordsAsync<StandingJobBrief>(id, "brief");
+        if (versions.Any(existing => existing.Version == brief.Version
+            && (existing.ItemId != brief.ItemId || existing.FactsFingerprint != brief.FactsFingerprint)))
+            throw new InvalidOperationException("That brief version is already bound to a different publication.");
+        if (!await store.TryAddAsync(StandingJobStore.Row(partition, key, brief)))
+        {
+            var existing = StandingJobStore.Value<StandingJobBrief>(
+                await store.ReadAsync(partition, key) ?? throw new InvalidOperationException("The brief record disappeared."));
+            if (existing.ItemId != brief.ItemId || existing.DocumentId != brief.DocumentId || existing.Version != brief.Version)
+                throw new InvalidOperationException("The facts revision is already bound to a different document.");
+        }
         for (var attempt = 0; attempt < 3; attempt++)
         {
             var row = await store.ReadAsync(partition, StandingJobStore.JobKey(id))
@@ -248,7 +290,9 @@ internal sealed class StandingReviewCoordinator(
     {
         var row = await store.ReadAsync(partition, StandingJobStore.JobKey(id))
             ?? throw new InvalidOperationException("Standing job not found.");
-        var job = await GetAsync(id, caller);
+        var job = StandingJobStore.Value<StandingJob>(row);
+        if (!caller.IsManager && !job.Allows(caller.Id))
+            throw new UnauthorizedAccessException("This actor is not a participant in the standing job.");
         if (job.ManagerId != caller.ManagerId)
             throw new UnauthorizedAccessException("The manager changed; the current manager must reauthorize this job.");
         if (job.Paused || (scheduled && job.NextCheckUtc > Now) || job.LeaseUntilUtc > Now)
@@ -287,7 +331,7 @@ internal sealed class StandingReviewCoordinator(
                 return;
             job.LeaseId = null;
             job.LeaseUntilUtc = null;
-            job.NextCheckUtc = Now.AddMinutes(5);
+            job.NextCheckUtc = Now;
             job.LastRunUtc = Now;
             job.LastRunStatus = succeeded ? "checked" : "failed";
             job.LastRunDetail = detail.Length > 1500 ? detail[..1500] : detail;
@@ -320,6 +364,8 @@ internal sealed class StandingReviewCoordinator(
             var prior = StandingJobStore.Value<StandingJobReceipt>(scopeRow);
             if (prior.Key == key && prior.State == "uncertain" && reconcileUncertain)
             {
+                if (prior.PayloadHash != receipt.PayloadHash)
+                    throw new InvalidOperationException("Reconciliation must use the exact saved action payload.");
                 receipt.CreatedUtc = prior.CreatedUtc;
                 if (!await store.TryReplaceAsync(StandingJobStore.Row(partition, scopeKey, receipt), scopeRow.ETag))
                     throw new InvalidOperationException("Another run claimed this uncertain action for reconciliation.");
@@ -394,6 +440,8 @@ internal sealed class StandingReviewCoordinator(
             throw new InvalidOperationException("The reconciled action receipt changed concurrently.");
         scopeRow = await store.ReadAsync(partition, scopeKey)
             ?? throw new InvalidOperationException("The uncertain action scope disappeared during reconciliation.");
+        if (StandingJobStore.Value<StandingJobReceipt>(scopeRow).Key != prior.Key)
+            throw new InvalidOperationException("The action scope moved to another publication during reconciliation.");
         if (!await store.TryReplaceAsync(StandingJobStore.Row(partition, scopeKey, prior), scopeRow.ETag))
             throw new InvalidOperationException("The receipt was reconciled but its action scope changed concurrently.");
     }

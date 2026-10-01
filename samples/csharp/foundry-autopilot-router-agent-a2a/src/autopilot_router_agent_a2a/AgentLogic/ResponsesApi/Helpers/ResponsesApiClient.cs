@@ -121,7 +121,8 @@ internal class ResponsesApiClient
         bool usePreviousResponseId = true,
         List<JsonNode>? additionalTools = null,
         Func<string, string, Task<string?>>? localToolExecutor = null,
-        bool traceInvocation = false)
+        bool traceInvocation = false,
+        int maxToolIterations = 10)
     {
         // Only turns that answer someone are agent invocations. The addressed-to-agent judge and
         // passive work-item detection also call this client; tracing them would show internal
@@ -129,12 +130,12 @@ internal class ResponsesApiClient
         if (!traceInvocation)
         {
             return InvokeCoreAsync(input, conversationId, instructionsOverride, includeMcpTools, persistResponseId,
-                modelDeploymentOverride, usePreviousResponseId, additionalTools, localToolExecutor, invocation: null);
+                modelDeploymentOverride, usePreviousResponseId, additionalTools, localToolExecutor, invocation: null, maxToolIterations);
         }
 
         return AgentInvocationTracing.TraceAsync(input, invocation =>
             InvokeCoreAsync(input, conversationId, instructionsOverride, includeMcpTools, persistResponseId,
-                modelDeploymentOverride, usePreviousResponseId, additionalTools, localToolExecutor, invocation));
+                modelDeploymentOverride, usePreviousResponseId, additionalTools, localToolExecutor, invocation, maxToolIterations));
     }
 
     private async Task<string> InvokeCoreAsync(
@@ -147,7 +148,8 @@ internal class ResponsesApiClient
         bool usePreviousResponseId,
         List<JsonNode>? additionalTools,
         Func<string, string, Task<string?>>? localToolExecutor,
-        System.Diagnostics.Activity? invocation)
+        System.Diagnostics.Activity? invocation,
+        int maxToolIterations)
     {
         LastInvocationSucceeded = false;
         var endpoint = _configuration["AzureOpenAIEndpoint"] ?? throw new InvalidOperationException("AzureOpenAIEndpoint not configured");
@@ -269,7 +271,8 @@ internal class ResponsesApiClient
             return responseContent;
         }
 
-        for (var iteration = 0; iteration < 10; iteration++)
+        if (maxToolIterations is < 1 or > 24) throw new ArgumentOutOfRangeException(nameof(maxToolIterations));
+        for (var iteration = 0; iteration < maxToolIterations; iteration++)
         {
             var functionCalls = ExtractFunctionCalls(responseContent);
             if (functionCalls.Count == 0)
