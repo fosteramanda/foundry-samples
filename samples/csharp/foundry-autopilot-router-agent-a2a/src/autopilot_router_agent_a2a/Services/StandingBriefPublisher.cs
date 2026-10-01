@@ -11,6 +11,8 @@ internal sealed record StandingJobBrief(
     int Version, string FileName, string ItemId, string DocumentId, string Url,
     string FactsFingerprint, DateTimeOffset CreatedUtc);
 
+// Graph readback and sharing require delegated Files.ReadWrite on the agent-user
+// token. Files.ReadWrite.All is not needed for briefs created in its own drive.
 internal sealed class StandingBriefPublisher(
     HttpClient http, McpServerConfig? wordServer, string wordToken, string? graphToken,
     Guid agentUserId, ILogger logger)
