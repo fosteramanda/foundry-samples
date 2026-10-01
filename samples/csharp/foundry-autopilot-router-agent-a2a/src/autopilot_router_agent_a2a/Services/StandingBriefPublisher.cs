@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using WorkstreamManager.Models;
 
 namespace WorkstreamManager.Services;
@@ -73,6 +74,48 @@ internal sealed class StandingBriefPublisher(
         var graphItem = await FindExistingAsync(name);
         if (graphItem == null) return null;
         return await VerifyAndShareAsync(job, version, fingerprint, name, graphItem);
+    }
+
+    internal async Task<StandingJobEvent> ReadCommentNotificationAsync(
+        StandingJob job, IReadOnlyList<StandingJobBrief> briefs, string messageId)
+    {
+        if (string.IsNullOrWhiteSpace(graphToken))
+            throw new InvalidOperationException("Comment notification verification requires the agent's Graph credential.");
+        if (briefs.Count == 0)
+            throw new InvalidOperationException("The job has no verified Word brief binding.");
+        var message = await GraphAsync(HttpMethod.Get,
+            $"me/messages/{Uri.EscapeDataString(messageId)}?$select=id,internetMessageId,subject,bodyPreview,from,receivedDateTime",
+            null);
+        var sender = message["from"]?["emailAddress"]?["address"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("The comment notification has no sender identity.");
+        var member = job.Members.SingleOrDefault(item =>
+            string.Equals(item.Email, sender, StringComparison.OrdinalIgnoreCase))
+            ?? throw new UnauthorizedAccessException("The comment notification sender is not a job participant.");
+        var subject = message["subject"]?.GetValue<string>() ?? string.Empty;
+        var brief = briefs.SingleOrDefault(item =>
+            subject.Contains(Path.GetFileNameWithoutExtension(item.FileName), StringComparison.OrdinalIgnoreCase))
+            ?? throw new UnauthorizedAccessException("The notification does not identify a bound job brief.");
+        var preview = message["bodyPreview"]?.GetValue<string>() ?? string.Empty;
+        var lines = preview.Replace("\r", "").Split('\n')
+            .Select(line => line.Trim()).Where(line => line.Length > 0).ToList();
+        var marker = lines.FindIndex(line => line.Contains("added a comment", StringComparison.OrdinalIgnoreCase));
+        var rawComment = marker >= 0 && marker + 1 < lines.Count
+            ? lines[marker + 1]
+            : lines.FirstOrDefault(line => line.StartsWith("@Office of Amanda", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(rawComment))
+            throw new InvalidOperationException("The notification contains no verifiable Word comment text.");
+        var comment = Regex.Replace(rawComment, "^@Office of Amanda[\\s\\u00A0]*", "",
+            RegexOptions.IgnoreCase).Trim();
+        if (string.IsNullOrWhiteSpace(comment))
+            throw new InvalidOperationException("The verified Word comment is empty.");
+        var sourceId = message["internetMessageId"]?.GetValue<string>()
+            ?? message["id"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("The comment notification has no stable message identity.");
+        var received = message["receivedDateTime"]?.GetValue<DateTimeOffset>()
+            ?? throw new InvalidOperationException("The comment notification has no received time.");
+        return new StandingJobEvent(
+            StandingJobStore.Hash("word-comment-notification:" + sourceId), "word", member.Id,
+            "word:" + Guid.Parse(brief.DocumentId).ToString("D"), comment, received, true);
     }
 
     private static string FileName(StandingJob job, int version)

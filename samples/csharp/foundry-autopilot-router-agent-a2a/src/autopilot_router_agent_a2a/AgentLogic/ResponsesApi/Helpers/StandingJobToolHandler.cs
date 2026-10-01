@@ -24,7 +24,8 @@ internal sealed class StandingJobToolHandler(
     ILogger logger,
     Func<StandingJob, int, string, string, Task<StandingJobBrief>>? publishBrief = null,
     Func<StandingJob, int, string, Task<StandingJobBrief>>? reconcileBrief = null,
-    Func<StandingJob, int, string, Task<StandingJobBrief?>>? tryReconcileBrief = null)
+    Func<StandingJob, int, string, Task<StandingJobBrief?>>? tryReconcileBrief = null,
+    Func<StandingJob, IReadOnlyList<StandingJobBrief>, string, Task<StandingJobEvent>>? readCommentNotification = null)
 {
     internal StandingJobTurn? Turn { get; set; }
     internal bool IsEnabled => coordinator.IsAvailable && Turn != null;
@@ -78,6 +79,9 @@ internal sealed class StandingJobToolHandler(
                  "recipients":{"type":"array","items":{"type":"string"}},"source_bindings":{"type":"array","items":{"type":"string"}},
                  "specialist_agent_ids":{"type":"array","items":{"type":"string"}},"review_utc":{"type":"string"}}
                 """, ["job_id"]));
+            if (readCommentNotification != null)
+                tools.Add(Tool("ingest_standing_comment_notification", "Verify a real Word comment notification in this agent user's mailbox, bind it to an existing job brief, and record the exact human comment as durable evidence. Use the Graph message ID returned by the mailbox search; the host independently verifies sender, document, text, and received time.",
+                    """{"job_id":{"type":"string"},"message_id":{"type":"string"}}""", ["job_id", "message_id"]));
         }
         if (Automatic)
             tools.RemoveAll(tool => tool["name"]!.GetValue<string>() == "list_standing_jobs");
@@ -126,6 +130,7 @@ internal sealed class StandingJobToolHandler(
                 "send_standing_message" => Json(await SendAsync(job, args)),
                 "ask_standing_specialist" => Json(await DelegateAsync(job, args)),
                 "publish_standing_brief" => Json(await PublishAsync(job, args)),
+                "ingest_standing_comment_notification" => Json(await IngestCommentNotificationAsync(job, args)),
                 _ => null
             };
         }
@@ -477,6 +482,18 @@ internal sealed class StandingJobToolHandler(
                 await coordinator.RegisterBriefAsync(job.Id, Turn.Caller, artifact);
                 return (true, Json(artifact));
             }, Turn.LeaseId, "publish_brief", reconcileUncertain: true);
+    }
+
+    private async Task<StandingJobEvent> IngestCommentNotificationAsync(StandingJob job, JsonObject args)
+    {
+        RequireHumanManager();
+        if (readCommentNotification == null)
+            throw new InvalidOperationException("Comment notification verification is not configured.");
+        var briefs = await coordinator.RecordsAsync<StandingJobBrief>(job.Id, "brief");
+        var source = await readCommentNotification(job, briefs, Text(args, "message_id", 2000));
+        var member = job.Members.Single(item => item.Id == source.ActorId);
+        return await coordinator.CaptureAsync(job.Id,
+            new StandingJobCaller(member.Id, job.ManagerId, member.Email), source);
     }
 
     private async Task<StandingJobReceipt> DelegateAsync(StandingJob job, JsonObject args)

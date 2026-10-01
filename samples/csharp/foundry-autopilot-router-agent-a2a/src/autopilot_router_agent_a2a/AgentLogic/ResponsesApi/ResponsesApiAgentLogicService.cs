@@ -115,7 +115,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 }, $"<p><strong>{System.Net.WebUtility.HtmlEncode(job.Title)}</strong></p>{html}", CancellationToken.None),
                 async (id, question) => await _workIqA2ATools.AskForStandingJobAsync(id, question),
                 _accessControl.ResolveStandingJobMemberAsync, _logger,
-                briefs.PublishAsync, briefs.ReconcileAsync, briefs.TryReconcileAsync);
+                briefs.PublishAsync, briefs.ReconcileAsync, briefs.TryReconcileAsync,
+                briefs.ReadCommentNotificationAsync);
         }
     }
 
