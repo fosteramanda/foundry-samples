@@ -26,6 +26,7 @@ internal sealed class StandingJob
     public List<string> Bindings { get; set; } = [];
     public List<string> SpecialistAgentIds { get; set; } = [];
     public string ConversationId { get; set; } = string.Empty;
+    public string DecisionDelivery { get; set; } = "chat";
     public string RoutineName { get; set; } = string.Empty;
     public string CronExpression { get; set; } = string.Empty;
     public string TimeZone { get; set; } = "UTC";

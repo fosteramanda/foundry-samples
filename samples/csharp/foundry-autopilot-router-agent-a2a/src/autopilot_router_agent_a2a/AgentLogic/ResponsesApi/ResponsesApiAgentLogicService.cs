@@ -691,6 +691,12 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var caller = await _accessControl.ResolveStandingJobCallerAsync(notification.From ?? activity.From, CancellationToken.None);
         if (caller == null) return false;
         var message = await _standingBriefs.ReadNotificationAsync(notification.EmailNotification?.Id ?? string.Empty);
+        if (!StandingBriefPublisher.IsWordCommentNotification(message))
+        {
+            _logger.LogInformation("Skipping the ancillary Office collaboration email; it is not the Word comment source. NotificationId={NotificationId}",
+                notification.EmailNotification?.Id);
+            return false;
+        }
         var reference = StandingBriefPublisher.ParseCommentReference(message["body"]?["content"]?.GetValue<string>() ?? string.Empty);
         if (reference == null) return false;
         var jobs = await _standingCoordinator.FindAsync(caller, null, "word:" + reference.DocumentId.ToString("D"));
@@ -1063,6 +1069,26 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 localToolExecutor: _standingTools.TryExecuteAsync, traceInvocation: true, maxToolIterations: 20);
             if (!_responsesApiClient.LastInvocationSucceeded)
                 throw new InvalidOperationException("The standing-job model run failed; no completion is claimed.");
+            var remaining = await _standingTools.TryExecuteAsync("get_standing_job",
+                JsonSerializer.Serialize(new { job_id = id }));
+            if (JsonNode.Parse(remaining!)?["needsManagerDecisionDelivery"]?.GetValue<bool>() == true)
+            {
+                await _responsesApiClient.InvokeAsync(
+                    "Complete the one remaining manager decision delivery for the current facts. "
+                    + "Use send_standing_message with purpose escalation and the recorded decisionDelivery. "
+                    + "Give only the unresolved judgment, two concrete options and consequences. "
+                    + "Do not republish unchanged files, change decisions, or repeat owner coordination.\n" + remaining,
+                    $"standing-job:{id}:decision-delivery",
+                    instructionsOverride: AgentInstructions.StandingJobRunInstructions,
+                    includeMcpTools: false, persistResponseId: false, usePreviousResponseId: false,
+                    additionalTools: _standingTools.GetToolDefinitions(),
+                    localToolExecutor: _standingTools.TryExecuteAsync, traceInvocation: true, maxToolIterations: 4);
+                if (!_responsesApiClient.LastInvocationSucceeded)
+                    throw new InvalidOperationException("The remaining manager decision was not delivered.");
+                var verified = await _standingTools.TryExecuteAsync("get_standing_job", JsonSerializer.Serialize(new { job_id = id }));
+                if (JsonNode.Parse(verified!)?["needsManagerDecisionDelivery"]?.GetValue<bool>() == true)
+                    throw new InvalidOperationException("The review still requires a manager decision delivery; no completion is claimed.");
+            }
             completed = true;
             detail = "Bounded check completed. Individual action receipts remain authoritative.";
             _logger.LogInformation("Standing job {JobId} completed its bounded check.", id);

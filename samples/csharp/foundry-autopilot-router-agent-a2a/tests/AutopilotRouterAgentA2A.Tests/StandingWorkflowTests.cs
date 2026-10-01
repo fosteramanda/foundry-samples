@@ -119,6 +119,56 @@ public class StandingWorkflowTests
         Assert.Equal("mail:actual-mail-thread", source.Binding);
     }
 
+    [Fact]
+    public async Task AncillaryMentionMailDoesNotBecomeAnErrorReplyOrDuplicateWordAction()
+    {
+        using var f = await Fixture.CreateAsync();
+        f.AncillaryNotification = true;
+        var activity = f.Activity("Go to comment", channel: "email");
+        var notification = new AgentNotificationActivity(activity)
+        {
+            EmailNotification = new EmailReference { Id = "word-mail", HtmlBody = f.NotificationHtml }
+        };
+        await f.Service().HandleEmailNotificationAsync(f.Context(activity), new TurnState(), notification);
+        Assert.Empty(f.Adapter.Messages);
+        Assert.Equal(0, f.WordReplies);
+        Assert.Empty(await f.Coordinator.RecordsAsync<StandingJobEvent>(f.Job.Id, "event"));
+        Assert.Empty(f.Model);
+    }
+
+    [Fact]
+    public async Task TheRunnerCompletesAnOutstandingManagerDeliveryAfterTheModelStopsEarly()
+    {
+        using var f = await Fixture.CreateAsync();
+        var source = new StandingJobEvent("support", "chat", f.Manager.Id, "chat:review",
+            "Weekend coverage remains disputed.", DateTimeOffset.UtcNow, true);
+        await f.Coordinator.CaptureAsync(f.Job.Id, f.Manager, source);
+        await f.Coordinator.RecordInputAsync(f.Job.Id, f.Manager, new StandingJobInput("weekend", "Weekend coverage",
+            f.Manager.Id, "disputed", source.Content, source.Id, DateTimeOffset.UtcNow));
+        f.Work.Seed(f.Job.Id, f.Manager.Id, "closed", DateTimeOffset.UtcNow);
+        f.Model.Enqueue(_ => Result(""));
+        f.Model.Enqueue(request =>
+        {
+            Assert.Contains("remaining manager decision delivery", request["input"]!.GetValue<string>());
+            return Call("send_standing_message", new
+            {
+                job_id = f.Job.Id, purpose = "escalation", delivery = "chat", subject = "Weekend coverage",
+                body_html = "<p>Keep the launch hold to avoid uncovered support, or authorize the risk to keep the date.</p>"
+            });
+        });
+        f.Model.Enqueue(_ => Result(""));
+        var activity = f.Activity(StandingReviewCoordinator.Marker(f.Job.Id) + " Check the review.");
+        activity.Id = null;
+        await f.Service().NewActivityReceived(f.Context(activity), new TurnState(), CancellationToken.None);
+        Assert.Equal(1, f.GraphMessages);
+        Assert.Empty(f.Adapter.Messages);
+        Assert.Empty(f.Model);
+        f.Model.Enqueue(_ => Result(""));
+        await f.Service().NewActivityReceived(f.Context(activity), new TurnState(), CancellationToken.None);
+        Assert.Equal(1, f.GraphMessages);
+        Assert.Empty(f.Model);
+    }
+
     [Theory]
     [InlineData("continue")]
     [InlineData("read")]
@@ -205,6 +255,7 @@ public class StandingWorkflowTests
         public string NotificationHtml { get; }
         public int GraphMessages { get; private set; }
         public int WordReplies { get; private set; }
+        public bool AncillaryNotification { get; set; }
         private readonly HttpClient _http;
         private readonly IConfiguration _configuration;
         private ResponsesApiAgentLogicService? _service;
@@ -292,7 +343,9 @@ public class StandingWorkflowTests
                 return Reply(new
                 {
                     id = isWord ? "word-mail" : "owner-mail",
-                    internetMessageId = isWord ? "<CommentWord-test@odspnotify>" : "<owner-mail@example.com>",
+                    internetMessageId = isWord
+                        ? AncillaryNotification ? "<MentionNotification-test@example.com>" : "<CommentWord-test@odspnotify>"
+                        : "<owner-mail@example.com>",
                     from = new { emailAddress = new { address = Manager.Email } }, receivedDateTime = DateTimeOffset.UtcNow,
                     body = new { content = isWord ? NotificationHtml : "Older quoted decision." },
                     uniqueBody = new { content = "<p>The checklist is delivered.</p>" },
