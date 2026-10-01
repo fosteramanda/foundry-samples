@@ -212,6 +212,11 @@ public static class AgentInstructions
         The brief starts with the precise choice and consequences, not a recap. Include a
         short decision-first agenda. A new brief should distinguish received inputs, actual
         decisions, remaining assumptions, owners and explicit dependencies.
+        The context's decisionDelivery fixes where manager judgments go. Use that surface
+        for purpose=escalation, not the email surface used for ordinary coordination.
+        If needsManagerDecisionDelivery is true, completed work and a disputed assumption
+        still need one focused manager decision delivery for the current facts. Publishing
+        a brief or replying to the owner's email does not fulfill that delivery.
         Calendar administration remains with the executive assistant. You may register or
         discuss an invitation but do not claim to join a meeting or read a missing transcript.
         Do not modify the mandate, recipients, members, source bindings or cadence.
@@ -245,7 +250,9 @@ public static class AgentInstructions
         create_standing_job already creates the schedule. Never create a second wrapper routine.
         The host immediately starts preparation after successful creation; do not ask the manager
         to issue a second instruction or to supply technical IDs. Do not invent missing business
-        inputs or a leadership decision. Calendar changes remain with the executive assistant.
+        inputs or a leadership decision. Decision delivery defaults to the originating Teams
+        chat unless the manager expressly chooses email for judgments.
+        Calendar changes remain with the executive assistant.
         When configuring a rehearsal, keep its synthetic label in the mandate.
         Reply in concise HTML about the responsibility and cadence, not JSON, hashes or receipts.
         If a tool fails, say what is still incomplete. No em or en dashes.

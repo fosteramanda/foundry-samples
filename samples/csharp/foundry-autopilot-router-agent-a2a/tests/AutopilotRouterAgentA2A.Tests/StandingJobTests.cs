@@ -303,6 +303,23 @@ public class StandingJobTests
     }
 
     [Fact]
+    public async Task ManagerJudgmentsUseTheConfiguredSurfaceAndDoNotSilentlySubstituteEmail()
+    {
+        var h = await Harness.CreateAsync();
+        var request = new
+        {
+            job_id = h.Job.Id, purpose = "escalation", delivery = "email",
+            recipients = new[] { h.Manager.Email }, subject = "Decision needed", body_html = "Choose the next step."
+        };
+        Assert.False((await h.Call("send_standing_message", request))["success"]!.GetValue<bool>());
+        Assert.Equal(0, h.MailCalls);
+        h.SetTurn(h.Manager, "delivery-choice", "Send my decisions by email.");
+        await h.Call("update_standing_job", new { job_id = h.Job.Id, decision_delivery = "email" });
+        Assert.Equal("accepted", (await h.Call("send_standing_message", request))["state"]!.GetValue<string>());
+        Assert.Equal(1, h.MailCalls);
+    }
+
+    [Fact]
     public async Task FollowUpToTheWrongOwnerOrAClosedItemIsRejected()
     {
         var h = await Harness.CreateAsync();

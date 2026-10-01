@@ -80,6 +80,7 @@ internal sealed class StandingJobToolHandler(
                  "recipients":{"type":"array","items":{"type":"string"}},
                  "source_bindings":{"type":"array","items":{"type":"string"},"description":"Exact word:<document GUID> or mail:<conversation ID> bindings. No wildcards."},
                  "specialist_agent_ids":{"type":"array","items":{"type":"string"}},
+                 "decision_delivery":{"type":"string","enum":["chat","email"],"description":"Where unresolved manager judgments go. Defaults to the original Teams chat; coordination and pre-reads still use email."},
                  "cron_expression":{"type":"string","description":"Five-field cron, at least five minutes apart. Default is every 15 minutes."},
                  "time_zone":{"type":"string"},"review_utc":{"type":"string"}}
                 """, ["name", "mandate"]));
@@ -88,7 +89,8 @@ internal sealed class StandingJobToolHandler(
                 {"job_id":{"type":"string"},"mandate":{"type":"string"},"enabled":{"type":"boolean"},
                  "members":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"email":{"type":"string"}},"required":["id","email"],"additionalProperties":false}},
                  "recipients":{"type":"array","items":{"type":"string"}},"source_bindings":{"type":"array","items":{"type":"string"}},
-                 "specialist_agent_ids":{"type":"array","items":{"type":"string"}},"review_utc":{"type":"string"}}
+                 "specialist_agent_ids":{"type":"array","items":{"type":"string"}},"review_utc":{"type":"string"},
+                 "decision_delivery":{"type":"string","enum":["chat","email"]}}
                 """, ["job_id"]));
         }
         if (Automatic)
@@ -175,12 +177,14 @@ internal sealed class StandingJobToolHandler(
             Bindings = Bindings(args),
             SpecialistAgentIds = Strings(args, "specialist_agent_ids", 30),
             ConversationId = activity.Conversation?.Id ?? throw new InvalidOperationException("The chat ID is missing."),
+            DecisionDelivery = Optional(args, "decision_delivery") ?? "chat",
             CronExpression = Optional(args, "cron_expression") ?? "*/15 * * * *",
             TimeZone = Optional(args, "time_zone") ?? "UTC",
             ReviewUtc = Utc(args, "review_utc")
         };
         if (job.CronExpression.Length > 100 || job.CronExpression.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length != 5)
             throw new ArgumentException("Use a five-field cron expression.");
+        if (job.DecisionDelivery is not ("chat" or "email")) throw new ArgumentException("Decisions must use chat or email.");
         if (job.Recipients.Count == 0) job.Recipients.Add(job.Members.Single(member => member.Id == Turn.Caller.ManagerId).Email);
         job.RoutineName = RoutineToolHandler.BuildStandingRoutineName(job.Id);
         await coordinator.CreateAsync(job, Turn.Caller);
@@ -209,6 +213,7 @@ internal sealed class StandingJobToolHandler(
                 current.Bindings = [];
                 current.SpecialistAgentIds = [];
                 current.ConversationId = Turn.Activity.Conversation.Id;
+                current.DecisionDelivery = "chat";
                 current.Paused = true;
             }
             if (args.ContainsKey("mandate")) current.Mandate = Text(args, "mandate", 4000);
@@ -217,6 +222,11 @@ internal sealed class StandingJobToolHandler(
             if (args.ContainsKey("source_bindings")) current.Bindings = Bindings(args);
             if (args.ContainsKey("specialist_agent_ids")) current.SpecialistAgentIds = Strings(args, "specialist_agent_ids", 30);
             if (args.ContainsKey("review_utc")) current.ReviewUtc = Utc(args, "review_utc");
+            if (Optional(args, "decision_delivery") is { } delivery)
+            {
+                if (delivery is not ("chat" or "email")) throw new ArgumentException("Decisions must use chat or email.");
+                current.DecisionDelivery = delivery;
+            }
             current.RoutineName = RoutineToolHandler.BuildStandingRoutineName(current.Id);
             if (args.ContainsKey("enabled")) current.Paused = true;
         });
@@ -244,15 +254,24 @@ internal sealed class StandingJobToolHandler(
         var commitments = workItems == null ? null : ParseWorkResult(await workItems.ListWorkItemsAsync(
             coordinator.Partition, standingJobId: job.Id));
         var items = commitments?["items"] as JsonArray;
+        var inputs = await coordinator.RecordsAsync<StandingJobInput>(job.Id, "input");
+        var facts = await FactsAsync(job);
+        var receipts = await coordinator.RecordsAsync<StandingJobReceipt>(job.Id, "receipt");
+        var decisionDelivered = receipts.Any(receipt => receipt.Operation == "escalation"
+            && receipt.State == "accepted" && receipt.Scope.StartsWith($"message:escalation:{job.DecisionDelivery}:", StringComparison.Ordinal)
+            && receipt.Key.EndsWith(":" + facts, StringComparison.Ordinal));
         return Json(new
         {
             currentEventId = Turn!.Event?.Id,
             state = await coordinator.SnapshotAsync(job.Id, Turn.Caller),
             phase = StandingReviewCoordinator.Phase(job,
-                await coordinator.RecordsAsync<StandingJobInput>(job.Id, "input"),
+                inputs,
                 await coordinator.RecordsAsync<StandingJobDecision>(job.Id, "decision"),
                 items?.Count(item => item?["status"]?.GetValue<string>() != "closed") ?? 0, items?.Count ?? 0),
-            commitments
+            commitments,
+            decisionDelivery = job.DecisionDelivery,
+            needsManagerDecisionDelivery = !job.Paused && inputs.Any(input => input.State == "disputed")
+                && items?.Any(item => item?["status"]?.GetValue<string>() == "closed") == true && !decisionDelivered
         });
     }
 
@@ -359,6 +378,8 @@ internal sealed class StandingJobToolHandler(
             throw new ArgumentException("Unsupported standing-job message purpose.");
         var delivery = Text(args, "delivery", 10);
         if (delivery is not ("chat" or "email")) throw new ArgumentException("Choose chat or email.");
+        if (purpose == "escalation" && delivery != job.DecisionDelivery)
+            throw new InvalidOperationException($"This job returns manager judgments through {job.DecisionDelivery}. Do not substitute another delivery surface.");
         var recipients = Strings(args, "recipients", 30).Select(Email).Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList();
         if (delivery == "email" && (recipients.Count == 0 || recipients.Any(value => !job.Recipients.Contains(value, StringComparer.OrdinalIgnoreCase))))
             throw new UnauthorizedAccessException("Every email recipient must be explicitly permitted by the manager for this job.");

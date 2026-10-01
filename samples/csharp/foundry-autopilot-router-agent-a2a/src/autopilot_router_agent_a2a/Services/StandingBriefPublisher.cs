@@ -86,9 +86,7 @@ internal sealed class StandingBriefPublisher(
     internal async Task<StandingJobEvent> ReadCommentNotificationAsync(
         StandingJob job, IReadOnlyList<StandingJobBrief> briefs, JsonNode message, StandingJobCaller caller)
     {
-        var internetId = message["internetMessageId"]?.GetValue<string>() ?? string.Empty;
-        if (!internetId.StartsWith("<CommentWord-", StringComparison.OrdinalIgnoreCase)
-            || !internetId.EndsWith("@odspnotify>", StringComparison.OrdinalIgnoreCase))
+        if (!IsWordCommentNotification(message))
             throw new InvalidOperationException("This is not a Word-generated comment notification.");
         var email = message["from"]?["emailAddress"]?["address"]?.GetValue<string>();
         var member = job.Members.SingleOrDefault(person =>
@@ -104,6 +102,13 @@ internal sealed class StandingBriefPublisher(
         var received = message["receivedDateTime"]?.GetValue<DateTimeOffset>()
             ?? throw new InvalidOperationException("The notification has no received timestamp.");
         return await ReadCommentAsync(brief, reference.CommentId, member.Id, received, reference.Url);
+    }
+
+    internal static bool IsWordCommentNotification(JsonNode message)
+    {
+        var id = message["internetMessageId"]?.GetValue<string>() ?? string.Empty;
+        return id.StartsWith("<CommentWord-", StringComparison.OrdinalIgnoreCase)
+            && id.EndsWith("@odspnotify>", StringComparison.OrdinalIgnoreCase);
     }
 
     internal async Task<StandingJobEvent> ReadCommentAsync(
