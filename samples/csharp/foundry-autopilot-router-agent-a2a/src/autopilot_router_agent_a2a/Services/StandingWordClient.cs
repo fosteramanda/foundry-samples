@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -7,7 +8,14 @@ using WorkstreamManager.Models;
 namespace WorkstreamManager.Services;
 
 internal sealed record StandingWordDocument(
-    string ItemId, string DriveId, string Content, IReadOnlyDictionary<string, string> Comments);
+    string ItemId, string DriveId, string Content, IReadOnlyDictionary<string, string> Comments)
+{
+    internal string? ResolveCommentId(string id)
+    {
+        var normalized = StandingWordClient.NormalizeCommentId(id);
+        return Comments.Keys.SingleOrDefault(key => StandingWordClient.NormalizeCommentId(key) == normalized);
+    }
+}
 
 internal sealed class StandingWordClient(HttpClient http, McpServerConfig? server, string token)
 {
@@ -88,17 +96,30 @@ internal sealed class StandingWordClient(HttpClient http, McpServerConfig? serve
     internal static IReadOnlyDictionary<string, string> ParseComments(string text)
     {
         var comments = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var identities = new HashSet<string>(StringComparer.Ordinal);
         if (string.IsNullOrWhiteSpace(text) || text.Trim().Equals("No comments found.", StringComparison.OrdinalIgnoreCase))
             return comments;
         var matches = Regex.Matches(text,
             @"(?:^|\r?\n)Comment (?<id>[A-Fa-f0-9]+):[ \t]*(?<text>.*?)(?=\r?\nAnchor \k<id>:|\r?\nComment [A-Fa-f0-9]+:|\z)",
             RegexOptions.Singleline | RegexOptions.CultureInvariant);
         foreach (Match match in matches)
-            if (!comments.TryAdd(match.Groups["id"].Value.ToUpperInvariant(), match.Groups["text"].Value.Trim()))
+        {
+            var id = match.Groups["id"].Value.ToUpperInvariant();
+            if (!identities.Add(NormalizeCommentId(id)) || !comments.TryAdd(id, match.Groups["text"].Value.Trim()))
                 throw new InvalidOperationException("Word returned an ambiguous comment identity.");
+        }
         if (comments.Count == 0)
             throw new InvalidOperationException("The Word comment response format was not recognized; no comment was ingested.");
         return comments;
+    }
+
+    internal static string NormalizeCommentId(string id)
+    {
+        // Notification navigation uses a number; Word's tool omits leading hexadecimal zeros.
+        if (string.IsNullOrEmpty(id) || id.Length > 8
+            || !uint.TryParse(id, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var value))
+            throw new InvalidOperationException("The Word comment identity is not a valid 32-bit hexadecimal value.");
+        return value.ToString("X", CultureInfo.InvariantCulture);
     }
 
     private async Task<JsonNode> RpcAsync(string method, JsonNode? parameters, bool notification = false)

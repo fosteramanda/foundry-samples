@@ -116,6 +116,58 @@ public class StandingBriefTests
         Assert.Equal(mail.Content, native.Content);
     }
 
+    [Theory]
+    [InlineData("21CB172", 35434866u)]
+    [InlineData("A", 10u)]
+    [InlineData("0", 0u)]
+    public async Task UnpaddedWordIdsMatchNumericNotificationsAndKeepTheirReplyForm(string wordId, uint notificationId)
+    {
+        using var fixture = new Fixture();
+        const string comment = "@Review Agent Readiness approval is not launch authorization.";
+        fixture.Comments = $"Comment {wordId}: {comment}\r\nAnchor {wordId}: Review\r\n";
+        var mail = await fixture.Publisher.ReadCommentNotificationAsync(
+            fixture.Job, [fixture.Brief], fixture.Notification(commentId: notificationId), fixture.Caller);
+        var native = await fixture.Publisher.ReadCommentAsync(
+            fixture.Brief, notificationId.ToString("X8"), fixture.Caller.Id, fixture.Created);
+
+        Assert.Equal(comment, mail.Content);
+        Assert.Equal(wordId, mail.CommentId);
+        Assert.Equal(mail.Id, native.Id);
+        Assert.Equal(StandingJobStore.Hash(
+            $"word:{fixture.DocumentId:D}:{wordId}:{fixture.Caller.Id}:{comment}"), mail.Id);
+        Assert.Equal("ABC01234", await fixture.Publisher.ReplyAsync(mail, "Launch still needs both commitments."));
+        Assert.Equal(wordId, fixture.LastReply!["commentId"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ReplyUsesTheCurrentWireFormOfTheSameNumericComment()
+    {
+        using var fixture = new Fixture();
+        const string comment = "The checklist is independent.";
+        fixture.Comments = $"Comment 21CB172: {comment}\r\nAnchor 21CB172: Review\r\n";
+        var source = await fixture.Publisher.ReadCommentNotificationAsync(
+            fixture.Job, [fixture.Brief], fixture.Notification(commentId: 35434866), fixture.Caller);
+        fixture.Comments = $"Comment 021CB172: {comment}\r\nAnchor 021CB172: Review\r\n";
+        var reread = await fixture.Publisher.ReadCommentAsync(
+            fixture.Brief, "021CB172", fixture.Caller.Id, fixture.Created);
+        Assert.Equal(source.Id, reread.Id);
+
+        await fixture.Publisher.ReplyAsync(source, "Readiness can progress independently.");
+
+        Assert.Equal("021CB172", fixture.LastReply!["commentId"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task DifferentCommentIdentityIsNotMatchedByEqualText()
+    {
+        using var fixture = new Fixture();
+        fixture.Comments = "Comment 21CB173: Same text.\r\nAnchor 21CB173: Review\r\n";
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Publisher.ReadCommentNotificationAsync(
+                fixture.Job, [fixture.Brief], fixture.Notification(commentId: 35434866), fixture.Caller));
+        Assert.Equal(0, fixture.Replies);
+    }
+
     [Fact]
     public async Task NotificationSenderMustMatchTheAuthenticatedParticipant()
     {
@@ -190,6 +242,23 @@ public class StandingBriefTests
         Assert.Equal("Other comment", comments["36B02C00"]);
         Assert.Throws<InvalidOperationException>(() => StandingWordClient.ParseComments("An unrecognized response"));
         Assert.Empty(StandingWordClient.ParseComments("No comments found.\r\n"));
+    }
+
+    [Theory]
+    [InlineData("ABC123", "00ABC123")]
+    [InlineData("21cb172", "021CB172")]
+    public void DifferentWireFormsOfOneCommentCannotBecomeTwoSources(string first, string second)
+    {
+        Assert.Throws<InvalidOperationException>(() => StandingWordClient.ParseComments(
+            $"Comment {first}: First text.\r\nAnchor {first}: Review\r\n"
+            + $"Comment {second}: Different text.\r\nAnchor {second}: Review\r\n"));
+    }
+
+    [Fact]
+    public void CommentIdsOutsideTheNumericNotificationRangeAreRejected()
+    {
+        Assert.Throws<InvalidOperationException>(() => StandingWordClient.ParseComments(
+            "Comment 100000000: Unsupported identity.\r\nAnchor 100000000: Review\r\n"));
     }
 
     [Fact]
@@ -270,9 +339,9 @@ public class StandingBriefTests
                 "word-token", "graph-token", AgentUser, NullLogger.Instance);
         }
 
-        public JsonNode Notification(Guid? document = null)
+        public JsonNode Notification(Guid? document = null, uint commentId = 917515264)
         {
-            var nav = Convert.ToBase64String(Encoding.UTF8.GetBytes("""{"c":917515264}"""));
+            var nav = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { c = commentId })));
             var url = $"https://tenant.sharepoint.com/Documents/review.docx?d=w{document ?? DocumentId:N}&amp;nav={nav}";
             return JsonSerializer.SerializeToNode(new
             {
