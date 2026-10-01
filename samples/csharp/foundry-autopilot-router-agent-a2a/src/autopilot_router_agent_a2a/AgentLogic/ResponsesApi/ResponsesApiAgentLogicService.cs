@@ -122,7 +122,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 {
                     Type = ActivityTypes.Message, ChannelId = "msteams",
                     Conversation = new ConversationAccount { Id = job.ConversationId }
-                }, $"<p><strong>{System.Net.WebUtility.HtmlEncode(job.Title)}</strong></p>{html}", CancellationToken.None),
+                }, WithStandingAttribution($"<p><strong>{System.Net.WebUtility.HtmlEncode(job.Title)}</strong></p>{html}"), CancellationToken.None),
                 async (id, question) => await _workIqA2ATools.AskForStandingJobAsync(id, question),
                 _accessControl.ResolveStandingJobMemberAsync, _logger,
                 briefs.PublishAsync, briefs.ReconcileAsync, briefs.ReplyAsync);
@@ -336,7 +336,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             var routed = await RouteStandingChatAsync(standingTurn, rawUserMessage);
             if (routed.Handled)
             {
-                await SendChatAnswerAsync(turnContext, routed.Response, verdict.WasExplicitlyMentioned, cancellationToken);
+                await SendChatAnswerAsync(turnContext, WithStandingAttribution(routed.Response), verdict.WasExplicitlyMentioned, cancellationToken);
                 return;
             }
         }
@@ -405,6 +405,20 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 includeMention: wasMentioned);
             await turnContext.SendActivityAsync(outboundActivity, cancellationToken);
         }
+    }
+
+    private string WithStandingAttribution(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return html;
+        foreach (var delegation in _workIqA2ATools.Delegations.DistinctBy(item => item.AgentId))
+        {
+            if (html.Contains(delegation.DisplayName, StringComparison.OrdinalIgnoreCase)) continue;
+            var name = System.Net.WebUtility.HtmlEncode(delegation.DisplayName);
+            html += delegation.Outcome == WorkIqA2AToolHandler.DelegationOutcome.Answered
+                ? $"<p>Specialist evidence: {name}.</p>"
+                : $"<p>{name} has not returned a completed answer yet.</p>";
+        }
+        return html;
     }
 
     private async Task<(bool Handled, string Response)> RouteStandingChatAsync(StandingJobTurn turn, string text)
