@@ -25,28 +25,49 @@ internal sealed class StandingBriefPublisher(
         var safeTitle = new string(job.Title.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
         if (safeTitle.Length > 90) safeTitle = safeTitle[..90];
         var name = $"{safeTitle} - {job.Id[..8]} - v{version}.docx";
-        var initialize = await RpcAsync("initialize", new JsonObject
+        var filter = Uri.EscapeDataString($"name eq '{name.Replace("'", "''")}'");
+        var matches = await GraphAsync(HttpMethod.Get,
+            $"me/drive/root/children?$filter={filter}&$select=id,name,webUrl,createdBy,sharepointIds", null);
+        var existing = matches["value"] as JsonArray
+            ?? throw new InvalidOperationException("The agent drive returned no document listing.");
+        var exact = existing.Where(item => string.Equals(
+            item?["name"]?.GetValue<string>(), name, StringComparison.Ordinal)).ToList();
+        if (exact.Count > 1)
+            throw new InvalidOperationException("More than one matching brief exists; reconcile the agent drive manually.");
+        JsonNode graphItem;
+        if (exact.Count == 1)
         {
-            ["protocolVersion"] = "2025-03-26",
-            ["capabilities"] = new JsonObject(),
-            ["clientInfo"] = new JsonObject { ["name"] = "standing-brief", ["version"] = "1.0" }
-        }, null);
-        var protocol = initialize.Result?["protocolVersion"]?.GetValue<string>() ?? "2025-03-26";
-        await RpcAsync("notifications/initialized", null, initialize.Session, protocol, notification: true);
-        var created = await RpcAsync("tools/call", new JsonObject
+            graphItem = exact[0]!;
+            logger.LogInformation("Standing brief publication is reconciling an existing file: job={JobId} version={Version}",
+                job.Id, version);
+        }
+        else
         {
-            ["name"] = "CreateDocument",
-            ["arguments"] = new JsonObject { ["fileName"] = name, ["contentInHtml"] = content }
-        }, initialize.Session, protocol);
-        var payload = ToolPayload(created.Result);
-        var item = Property(payload, "driveItem")
-            ?? throw new InvalidOperationException("Word returned no created document receipt.");
-        if (item is JsonValue value && value.TryGetValue<string>(out var text))
-            item = JsonNode.Parse(text) ?? throw new InvalidOperationException("Word returned invalid document metadata.");
-        var itemId = Property(item, "id")?.GetValue<string>()
-            ?? throw new InvalidOperationException("Word returned no drive item ID.");
-        var graphItem = await GraphAsync(HttpMethod.Get,
-            $"me/drive/items/{Uri.EscapeDataString(itemId)}?$select=id,name,webUrl,createdBy,sharepointIds", null);
+            var initialize = await RpcAsync("initialize", new JsonObject
+            {
+                ["protocolVersion"] = "2025-03-26",
+                ["capabilities"] = new JsonObject(),
+                ["clientInfo"] = new JsonObject { ["name"] = "standing-brief", ["version"] = "1.0" }
+            }, null);
+            var protocol = initialize.Result?["protocolVersion"]?.GetValue<string>() ?? "2025-03-26";
+            await RpcAsync("notifications/initialized", null, initialize.Session, protocol, notification: true);
+            var created = await RpcAsync("tools/call", new JsonObject
+            {
+                ["name"] = "CreateDocument",
+                ["arguments"] = new JsonObject { ["fileName"] = name, ["contentInHtml"] = content }
+            }, initialize.Session, protocol);
+            var payload = ToolPayload(created.Result);
+            var item = Property(payload, "driveItem")
+                ?? throw new InvalidOperationException("Word returned no created document receipt.");
+            if (item is JsonValue value && value.TryGetValue<string>(out var text))
+                item = JsonNode.Parse(text) ?? throw new InvalidOperationException("Word returned invalid document metadata.");
+            var createdItemId = Property(item, "id")?.GetValue<string>()
+                ?? throw new InvalidOperationException("Word returned no drive item ID.");
+            graphItem = await GraphAsync(HttpMethod.Get,
+                $"me/drive/items/{Uri.EscapeDataString(createdItemId)}?$select=id,name,webUrl,createdBy,sharepointIds", null);
+        }
+        var itemId = graphItem["id"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("The created document has no drive item ID.");
         var creator = graphItem["createdBy"]?["user"]?["id"]?.GetValue<string>();
         if (!Guid.TryParse(creator, out var createdBy) || createdBy != agentUserId)
             throw new InvalidOperationException("The document was not verified as created by this agent user.");
@@ -66,7 +87,7 @@ internal sealed class StandingBriefPublisher(
         }
         var recipients = new JsonArray();
         foreach (var member in job.Members.DistinctBy(member => member.Id))
-            recipients.Add(new JsonObject { ["objectId"] = member.Id, ["email"] = member.Email });
+            recipients.Add(new JsonObject { ["email"] = member.Email });
         var permissions = await GraphAsync(HttpMethod.Post, $"me/drive/items/{Uri.EscapeDataString(itemId)}/invite",
             new JsonObject
             {
