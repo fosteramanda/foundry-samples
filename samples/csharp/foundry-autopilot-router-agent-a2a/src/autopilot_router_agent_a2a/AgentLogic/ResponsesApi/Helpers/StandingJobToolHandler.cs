@@ -162,7 +162,7 @@ internal sealed class StandingJobToolHandler(
         if (job.CronExpression.Length > 100 || job.CronExpression.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length != 5)
             throw new ArgumentException("Use a five-field cron expression.");
         if (job.Recipients.Count == 0) job.Recipients.Add(job.Members.Single(member => member.Id == Turn.Caller.ManagerId).Email);
-        job.RoutineName = "standing-" + Guid.Parse(job.Id).ToString("N");
+        job.RoutineName = RoutineToolHandler.BuildStandingRoutineName(job.Id);
         await coordinator.CreateAsync(job, Turn.Caller);
         await coordinator.CaptureAsync(job.Id, Turn.Caller, Turn.Event! with { Kind = "mandate" });
         var scheduled = await configureSchedule(job, true);
@@ -195,6 +195,7 @@ internal sealed class StandingJobToolHandler(
             if (args.ContainsKey("source_bindings")) current.Bindings = Bindings(args);
             if (args.ContainsKey("specialist_agent_ids")) current.SpecialistAgentIds = Strings(args, "specialist_agent_ids", 30);
             if (args.ContainsKey("review_utc")) current.ReviewUtc = Utc(args, "review_utc");
+            current.RoutineName = RoutineToolHandler.BuildStandingRoutineName(current.Id);
             if (args.ContainsKey("enabled")) current.Paused = true;
         });
         if (args["enabled"] is JsonValue enabled)

@@ -333,13 +333,14 @@ public class RoutineToolHandler
             $"{StandingReviewCoordinator.Marker(job.Id)} Check this standing job using its durable mandate and recorded evidence.");
         if (input == null)
             return (false, "The standing job lacks a valid conversation route.");
+        var routineName = BuildStandingRoutineName(job.Id);
         var body = new JsonObject
         {
             ["description"] = $"Standing job: {job.Title}",
             ["enabled"] = enabled,
             ["triggers"] = new JsonObject
             {
-                [job.RoutineName] = new JsonObject
+                [routineName] = new JsonObject
                 {
                     ["type"] = "schedule",
                     ["cron_expression"] = job.CronExpression,
@@ -354,11 +355,14 @@ public class RoutineToolHandler
             }
         };
         var (ok, _, error) = await SendAsync(HttpMethod.Put,
-            $"routines/{Uri.EscapeDataString(job.RoutineName)}", body);
+            $"routines/{Uri.EscapeDataString(routineName)}", body);
         if (!ok)
             _logger.LogWarning("Standing-job schedule configuration failed for {JobId}: {Error}", job.Id, error);
         return (ok, ok ? $"Schedule {(enabled ? "enabled" : "paused")}." : error ?? "No schedule receipt.");
     }
+
+    internal static string BuildStandingRoutineName(string jobId) =>
+        "sj-" + Guid.Parse(jobId).ToString("N");
 
     private static string BuildStoredInstruction(string instruction, string delivery, string? recipient)
     {
