@@ -225,6 +225,25 @@ public class StandingJobTests
     }
 
     [Fact]
+    public async Task AnUncertainReceiptCanBeFinalizedAfterDestinationReconciliation()
+    {
+        var h = await Harness.CreateAsync();
+        Task<(bool? Accepted, string Detail)> Send() =>
+            throw new HttpRequestException("Response lost after submission.");
+        await h.Coordinator.OnceAsync(
+            h.Job.Id, h.Manager, "publish", "brief:original", "payload", Send, scope: "publish_brief");
+
+        var uncertain = await h.Coordinator.ScopeReceiptAsync(h.Job.Id, h.Manager, "publish_brief");
+        Assert.Equal("uncertain", uncertain!.State);
+        await h.Coordinator.CompleteUncertainAsync(
+            h.Job.Id, h.Manager, "publish_brief", "verified existing file");
+
+        var accepted = await h.Coordinator.ScopeReceiptAsync(h.Job.Id, h.Manager, "publish_brief");
+        Assert.Equal("accepted", accepted!.State);
+        Assert.Equal("verified existing file", accepted.Detail);
+    }
+
+    [Fact]
     public async Task ConcurrentDifferentKeysCannotBothClaimAnExternalActionScope()
     {
         var h = await Harness.CreateAsync();

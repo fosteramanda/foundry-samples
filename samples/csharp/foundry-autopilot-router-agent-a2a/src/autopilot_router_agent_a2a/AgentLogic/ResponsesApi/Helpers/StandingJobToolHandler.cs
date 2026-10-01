@@ -22,7 +22,9 @@ internal sealed class StandingJobToolHandler(
     Func<string, string, Task<string?>> askAgent,
     Func<string, Task<StandingJobMember?>> resolveMember,
     ILogger logger,
-    Func<StandingJob, int, string, string, Task<StandingJobBrief>>? publishBrief = null)
+    Func<StandingJob, int, string, string, Task<StandingJobBrief>>? publishBrief = null,
+    Func<StandingJob, int, string, Task<StandingJobBrief>>? reconcileBrief = null,
+    Func<StandingJob, int, string, Task<StandingJobBrief?>>? tryReconcileBrief = null)
 {
     internal StandingJobTurn? Turn { get; set; }
     internal bool IsEnabled => coordinator.IsAvailable && Turn != null;
@@ -407,7 +409,34 @@ internal sealed class StandingJobToolHandler(
     {
         if (publishBrief == null) throw new InvalidOperationException("Word publication is not configured.");
         var fingerprint = await FactsAsync(job);
-        var existing = await coordinator.RecordsAsync<StandingJobBrief>(job.Id, "brief");
+        var existing = (await coordinator.RecordsAsync<StandingJobBrief>(job.Id, "brief")).ToList();
+        if (existing.Count == 0 && reconcileBrief != null)
+        {
+            var uncertain = await coordinator.ScopeReceiptAsync(job.Id, Turn!.Caller, "publish_brief");
+            if (uncertain?.State == "uncertain"
+                && uncertain.Key.StartsWith("brief:", StringComparison.Ordinal)
+                && uncertain.Key.Length > "brief:".Length)
+            {
+                var priorFingerprint = uncertain.Key["brief:".Length..];
+                var recovered = await reconcileBrief(job, 1, priorFingerprint);
+                await coordinator.RegisterBriefAsync(job.Id, Turn.Caller, recovered);
+                await coordinator.CompleteUncertainAsync(
+                    job.Id, Turn.Caller, "publish_brief", Json(recovered));
+                existing = [recovered];
+            }
+        }
+        if (tryReconcileBrief != null)
+        {
+            for (var version = existing.Count == 0 ? 1 : existing.Max(brief => brief.Version) + 1;
+                version <= 100; version++)
+            {
+                var recovered = await tryReconcileBrief(
+                    job, version, StandingJobStore.Hash($"reconciled-existing:{job.Id}:{version}"));
+                if (recovered == null) break;
+                await coordinator.RegisterBriefAsync(job.Id, Turn!.Caller, recovered);
+                existing.Add(recovered);
+            }
+        }
         var nextVersion = existing.Count == 0 ? 1 : existing.Max(brief => brief.Version) + 1;
         var content = new StringBuilder();
         static string Html(string value) => System.Net.WebUtility.HtmlEncode(value);

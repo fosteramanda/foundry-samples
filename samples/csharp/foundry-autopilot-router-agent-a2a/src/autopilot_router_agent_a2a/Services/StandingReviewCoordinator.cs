@@ -365,6 +365,39 @@ internal sealed class StandingReviewCoordinator(
         return receipt;
     }
 
+    internal async Task<StandingJobReceipt?> ScopeReceiptAsync(
+        string id, StandingJobCaller caller, string scope)
+    {
+        await GetAsync(id, caller);
+        var row = await store.ReadAsync(partition, StandingJobStore.Key(id, "action_scope", scope));
+        return row == null ? null : StandingJobStore.Value<StandingJobReceipt>(row);
+    }
+
+    internal async Task CompleteUncertainAsync(
+        string id, StandingJobCaller caller, string scope, string detail)
+    {
+        await GetAsync(id, caller);
+        var scopeKey = StandingJobStore.Key(id, "action_scope", scope);
+        var scopeRow = await store.ReadAsync(partition, scopeKey)
+            ?? throw new InvalidOperationException("The uncertain action scope no longer exists.");
+        var prior = StandingJobStore.Value<StandingJobReceipt>(scopeRow);
+        if (prior.State == "accepted") return;
+        if (prior.State != "uncertain")
+            throw new InvalidOperationException("Only an uncertain external action can be reconciled.");
+        prior.State = "accepted";
+        prior.Detail = detail;
+        prior.CompletedUtc = Now;
+        var receiptKey = StandingJobStore.Key(id, "receipt", prior.Key);
+        var receiptRow = await store.ReadAsync(partition, receiptKey)
+            ?? throw new InvalidOperationException("The uncertain action receipt no longer exists.");
+        if (!await store.TryReplaceAsync(StandingJobStore.Row(partition, receiptKey, prior), receiptRow.ETag))
+            throw new InvalidOperationException("The reconciled action receipt changed concurrently.");
+        scopeRow = await store.ReadAsync(partition, scopeKey)
+            ?? throw new InvalidOperationException("The uncertain action scope disappeared during reconciliation.");
+        if (!await store.TryReplaceAsync(StandingJobStore.Row(partition, scopeKey, prior), scopeRow.ETag))
+            throw new InvalidOperationException("The receipt was reconciled but its action scope changed concurrently.");
+    }
+
     private async Task FinishScopeAsync(string key, StandingJobReceipt receipt)
     {
         var row = await store.ReadAsync(partition, key)
