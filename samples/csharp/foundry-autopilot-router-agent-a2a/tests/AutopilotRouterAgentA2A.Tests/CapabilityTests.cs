@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
+using Azure.Core;
 using Microsoft.Agents.Core.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -206,6 +207,79 @@ public class CapabilityTests
         }
     }
 
+    [Fact]
+    public async Task ToolIterationLimitDoesNotPersistAnUnfinishedResponse()
+    {
+        RecordingHandler? handler = null;
+        handler = new RecordingHandler(responder: _ =>
+        {
+            var call = handler!.Calls.Count;
+            var body = call <= 11
+                ? $$"""{"id":"resp-{{call}}","status":"completed","output":[{"type":"function_call","call_id":"call-{{call}}","name":"test_tool","arguments":"{}"}]}"""
+                : """{"id":"resp-final","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"recovered"}]}]}""";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+        });
+        using var http = new HttpClient(handler);
+        var client = new ResponsesApiClient(new AgentMetadata(), NullLogger.Instance,
+            Config(("AzureOpenAIEndpoint", "https://example.openai.azure.com"), ("ModelDeployment", "test")),
+            "test-token", [], http, responseCredential: new TestTokenCredential());
+        var tools = new List<JsonNode>
+        {
+            JsonNode.Parse("""{"type":"function","name":"test_tool","parameters":{"type":"object","properties":{}}}""")!
+        };
+        var conversationId = "tool-limit-" + Guid.NewGuid();
+
+        await client.InvokeAsync("first", conversationId, includeMcpTools: false,
+            additionalTools: tools, localToolExecutor: (_, _) => Task.FromResult<string?>("{}"));
+        var result = await client.InvokeAsync("second", conversationId, includeMcpTools: false,
+            additionalTools: tools, localToolExecutor: (_, _) => Task.FromResult<string?>("{}"));
+
+        Assert.Equal("recovered", result);
+        Assert.Equal(12, handler.Calls.Count);
+        Assert.DoesNotContain("previous_response_id", handler.Calls[11].Body);
+        client.ClearPreviousResponseId(conversationId);
+    }
+
+    [Fact]
+    public async Task MissingToolOutputClearsTheBrokenChainAndRetriesFresh()
+    {
+        RecordingHandler? handler = null;
+        handler = new RecordingHandler(responder: _ =>
+        {
+            var call = handler!.Calls.Count;
+            if (call == 1)
+            {
+                return JsonResponse("""{"id":"resp-old","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"saved"}]}]}""");
+            }
+            if (call == 2)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent(
+                        """{"error":{"message":"No tool output found for function call call-broken.","type":"invalid_request_error","param":"input","code":null}}""",
+                        Encoding.UTF8, "application/json")
+                };
+            }
+            return JsonResponse("""{"id":"resp-new","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"recovered"}]}]}""");
+        });
+        using var http = new HttpClient(handler);
+        var client = new ResponsesApiClient(new AgentMetadata(), NullLogger.Instance,
+            Config(("AzureOpenAIEndpoint", "https://example.openai.azure.com"), ("ModelDeployment", "test")),
+            "test-token", [], http, responseCredential: new TestTokenCredential());
+        var conversationId = "broken-chain-" + Guid.NewGuid();
+
+        Assert.Equal("saved", await client.InvokeAsync("first", conversationId, includeMcpTools: false));
+        Assert.Equal("recovered", await client.InvokeAsync("second", conversationId, includeMcpTools: false));
+
+        Assert.Equal(3, handler.Calls.Count);
+        Assert.Contains("previous_response_id", handler.Calls[1].Body);
+        Assert.DoesNotContain("previous_response_id", handler.Calls[2].Body);
+        client.ClearPreviousResponseId(conversationId);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -310,5 +384,24 @@ public class CapabilityTests
                 Content = new StringContent(responseBody, Encoding.UTF8, "application/json")
             };
         }
+    }
+
+    private static HttpResponseMessage JsonResponse(string body) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+
+    private sealed class TestTokenCredential : TokenCredential
+    {
+        private static readonly AccessToken Token = new("test-token", DateTimeOffset.MaxValue);
+
+        public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+            Token;
+
+        public override ValueTask<AccessToken> GetTokenAsync(
+            TokenRequestContext requestContext,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Token);
     }
 }

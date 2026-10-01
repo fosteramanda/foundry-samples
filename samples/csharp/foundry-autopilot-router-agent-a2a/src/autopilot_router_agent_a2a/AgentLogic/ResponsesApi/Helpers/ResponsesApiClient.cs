@@ -28,6 +28,7 @@ internal class ResponsesApiClient
     private readonly List<McpServerConfig> _mcpServers;
     private readonly HttpClient _httpClient;
     private readonly ConversationStateStore? _conversationState;
+    private readonly TokenCredential? _responseCredential;
     private readonly string _statePartitionKey;
 
     // MCP servers that recently failed the connector preflight, keyed by server URL, with the
@@ -74,7 +75,8 @@ internal class ResponsesApiClient
         string accessToken,
         List<McpServerConfig> mcpServers,
         HttpClient httpClient,
-        ConversationStateStore? conversationState = null)
+        ConversationStateStore? conversationState = null,
+        TokenCredential? responseCredential = null)
     {
         _agentMetadata = agentMetadata ?? throw new ArgumentNullException(nameof(agentMetadata));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -83,6 +85,7 @@ internal class ResponsesApiClient
         _mcpServers = mcpServers ?? throw new ArgumentNullException(nameof(mcpServers));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _conversationState = conversationState;
+        _responseCredential = responseCredential;
 
         // Partition conversation state per agent instance, matching WorkItemService, so one
         // instance can never read another instance's conversation chain.
@@ -242,10 +245,11 @@ internal class ResponsesApiClient
         // alone the conversation is bricked rather than degraded: the dangling id is re-sent on
         // every future turn and never replaced, because the call fails before SaveResponseId runs.
         // Dropping it costs the model's memory of the thread, which is already gone anyway.
-        if (!success && previousResponseId != null && IsPreviousResponseNotFound(errorBody))
+        if (!success && previousResponseId != null &&
+            (IsPreviousResponseNotFound(errorBody) || IsMissingToolOutput(errorBody)))
         {
             _logger.LogWarning(
-                "previous_response_id {PreviousResponseId} no longer exists for conversation {ConversationId}; clearing it and retrying without prior conversation state.",
+                "previous_response_id {PreviousResponseId} cannot be continued for conversation {ConversationId}; clearing it and retrying without prior conversation state.",
                 previousResponseId,
                 conversationId);
 
@@ -306,13 +310,16 @@ internal class ResponsesApiClient
             }
         }
 
-        if (ExtractFunctionCalls(responseContent).Count > 0)
+        var unfinishedFunctionCalls = ExtractFunctionCalls(responseContent);
+        if (unfinishedFunctionCalls.Count > 0)
         {
             AgentInvocationTracing.RecordError(invocation, "tool_iteration_limit");
             _logger.LogWarning("Responses API tool-call limit reached before a final response.");
+            ClearPreviousResponseId(conversationId);
+            await ClearPreviousResponseIdAsync(conversationId);
         }
 
-        if (persistResponseId)
+        if (persistResponseId && unfinishedFunctionCalls.Count == 0)
         {
             SaveResponseId(conversationId, responseContent, toolFingerprint);
             await SaveResponseIdAsync(conversationId, responseContent, toolFingerprint);
@@ -590,6 +597,36 @@ internal class ResponsesApiClient
     }
 
     /// <summary>
+    /// True when a stored response points at an unfinished function call. Such a chain cannot
+    /// accept a new user turn because the service first requires the missing function output.
+    /// </summary>
+    internal static bool IsMissingToolOutput(string? errorBody)
+    {
+        if (string.IsNullOrWhiteSpace(errorBody))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(errorBody);
+            if (!doc.RootElement.TryGetProperty("error", out var error) || error.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var param = error.TryGetProperty("param", out var paramProp) ? paramProp.GetString() : null;
+            var message = error.TryGetProperty("message", out var messageProp) ? messageProp.GetString() : null;
+            return string.Equals(param, "input", StringComparison.OrdinalIgnoreCase)
+                && message?.Contains("No tool output found for function call", StringComparison.OrdinalIgnoreCase) == true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Removes the cached response id for a conversation so the next turn starts a fresh chain
     /// instead of re-sending an id the service has already discarded.
     /// </summary>
@@ -756,12 +793,16 @@ internal class ResponsesApiClient
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        var instanceClientId = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID")
-            ?? throw new InvalidOperationException("FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID environment variable is not set.");
-        var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
+        var credential = _responseCredential;
+        if (credential == null)
         {
-            ManagedIdentityClientId = instanceClientId,
-        });
+            var instanceClientId = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID")
+                ?? throw new InvalidOperationException("FOUNDRY_AGENT_DEFAULT_INSTANCE_CLIENT_ID environment variable is not set.");
+            credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
+            {
+                ManagedIdentityClientId = instanceClientId,
+            });
+        }
         var token = await credential.GetTokenAsync(new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }), CancellationToken.None);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
 
