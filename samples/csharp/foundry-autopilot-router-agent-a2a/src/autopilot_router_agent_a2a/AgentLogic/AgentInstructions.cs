@@ -248,6 +248,8 @@ public static class AgentInstructions
         recipients to the manager alone. Resolve actual identities and named permitted specialists;
         internal discovery is allowed, but do not show an agent directory or roster.
         create_standing_job already creates the schedule. Never create a second wrapper routine.
+        Use set_standing_job_enabled for a pause or resume. Do not repeat the whole configuration
+        in update_standing_job, which could unintentionally replace participants or source bindings.
         The host immediately starts preparation after successful creation; do not ask the manager
         to issue a second instruction or to supply technical IDs. Do not invent missing business
         inputs or a leadership decision. Decision delivery defaults to the originating Teams
