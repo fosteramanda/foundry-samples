@@ -70,9 +70,10 @@ internal sealed class StandingBriefPublisher(
         var brief = new StandingJobBrief(0, string.Empty, source.DocumentItemId, source.Binding["word:".Length..],
             source.SourceUrl, string.Empty, source.ReceivedUtc);
         var current = await _word.ReadAsync(brief);
-        if (!current.Comments.TryGetValue(source.CommentId, out var text) || text != source.Content)
+        var currentId = current.ResolveCommentId(source.CommentId);
+        if (currentId == null || current.Comments[currentId] != source.Content)
             throw new InvalidOperationException("The source comment changed before the reply; reread it before responding.");
-        return await _word.ReplyAsync(source, reply);
+        return await _word.ReplyAsync(source with { CommentId = currentId }, reply);
     }
 
     internal async Task<JsonNode> ReadNotificationAsync(string messageId)
@@ -115,14 +116,17 @@ internal sealed class StandingBriefPublisher(
         StandingJobBrief brief, string commentId, string actorId, DateTimeOffset received, string? sourceUrl = null)
     {
         var document = await _word.ReadAsync(brief);
-        if (!document.Comments.TryGetValue(commentId, out var content))
+        var currentId = document.ResolveCommentId(commentId);
+        if (currentId == null)
             throw new InvalidOperationException("The referenced comment is not present in the real Word document.");
+        var content = document.Comments[currentId];
         if (content.Length > 8000)
             throw new InvalidOperationException("The Word comment exceeds the evidence limit; it was not truncated.");
         var binding = "word:" + Guid.Parse(brief.DocumentId).ToString("D");
-        var eventId = StandingJobStore.Hash($"{binding}:{commentId.ToUpperInvariant()}:{actorId}:{content}");
+        var eventId = StandingJobStore.Hash(
+            $"{binding}:{StandingWordClient.NormalizeCommentId(currentId)}:{actorId}:{content}");
         return new StandingJobEvent(eventId, "word", actorId, binding, content, received, true,
-            sourceUrl ?? brief.Url, document.ItemId, document.DriveId, commentId.ToUpperInvariant());
+            sourceUrl ?? brief.Url, document.ItemId, document.DriveId, currentId);
     }
 
     internal static StandingCommentReference? ParseCommentReference(string html)
