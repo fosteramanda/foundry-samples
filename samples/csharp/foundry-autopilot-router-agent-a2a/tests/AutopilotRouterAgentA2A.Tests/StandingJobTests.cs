@@ -317,6 +317,25 @@ public class StandingJobTests
     }
 
     [Fact]
+    public async Task FollowUpWaitsForTheActualDeadlineAndThenRunsOnlyOnce()
+    {
+        var h = await Harness.CreateAsync();
+        var id = h.Items.Seed(h.Job.Id, h.Owner.Id, "open", h.Clock.GetUtcNow().AddMinutes(5));
+        h.SetTurn(h.Manager, "tick", "", automatic: true);
+        var args = new
+        {
+            job_id = h.Job.Id, purpose = "follow_up", related_id = id, delivery = "email",
+            recipients = new[] { h.Owner.Email }, subject = "Confirmation needed", body_html = "Please confirm completion."
+        };
+        Assert.False((await h.Call("send_standing_message", args))["success"]!.GetValue<bool>());
+        Assert.Equal(0, h.MailCalls);
+        h.Clock.Advance(TimeSpan.FromMinutes(5));
+        Assert.Equal("accepted", (await h.Call("send_standing_message", args))["state"]!.GetValue<string>());
+        await h.Call("send_standing_message", args);
+        Assert.Equal(1, h.MailCalls);
+    }
+
+    [Fact]
     public async Task PendingSpecialistIsNotRecordedAsAnAnswerOrAutomaticallyReissued()
     {
         var h = await Harness.CreateAsync();

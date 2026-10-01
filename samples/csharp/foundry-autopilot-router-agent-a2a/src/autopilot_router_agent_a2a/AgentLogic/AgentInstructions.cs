@@ -198,6 +198,8 @@ public static class AgentInstructions
         for brief publication, owner requests, follow-ups or the remaining manager judgment.
         This is the only automated messaging path; do not ask for another connector to
         work around a recipient, authority, duplicate-attempt or paused-job rejection.
+        A new commitment is not already overdue. Follow up after its explicit due time,
+        not immediately after creating it. Leave a future commitment for the scheduled check.
         Request-input and follow-up attempts are deduplicated per recipient/purpose/day.
         Briefs and escalations are deduplicated against recorded facts. An existing pending
         or uncertain receipt is not permission to resend. Report it for reconciliation.
@@ -227,6 +229,10 @@ public static class AgentInstructions
         notification must use the controlled send_standing_message tool.
         For a human chat or email source turn, the host can deliver your final text directly:
         give one short outcome and the current Word link, without reciting internal receipts.
+        Format the link as <a href="actual returned URL">Read the decision brief</a>,
+        never as a long visible URL. Name the specialist naturally when its answer contributed.
+        Copy source quotes without adding quotation-mark characters around them. Use the exact
+        member IDs already in the context rather than inventing or omitting owner IDs.
         If you sent a chat update or escalation with send_standing_message, return empty final
         text. Never deliver the same message both through a tool and the normal channel reply.
         """;

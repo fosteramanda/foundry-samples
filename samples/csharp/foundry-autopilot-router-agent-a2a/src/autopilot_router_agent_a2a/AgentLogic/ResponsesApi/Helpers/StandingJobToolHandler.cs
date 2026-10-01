@@ -62,7 +62,7 @@ internal sealed class StandingJobToolHandler(
             Tool("update_standing_commitment", "Update or close a commitment only with quoted evidence from its recorded owner or the manager. Closing requires actual completion confirmation, not merely sending a reminder.",
                 """{"job_id":{"type":"string"},"item_id":{"type":"string"},"status":{"type":"string","enum":["open","in_progress","closed"]},"due_utc":{"type":"string"},"owner_id":{"type":"string"},"evidence_event_id":{"type":"string"},"evidence_quote":{"type":"string"}}""",
                 ["job_id", "item_id", "evidence_quote"]),
-            Tool("send_standing_message", "Send a job message as the agent, within the manager-approved recipient list. Reminders are limited to one per recipient/purpose/day. Briefs and escalations are deduplicated against recorded facts. Use email for owners; chat is the job's original manager conversation. Never claim accepted email is independently verified inbox delivery.",
+            Tool("send_standing_message", "Send a job message as the agent, within the manager-approved recipient list. Follow-ups require an open commitment whose due time has passed. Reminders are limited to one per recipient/purpose/day. Briefs and escalations are deduplicated against recorded facts. Use email for owners; chat is the job's original manager conversation. Never claim accepted email is independently verified inbox delivery.",
                 """{"job_id":{"type":"string"},"purpose":{"type":"string","enum":["request_input","follow_up","brief","escalation"]},"related_id":{"type":"string"},"delivery":{"type":"string","enum":["email","chat"]},"recipients":{"type":"array","items":{"type":"string"}},"subject":{"type":"string"},"body_html":{"type":"string"}}""",
                 ["job_id", "purpose", "delivery", "subject", "body_html"]),
             Tool("ask_standing_specialist", "Use the existing generic A2A handler for a specialist explicitly permitted for this job. An empty or pending result is not a completed answer. Calls with the same question and facts are not automatically repeated.",
@@ -380,8 +380,8 @@ internal sealed class StandingJobToolHandler(
             if (item["standingJobId"]?.GetValue<string>() != job.Id || item["status"]?.GetValue<string>() == "closed")
                 throw new InvalidOperationException("Follow-ups require an open commitment in this job.");
             if (!DateTimeOffset.TryParse(item["eta"]?.GetValue<string>(), CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal, out var due) || due > coordinator.Now.AddDays(1))
-                throw new InvalidOperationException("This commitment is not yet within one day of its recorded due time.");
+                DateTimeStyles.AssumeUniversal, out var due) || due > coordinator.Now)
+                throw new InvalidOperationException("This commitment has not reached its recorded due time. Do not chase newly assigned work early.");
             ValidateOwnerRecipients(job, item["ownerAadObjectId"]!.GetValue<string>(), recipients, delivery);
         }
         var facts = await FactsAsync(job);
