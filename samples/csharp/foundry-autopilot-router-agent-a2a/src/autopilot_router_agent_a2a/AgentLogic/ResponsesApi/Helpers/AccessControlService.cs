@@ -43,7 +43,8 @@ internal class AccessControlService
         string? graphAccessToken,
         HttpClient httpClient,
         TeamsActivityHelper teamsHelper,
-        WorkItemToolHandler workItemTools)
+        WorkItemToolHandler workItemTools,
+        TableClient? allowListTable = null)
     {
         _agentMetadata = agentMetadata ?? throw new ArgumentNullException(nameof(agentMetadata));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -53,7 +54,7 @@ internal class AccessControlService
         _teamsHelper = teamsHelper ?? throw new ArgumentNullException(nameof(teamsHelper));
         _workItemTools = workItemTools ?? throw new ArgumentNullException(nameof(workItemTools));
         _directMessageAllowListWorkerKey = $"{_agentMetadata.TenantId:D}:{_agentMetadata.UserId:D}";
-        _directMessageAllowListTableClient = TryCreateDirectMessageAllowListTableClient();
+        _directMessageAllowListTableClient = allowListTable ?? TryCreateDirectMessageAllowListTableClient();
     }
     /// <summary>
     /// Enforces direct-message access control for Teams personal chats. The digital worker's
@@ -535,10 +536,10 @@ internal class AccessControlService
         if (string.IsNullOrWhiteSpace(_graphAccessToken)) return null;
         var direct = Guid.TryParse(identifier, out _) || identifier.Contains('@');
         var url = direct
-            ? $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(identifier)}?$select=id,mail,userPrincipalName"
+            ? $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(identifier)}?$select=id,mail,userPrincipalName,displayName"
             : "https://graph.microsoft.com/v1.0/users?$filter="
               + Uri.EscapeDataString($"displayName eq '{identifier.Replace("'", "''")}'")
-              + "&$select=id,mail,userPrincipalName&$top=2";
+              + "&$select=id,mail,userPrincipalName,displayName&$top=2";
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _graphAccessToken);
         using var response = await _httpClient.SendAsync(request);
@@ -568,7 +569,9 @@ internal class AccessControlService
             _logger.LogWarning("Standing-job directory contact has no email or UPN.");
             return null;
         }
-        return new StandingJobMember(id.ToString("D"), email.ToLowerInvariant());
+        var displayName = person.TryGetProperty("displayName", out var display) && display.ValueKind == JsonValueKind.String
+            ? display.GetString() : null;
+        return new StandingJobMember(id.ToString("D"), email.ToLowerInvariant(), displayName);
     }
 
     private string GetDirectMessageUnauthorizedResponseText(string managerLabel)

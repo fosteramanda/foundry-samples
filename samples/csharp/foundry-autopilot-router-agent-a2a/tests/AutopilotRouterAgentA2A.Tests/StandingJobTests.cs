@@ -512,14 +512,104 @@ public class StandingJobTests
         Assert.Equal(before, await h.Coordinator.StateFingerprintAsync(h.Job.Id));
     }
 
-    private sealed class TestClock : TimeProvider
+    [Fact]
+    public async Task PublicationReusesFactsAndDoesNotVersionModelRewording()
+    {
+        var h = await Harness.CreateAsync();
+        h.SetTurn(h.Manager, "input", "The budget is confirmed.");
+        await h.Call("record_standing_input", new { job_id = h.Job.Id, key = "budget", title = "Budget",
+            owner_id = h.Manager.Id, state = "received", content = "The budget is confirmed." });
+        var one = await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Budget confirmed.", decision_question = "" });
+        var two = await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Different wording of the same facts.", decision_question = "" });
+        Assert.Equal(one["key"]!.GetValue<string>(), two["key"]!.GetValue<string>());
+        Assert.Equal(1, h.Publications);
+        Assert.Single(await h.Coordinator.RecordsAsync<StandingJobBrief>(h.Job.Id, "brief"));
+    }
+
+    [Fact]
+    public async Task ASourceSupportedClarificationGetsANewVersionWithoutInventingADispute()
+    {
+        var h = await Harness.CreateAsync();
+        h.SetTurn(h.Manager, "input", "The budget is confirmed.");
+        await h.Call("record_standing_input", new { job_id = h.Job.Id, key = "budget", title = "Budget",
+            owner_id = h.Manager.Id, state = "received", content = "The budget is confirmed." });
+        await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Budget confirmed.", decision_question = "" });
+        h.SetTurn(h.Manager, "word-clarification", "The ceiling applies to the pilot, not the entire program.", "word");
+        var next = await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Pilot ceiling clarified.", decision_question = "",
+            change_event_id = "word-clarification", change_quote = "The ceiling applies to the pilot, not the entire program." });
+        Assert.Equal("accepted", next["state"]!.GetValue<string>());
+        h.SetTurn(h.Manager, "timer", "", automatic: true);
+        await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Unchanged.", decision_question = "" });
+        Assert.Equal(2, h.Publications);
+        Assert.DoesNotContain(await h.Coordinator.RecordsAsync<StandingJobInput>(h.Job.Id, "input"), input => input.State == "disputed");
+    }
+
+    [Fact]
+    public async Task RecoveryUsesTheOriginalDraftBeforePublishingChangedFacts()
+    {
+        var h = await Harness.CreateAsync();
+        h.SetTurn(h.Manager, "old", "The budget is provisional.");
+        await h.Call("record_standing_input", new { job_id = h.Job.Id, key = "budget", title = "Budget",
+            owner_id = h.Manager.Id, state = "received", content = "The budget is provisional." });
+        h.FailPublication = true;
+        var uncertain = await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Provisional.", decision_question = "" });
+        Assert.Equal("uncertain", uncertain["state"]!.GetValue<string>());
+        h.SetTurn(h.Manager, "new", "The budget is confirmed.");
+        await h.Call("record_standing_input", new { job_id = h.Job.Id, key = "budget", title = "Budget",
+            owner_id = h.Manager.Id, state = "received", content = "The budget is confirmed." });
+        var current = await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Confirmed.", decision_question = "" });
+        Assert.Equal("accepted", current["state"]!.GetValue<string>());
+        Assert.Equal(1, h.Reconciliations);
+        Assert.Equal(2, h.Publications);
+        Assert.Contains("The budget is provisional.", h.DraftContents[1]);
+        Assert.Contains("The budget is confirmed.", h.DraftContents[2]);
+        Assert.Equal(new[] { 1, 2 }, (await h.Coordinator.RecordsAsync<StandingJobBrief>(h.Job.Id, "brief")).Select(b => b.Version).Order());
+    }
+
+    [Fact]
+    public async Task LegacyUncertainPublicationIsNotImportedByFileName()
+    {
+        var h = await Harness.CreateAsync();
+        await h.Coordinator.OnceAsync(h.Job.Id, h.Manager, "publish_brief", "brief:legacy", "old payload",
+            () => throw new HttpRequestException("Unknown destination."), scope: "publish_brief");
+        var result = await h.Call("publish_standing_brief", new { job_id = h.Job.Id, summary = "Attempt.", decision_question = "" });
+        Assert.False(result["success"]!.GetValue<bool>());
+        Assert.Contains("no saved draft", result["error"]!.GetValue<string>());
+        Assert.Equal(0, h.Publications);
+        Assert.Equal(0, h.Reconciliations);
+    }
+
+    [Fact]
+    public async Task RegisteringTheSameFactsCannotReplaceTheRealFileIdentity()
+    {
+        var h = await Harness.CreateAsync();
+        var first = new StandingJobBrief(1, "Review v1.docx", "one", Guid.NewGuid().ToString(),
+            "https://tenant.sharepoint.com/brief", "facts", h.Clock.GetUtcNow());
+        await h.Coordinator.RegisterBriefAsync(h.Job.Id, h.Manager, first);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Coordinator.RegisterBriefAsync(
+            h.Job.Id, h.Manager, first with { ItemId = "other-file" }));
+        Assert.Equal("one", Assert.Single(await h.Coordinator.RecordsAsync<StandingJobBrief>(h.Job.Id, "brief")).ItemId);
+    }
+
+    [Fact]
+    public async Task ACompletedCheckDoesNotSkipTheNextFiveMinuteCronTick()
+    {
+        var h = await Harness.CreateAsync();
+        var lease = await h.Coordinator.TryBeginRunAsync(h.Job.Id, h.Manager, true);
+        h.Clock.Advance(TimeSpan.FromSeconds(30));
+        await h.Coordinator.EndRunAsync(h.Job.Id, lease!);
+        h.Clock.Advance(TimeSpan.FromMinutes(4.5));
+        Assert.NotNull(await h.Coordinator.TryBeginRunAsync(h.Job.Id, h.Manager, true));
+    }
+
+    internal sealed class TestClock : TimeProvider
     {
         private DateTimeOffset _now = new(2026, 10, 1, 12, 0, 0, TimeSpan.Zero);
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan amount) => _now += amount;
     }
 
-    private sealed class MemoryStore : IStandingJobStore
+    internal sealed class MemoryStore : IStandingJobStore
     {
         private readonly object _gate = new();
         private readonly Dictionary<(string, string), StandingJobRow> _rows = [];
@@ -565,7 +655,7 @@ public class StandingJobTests
         }
     }
 
-    private sealed class MemoryWorkItems() : WorkItemService(
+    internal sealed class MemoryWorkItems() : WorkItemService(
         new ConfigurationBuilder().Build(), NullLogger<WorkItemService>.Instance)
     {
         private readonly Dictionary<string, JsonObject> _items = [];
@@ -639,6 +729,11 @@ public class StandingJobTests
         public int ScheduleCalls { get; private set; }
         public int MailCalls { get; private set; }
         public int DelegateCalls { get; private set; }
+        public int Publications { get; private set; }
+        public int Reconciliations { get; private set; }
+        public bool FailPublication { get; set; }
+        public Dictionary<int, string> DraftContents { get; } = [];
+        private readonly Dictionary<int, StandingJobBrief> _published = [];
         public string LastSubject { get; private set; } = "";
         public string SpecialistResponse { get; set; } = """{"outcome":"answered","answer":"Recorded decision","citations":["https://example.com/source"]}""";
 
@@ -655,7 +750,28 @@ public class StandingJobTests
                 (id, question) => { DelegateCalls++; return Task.FromResult<string?>(SpecialistResponse); },
                 id => Task.FromResult(id == Manager.Id ? new StandingJobMember(Manager.Id, Manager.Email!)
                     : id == Owner.Id ? new StandingJobMember(Owner.Id, Owner.Email!) : null),
-                NullLogger.Instance);
+                NullLogger.Instance,
+                (job, version, fingerprint, content) =>
+                {
+                    Publications++;
+                    DraftContents.Add(version, content);
+                    var brief = new StandingJobBrief(version, $"Review v{version}.docx", $"item-{version}",
+                        Guid.NewGuid().ToString(), $"https://tenant.sharepoint.com/v{version}", fingerprint, Clock.GetUtcNow());
+                    _published.Add(version, brief);
+                    if (FailPublication)
+                    {
+                        FailPublication = false;
+                        throw new HttpRequestException("Sharing response lost after creation.");
+                    }
+                    return Task.FromResult(brief);
+                },
+                (job, version, fingerprint, content) =>
+                {
+                    Reconciliations++;
+                    Assert.Equal(DraftContents[version], content);
+                    Assert.Equal(_published[version].FactsFingerprint, fingerprint);
+                    return Task.FromResult(_published[version]);
+                });
             SetTurn(Manager, "first-message", "Own the review.");
         }
 

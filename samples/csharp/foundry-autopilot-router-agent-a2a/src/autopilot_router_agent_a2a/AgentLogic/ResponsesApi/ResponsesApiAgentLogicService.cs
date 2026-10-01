@@ -3,6 +3,8 @@ namespace WorkstreamManager.AgentLogic.ResponsesApi;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Azure.Core;
+using Azure.Data.Tables;
 using WorkstreamManager.Models;
 using WorkstreamManager.Services;
 using WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
@@ -34,6 +36,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly ScheduledChatDelivery _scheduledChatDelivery;
     private readonly StandingReviewCoordinator? _standingCoordinator;
     private readonly StandingJobToolHandler? _standingTools;
+    private readonly StandingBriefPublisher? _standingBriefs;
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -46,7 +49,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         AgentTokenHelper? tokenHelper = null,
         PendingDelegationStore? pendingDelegations = null,
         MeetingRegistryStore? meetingRegistry = null,
-        IStandingJobStore? standingJobs = null)
+        IStandingJobStore? standingJobs = null,
+        HttpClient? transport = null,
+        WorkItemService? workItemStore = null,
+        TokenCredential? responseCredential = null,
+        TableClient? allowListTable = null)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -54,25 +61,26 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _agentMetadata = agentMetadata;
         _pendingDelegations = pendingDelegations;
 
-        var httpClient = new HttpClient();
+        var httpClient = transport ?? new HttpClient();
         // A single Responses API call can run for a while when the model fans out to MCP tools
         // server-side (e.g. live ADO/Word/Graph queries for a launch-status email). The default
         // HttpClient.Timeout is 100s; complex email/loop-in turns exceeded it and threw
         // TaskCanceledException, which surfaced as the agent silently never replying. Give each
         // call a longer budget (configurable via ResponsesApiTimeoutSeconds, default 300s).
         var responsesTimeoutSeconds = _configuration.GetValue("ResponsesApiTimeoutSeconds", 300);
-        if (responsesTimeoutSeconds > 0)
+        if (transport == null && responsesTimeoutSeconds > 0)
         {
             httpClient.Timeout = TimeSpan.FromSeconds(responsesTimeoutSeconds);
         }
-        _responsesApiClient = new ResponsesApiClient(agentMetadata, _logger, _configuration, accessToken, mcpServers, httpClient, conversationState);
+        _responsesApiClient = new ResponsesApiClient(agentMetadata, _logger, _configuration, accessToken, mcpServers,
+            httpClient, conversationState, responseCredential);
         _reactionService = new ReactionService(_logger, graphAccessToken, httpClient);
         _scheduledChatDelivery = new ScheduledChatDelivery(httpClient, graphAccessToken, _logger);
 
         // Initialize WorkItemToolHandler
-        WorkItemService? workItemService = null;
+        WorkItemService? workItemService = workItemStore;
         var workItemsTableServiceUri = configuration["WorkItemsTableServiceUri"];
-        if (!string.IsNullOrEmpty(workItemsTableServiceUri))
+        if (workItemService == null && !string.IsNullOrEmpty(workItemsTableServiceUri))
         {
             workItemService = new WorkItemService(configuration, new LoggerFactory().CreateLogger<WorkItemService>());
         }
@@ -97,7 +105,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // describe a tracker whose tools were not attached.
         _responsesApiClient.WorkItemsEnabled = _workItemTools.GetToolDefinitions().Count > 0;
         _teamsHelper = new TeamsActivityHelper(_logger);
-        _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken, httpClient, _teamsHelper, _workItemTools);
+        _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken,
+            httpClient, _teamsHelper, _workItemTools, allowListTable);
         _addressedToAgentGate = new AddressedToAgentGate(_logger, _configuration, _responsesApiClient, _teamsHelper, httpClient, graphAccessToken);
         if (standingJobs?.IsAvailable == true && agent.UserId != Guid.Empty && agent.TenantId != Guid.Empty)
         {
@@ -106,6 +115,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             var briefs = new StandingBriefPublisher(httpClient,
                 mcpServers.SingleOrDefault(server => server.McpServerName == "mcp_WordServer"),
                 accessToken, graphAccessToken, agent.UserId, _logger);
+            _standingBriefs = briefs;
             _standingTools = new StandingJobToolHandler(_standingCoordinator, workItemService,
                 _routineTools.ConfigureStandingScheduleAsync, _mailboxTools.SendStandingMailAsync,
                 (job, html) => _scheduledChatDelivery.SendAsync(new Activity
@@ -115,8 +125,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 }, $"<p><strong>{System.Net.WebUtility.HtmlEncode(job.Title)}</strong></p>{html}", CancellationToken.None),
                 async (id, question) => await _workIqA2ATools.AskForStandingJobAsync(id, question),
                 _accessControl.ResolveStandingJobMemberAsync, _logger,
-                briefs.PublishAsync, briefs.ReconcileAsync, briefs.TryReconcileAsync,
-                briefs.ReadCommentNotificationAsync);
+                briefs.PublishAsync, briefs.ReconcileAsync, briefs.ReplyAsync);
         }
     }
 
@@ -180,7 +189,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             tools.AddRange(_meetingRegistryTools.GetToolDefinitions());
         }
         if (_standingTools != null)
-            tools.AddRange(_standingTools.GetToolDefinitions());
+            tools.AddRange(_standingTools.GetConfigurationToolDefinitions());
         return tools;
     }
 
@@ -200,6 +209,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
+        _standingTools?.BeginTurn();
         var incomingText = turnContext.Activity.Text;
         _logger.LogInformation("New activity received (Responses API): {IncomingText}", incomingText);
 
@@ -320,6 +330,17 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // this turn actually did.
         _workIqA2ATools.BeginTurn();
 
+        if (_standingTools?.Turn is { } standingTurn
+            && !ScheduledChatDelivery.IsScheduledChat(turnContext.Activity))
+        {
+            var routed = await RouteStandingChatAsync(standingTurn, rawUserMessage);
+            if (routed.Handled)
+            {
+                await SendChatAnswerAsync(turnContext, routed.Response, verdict.WasExplicitlyMentioned, cancellationToken);
+                return;
+            }
+        }
+
         var response = await _responsesApiClient.InvokeAsync(
             input: incomingText ?? string.Empty,
             conversationId: conversationId,
@@ -347,6 +368,12 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             return;
         }
 
+        await SendChatAnswerAsync(turnContext, response, verdict.WasExplicitlyMentioned, cancellationToken);
+    }
+
+    private async Task SendChatAnswerAsync(ITurnContext turnContext, string response, bool wasMentioned, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(response) || _standingTools?.ChatDelivered == true) return;
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse
         // .QueueTextChunk delivers text only, not activity entities, so it cannot carry mention
@@ -368,18 +395,70 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         if (turnContext.Activity.Type == ActivityTypes.Message && !isTeamsGroupOrChannel && enableStreamingUpdates)
         {
-            var finalText = string.IsNullOrWhiteSpace(response) ? "Done." : response;
-            turnContext.StreamingResponse.QueueTextChunk(finalText);
+            turnContext.StreamingResponse.QueueTextChunk(response);
         }
         else if (!string.IsNullOrEmpty(response))
         {
             var outboundActivity = _teamsHelper.BuildResponseActivity(
                 turnContext,
                 response,
-                includeMention: verdict.WasExplicitlyMentioned);
+                includeMention: wasMentioned);
             await turnContext.SendActivityAsync(outboundActivity, cancellationToken);
         }
     }
+
+    private async Task<(bool Handled, string Response)> RouteStandingChatAsync(StandingJobTurn turn, string text)
+        {
+            if (_standingCoordinator == null || _standingTools == null) return (false, string.Empty);
+            var jobs = await _standingCoordinator.ListAsync(turn.Caller);
+            var selection = await _responsesApiClient.InvokeAsync(
+                StandingConversationRoute.Input(text, jobs, turn.Caller.IsManager),
+                "standing-route", instructionsOverride: StandingConversationRoute.Instructions,
+                includeMcpTools: false, persistResponseId: false, usePreviousResponseId: false);
+            if (!_responsesApiClient.LastInvocationSucceeded)
+                throw new InvalidOperationException("The standing-job route could not be evaluated.");
+            var route = StandingConversationRoute.Parse(selection, jobs, turn.Caller.IsManager);
+            if (route.Action == "general") return (false, string.Empty);
+            if (route.Action == "clarify")
+                return (true, "<p>Which review does this update belong to? More than one saved responsibility could match.</p>");
+            if (route.Action == "configure")
+            {
+                _standingTools.Turn = turn with { JobId = route.JobId };
+                var tools = _standingTools.GetConfigurationToolDefinitions();
+                tools.AddRange(_workIqA2ATools.GetToolDefinitions().Where(tool =>
+                    tool["name"]?.GetValue<string>() is "list_workiq_agents" or "get_workiq_agent_card"));
+                var answer = await _responsesApiClient.InvokeAsync(
+                    StandingConversationRoute.Input(text, jobs, turn.Caller.IsManager),
+                    "standing-configure:" + turn.Event?.Id,
+                    instructionsOverride: AgentInstructions.StandingJobConfigurationInstructions,
+                    includeMcpTools: false, persistResponseId: false, usePreviousResponseId: false,
+                    additionalTools: tools, localToolExecutor: ExecuteLocalToolAsync,
+                    traceInvocation: true, maxToolIterations: 20);
+                if (!_responsesApiClient.LastInvocationSucceeded)
+                    throw new InvalidOperationException("Standing-job configuration did not finish.");
+                if (_standingTools.CreatedJobId is { } created)
+                    answer = await RunStandingJobAsync(created, turn, scheduled: false);
+                return (true, _standingTools.ChatDelivered ? string.Empty : answer);
+            }
+            if (route.Action == "continue")
+            {
+                if (turn.Event == null) throw new InvalidOperationException("The source update has no authenticated event.");
+                await _standingCoordinator.CaptureAsync(route.JobId!, turn.Caller, turn.Event);
+                var answer = await RunStandingJobAsync(route.JobId!, turn, scheduled: false);
+                return (true, _standingTools.ChatDelivered ? string.Empty : answer);
+            }
+            var context = await _standingTools.TryExecuteAsync("get_standing_job",
+                JsonSerializer.Serialize(new { job_id = route.JobId }));
+            var summary = await _responsesApiClient.InvokeAsync(
+                JsonSerializer.Serialize(new { question = text, record = context }),
+                "standing-read:" + route.JobId, instructionsOverride:
+                "Answer this read-only question from the recorded job facts. Be concise, use HTML and current real document links. "
+                + "Do not expose tool names, receipt hashes or IDs unless asked. Do not claim a paused job is running. No em or en dashes.",
+                includeMcpTools: false, persistResponseId: false, usePreviousResponseId: false);
+            if (!_responsesApiClient.LastInvocationSucceeded)
+                throw new InvalidOperationException("The standing-job answer could not be generated.");
+            return (true, summary);
+        }
 
     /// <summary>
     /// Passive work-item detection pass for messages NOT addressed to the agent. The agent
@@ -482,6 +561,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
     public async Task HandleEmailNotificationAsync(ITurnContext turnContext, ITurnState turnState, AgentNotificationActivity emailEvent)
     {
+        _standingTools?.BeginTurn();
         _logger.LogInformation("Processing email notification (Responses API) - NotificationType: {NotificationType}", emailEvent.NotificationType);
         if (!await _accessControl.IsNotificationSenderApprovedAsync(emailEvent.From ?? turnContext.Activity.From))
         {
@@ -497,9 +577,10 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var respondToOfficeNotifications = _configuration.GetValue("RespondToOfficeNotificationEmails", false);
         if (!respondToOfficeNotifications && IsOfficeCollaborationNotificationEmail(emailEvent, turnContext.Activity))
         {
+            if (await TryHandleStandingWordMailAsync(turnContext.Activity, emailEvent))
+                return;
             _logger.LogInformation(
-                "Skipping email reply: detected an Office document-collaboration notification (comment/mention/task); " +
-                "the comment-notification path handles this. ConversationId={ConversationId}",
+                "No active standing-job document matched this collaboration notification; no email reply sent. ConversationId={ConversationId}",
                 turnContext.Activity.Conversation?.Id);
             return;
         }
@@ -517,6 +598,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         try
         {
+            if (await TryHandleStandingMailAsync(turnContext, emailEvent))
+                return;
             // Only the latest authored text is eligible as decision/completion evidence.
             // Quoted thread history remains available to the ordinary email reply below.
             var latestText = HtmlToPlainText(emailEvent.Text ?? string.Empty).Trim();
@@ -586,6 +669,63 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 _logger.LogError(sendEx, "Failed to send fallback email reply. ConversationId={ConversationId}", conversationId);
             }
         }
+    }
+
+    private async Task<bool> TryHandleStandingWordMailAsync(IActivity activity, AgentNotificationActivity notification)
+    {
+        if (_standingCoordinator == null || _standingBriefs == null) return false;
+        var caller = await _accessControl.ResolveStandingJobCallerAsync(notification.From ?? activity.From, CancellationToken.None);
+        if (caller == null) return false;
+        var message = await _standingBriefs.ReadNotificationAsync(notification.EmailNotification?.Id ?? string.Empty);
+        var reference = StandingBriefPublisher.ParseCommentReference(message["body"]?["content"]?.GetValue<string>() ?? string.Empty);
+        if (reference == null) return false;
+        var jobs = await _standingCoordinator.FindAsync(caller, null, "word:" + reference.DocumentId.ToString("D"));
+        foreach (var job in jobs.Where(job => !job.Paused))
+        {
+            var source = await _standingBriefs.ReadCommentNotificationAsync(job,
+                await _standingCoordinator.RecordsAsync<StandingJobBrief>(job.Id, "brief"), message, caller);
+            await _standingCoordinator.CaptureAsync(job.Id, caller, source);
+            _logger.LogInformation("Word mail source captured for standing job {JobId}, comment {CommentId}.", job.Id, source.CommentId);
+            await RunStandingJobAsync(job.Id, new StandingJobTurn(caller, source, activity), scheduled: false);
+        }
+        return jobs.Count > 0;
+    }
+
+    private async Task<bool> TryHandleStandingMailAsync(ITurnContext context, AgentNotificationActivity notification)
+    {
+        if (_standingCoordinator == null || _standingBriefs == null || _standingTools == null) return false;
+        var caller = await _accessControl.ResolveStandingJobCallerAsync(notification.From ?? context.Activity.From, CancellationToken.None);
+        if (caller == null) return false;
+        var message = await _standingBriefs.ReadNotificationAsync(notification.EmailNotification?.Id ?? string.Empty);
+        var thread = message["conversationId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("The source email has no thread identity.");
+        var subject = message["subject"]?.GetValue<string>() ?? string.Empty;
+        var jobs = await _standingCoordinator.FindAsync(caller, subject, "mail:" + thread);
+        if (jobs.Count == 0) return false;
+        var sender = message["from"]?["emailAddress"]?["address"]?.GetValue<string>();
+        var body = message["uniqueBody"]?["content"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("The source email has no verified latest-message body.");
+        var text = HtmlToPlainText(body);
+        if (text.Length == 0 || text.Length > 8000)
+            throw new InvalidOperationException("The source email is empty or exceeds the evidence limit; it was not truncated.");
+        var sourceId = message["internetMessageId"]?.GetValue<string>()
+            ?? throw new InvalidOperationException("The source email has no stable message identity.");
+        var time = message["receivedDateTime"]?.GetValue<DateTimeOffset>()
+            ?? throw new InvalidOperationException("The source email has no received time.");
+        foreach (var job in jobs)
+        {
+            if (!job.Members.Any(member => member.Id == caller.Id
+                && string.Equals(member.Email, sender, StringComparison.OrdinalIgnoreCase)))
+                throw new UnauthorizedAccessException("The source email sender does not match the authenticated job member.");
+            if (job.Paused) continue;
+            var source = new StandingJobEvent(StandingJobStore.Hash("mail:" + sourceId), "mail",
+                caller.Id, "mail:" + thread, text, time, true, message["webLink"]?.GetValue<string>());
+            await _standingCoordinator.CaptureAsync(job.Id, caller, source);
+            var answer = await RunStandingJobAsync(job.Id, new StandingJobTurn(caller, source, context.Activity), scheduled: false);
+            if (!string.IsNullOrWhiteSpace(answer) && !_standingTools.ChatDelivered)
+                await context.SendActivityAsync(EmailResponse.CreateEmailResponseActivity(answer));
+        }
+        return true;
     }
 
     /// <summary>
@@ -693,6 +833,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
     public async Task HandleCommentNotificationAsync(ITurnContext turnContext, ITurnState turnState, AgentNotificationActivity commentEvent)
     {
+        _standingTools?.BeginTurn();
         _logger.LogInformation("Processing comment notification (Responses API) - NotificationType: {NotificationType}", commentEvent.NotificationType);
         if (!await _accessControl.IsNotificationSenderApprovedAsync(commentEvent.From ?? turnContext.Activity.From))
         {
@@ -757,6 +898,23 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 ? $"word:{documentGuid:D}" : $"word:{documentId}";
             var jobTurn = await PrepareStandingTurnAsync(turnContext.Activity, commentEvent.From ?? turnContext.Activity.From,
                 "word", commentText, binding, CancellationToken.None);
+            if (jobTurn != null && _standingCoordinator != null && _standingBriefs != null)
+            {
+                var jobs = await _standingCoordinator.FindAsync(jobTurn.Caller, null, binding);
+                if (jobs.Count > 0)
+                {
+                    foreach (var job in jobs.Where(job => !job.Paused))
+                    {
+                        var brief = (await _standingCoordinator.RecordsAsync<StandingJobBrief>(job.Id, "brief"))
+                            .Single(item => item.DocumentId.Equals(documentGuid.ToString("D"), StringComparison.OrdinalIgnoreCase));
+                        var source = await _standingBriefs.ReadCommentAsync(brief, commentRef.CommentId ?? commentId,
+                            jobTurn.Caller.Id, turnContext.Activity.Timestamp ?? DateTimeOffset.UtcNow);
+                        await _standingCoordinator.CaptureAsync(job.Id, jobTurn.Caller, source);
+                        await RunStandingJobAsync(job.Id, jobTurn with { Event = source }, scheduled: false);
+                    }
+                    return;
+                }
+            }
             var standingContext = await RunMatchingStandingJobsAsync(jobTurn, commentText);
 
             // Ask the agent to read the document and post its reply DIRECTLY on the comment thread
@@ -859,7 +1017,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
               + string.Join("\n", snapshots);
     }
 
-    private async Task RunStandingJobAsync(string id, StandingJobTurn turn, bool scheduled)
+    private async Task<string> RunStandingJobAsync(string id, StandingJobTurn turn, bool scheduled)
     {
         if (_standingCoordinator == null || _standingTools == null)
             throw new InvalidOperationException("Standing-job storage and tools are unavailable.");
@@ -867,7 +1025,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         if (lease == null)
         {
             _logger.LogInformation("Standing job {JobId} is paused, not due, or already running.", id);
-            return;
+            return scheduled || turn.Event?.Kind == "word" ? string.Empty
+                : "<p>Your update is saved. The review is already being processed.</p>";
         }
         var previousTurn = _standingTools.Turn;
         var completed = false;
@@ -880,19 +1039,20 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 ?? throw new InvalidOperationException("Standing-job context could not be loaded.");
             if (JsonNode.Parse(context)?["success"]?.GetValue<bool>() == false)
                 throw new InvalidOperationException("Standing-job context lookup failed; no actions attempted.");
-            await _responsesApiClient.InvokeAsync(
-                $"Standing job {id}. Current source event: {turn.Event?.Id ?? "(scheduled check)"}.\n"
+            var output = await _responsesApiClient.InvokeAsync(
+                $"Standing job {id}. Trigger: {(scheduled ? "schedule" : turn.Event?.Kind)}. Current source event: {turn.Event?.Id ?? "(scheduled check)"}.\n"
                 + context,
                 $"standing-job:{id}",
                 instructionsOverride: AgentInstructions.StandingJobRunInstructions,
                 includeMcpTools: false, persistResponseId: false, usePreviousResponseId: false,
                 additionalTools: _standingTools.GetToolDefinitions(),
-                localToolExecutor: _standingTools.TryExecuteAsync, traceInvocation: true);
+                localToolExecutor: _standingTools.TryExecuteAsync, traceInvocation: true, maxToolIterations: 20);
             if (!_responsesApiClient.LastInvocationSucceeded)
                 throw new InvalidOperationException("The standing-job model run failed; no completion is claimed.");
             completed = true;
             detail = "Bounded check completed. Individual action receipts remain authoritative.";
             _logger.LogInformation("Standing job {JobId} completed its bounded check.", id);
+            return scheduled || turn.Event?.Kind == "word" || _standingTools.ChatDelivered ? string.Empty : output;
         }
         finally
         {

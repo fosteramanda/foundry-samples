@@ -204,14 +204,11 @@ public class A365AgentApplication : AgentApplication
             {
                 _logger.LogError(ex, "Error processing message activity");
 
-                // Surface the hosted-agent session id alongside the exception so the user can
-                // hand it to support / look it up in agent logs.
-                var sessionId = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID");
-                var sessionLine = string.IsNullOrEmpty(sessionId) ? "(not set)" : sessionId;
+                var reference = turnContext.Activity.Id ?? Guid.NewGuid().ToString("N");
+                _logger.LogError("Request failed; user-facing reference {Reference}.", reference);
                 var errorText =
-                    $"Sorry, something went wrong while processing your message.{Environment.NewLine}" +
-                    $"FOUNDRY_AGENT_SESSION_ID: {sessionLine}{Environment.NewLine}" +
-                    $"Exception:{Environment.NewLine}{ex}";
+                    "I couldn't complete that request. I have not marked it as finished. " +
+                    $"Reference: {reference}";
 
                 if (streamingStarted)
                 {
@@ -386,4 +383,3 @@ public class A365AgentApplication : AgentApplication
             "does not contain a GUID.");
     }
 }
-
