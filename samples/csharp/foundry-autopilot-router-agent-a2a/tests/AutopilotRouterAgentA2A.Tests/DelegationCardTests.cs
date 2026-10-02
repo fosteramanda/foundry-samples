@@ -161,6 +161,72 @@ public class DelegationCardTests
         Assert.Contains("Approve and save", rendered);
     }
 
+    [Fact]
+    public void PlannerTaskGroupsGoalsAndTheirTaskReferencesAreIncludedInTheReview()
+    {
+        const string answer = """
+            <m-planner-task-list plan='{"draftMode":"newPlan","title":"Reviewed plan",
+            "taskListDescription":"Private, unassigned draft for review before saving.",
+            "buckets":["Decided / follow-through","Open / decision needed"],
+            "goals":[{"name":"Close checkpoint follow-through","status":"notStarted"}],"link":""}'
+            tasks='[{"title":"Reviewed task","priority":"Medium","notes":"Recorded evidence remains available.",
+            "bucketName":"Open / decision needed","goalName":"Close checkpoint follow-through","percentComplete":0}]'>
+            </m-planner-task-list>
+            """;
+        var preview = DelegationCardPresentation.ReadPlanner(answer)!;
+        Assert.True(preview.CanApprove);
+        Assert.Contains("Private, unassigned draft for review before saving.", preview.PlanDetails);
+        Assert.Contains("Task group: Decided / follow-through", preview.PlanDetails);
+        Assert.Contains("Task group: Open / decision needed", preview.PlanDetails);
+        Assert.Contains("Goal: Close checkpoint follow-through (Status: Not started)", preview.PlanDetails);
+        Assert.Contains("Task group: Open / decision needed", preview.Tasks[0].Details);
+        Assert.Contains("Goal: Close checkpoint follow-through", preview.Tasks[0].Details);
+        var card = Card();
+        card.State = DelegationCardStates.Review;
+        card.Answer = answer;
+        card.PreviewJson = JsonSerializer.Serialize(preview);
+        var rendered = DelegationCardPresentation.Build(card).ToJsonString();
+        Assert.Contains("Task group: Decided / follow-through", rendered);
+        Assert.Contains("Goal: Close checkpoint follow-through (Status: Not started)", rendered);
+        Assert.Contains("Recorded evidence remains available.", rendered);
+        Assert.Contains("Approve and save", rendered);
+    }
+
+    [Theory]
+    [InlineData("\"buckets\":[\"Same\",\"Same\"]")]
+    [InlineData("\"buckets\":{\"hidden\":\"value\"}")]
+    [InlineData("\"goals\":[{\"name\":\"Same\"},{\"name\":\"Same\"}]")]
+    [InlineData("\"goals\":[{\"name\":\"Known\",\"ownerId\":\"unreviewed-owner\"}]")]
+    [InlineData("\"goals\":{\"name\":\"Unsupported shape\"}")]
+    public void AmbiguousOrUnsupportedPlanGroupsCannotBeApproved(string fields)
+    {
+        var answer = Preview.Replace("\"link\":\"\"", "\"link\":\"\"," + fields, StringComparison.Ordinal);
+        Assert.False(DelegationCardPresentation.ReadPlanner(answer)!.CanApprove);
+    }
+
+    [Theory]
+    [InlineData("bucketName")]
+    [InlineData("goalName")]
+    public void ATaskCannotApproveAReferenceToAnUndeclaredGroupOrGoal(string field)
+    {
+        var answer = Preview.Replace("\"title\":\"Reviewed task\"",
+            "\"title\":\"Reviewed task\",\"" + field + "\":\"Undeclared\"", StringComparison.Ordinal);
+        var preview = DelegationCardPresentation.ReadPlanner(answer)!;
+        Assert.False(preview.CanApprove);
+        Assert.Contains("Undeclared", preview.Tasks[0].Details);
+    }
+
+    [Theory]
+    [InlineData("\"buckets\":[42]")]
+    [InlineData("\"buckets\":[\"\"]")]
+    [InlineData("\"goals\":[\"Not an object\"]")]
+    [InlineData("\"goals\":[{\"name\":\"Known\",\"status\":42}]")]
+    public void MalformedPlanGroupDataIsNotSilentlyApproved(string fields)
+    {
+        var answer = Preview.Replace("\"link\":\"\"", "\"link\":\"\"," + fields, StringComparison.Ordinal);
+        Assert.Throws<FormatException>(() => DelegationCardPresentation.ReadPlanner(answer));
+    }
+
     [Theory]
     [InlineData("another-chat", "requester", "manager")]
     [InlineData("chat-one", "different-user", "manager")]
