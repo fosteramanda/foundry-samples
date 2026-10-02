@@ -235,8 +235,13 @@ internal sealed class DelegationCardCoordinator(
                     }
                     else
                     {
-                        card.State = allowApproval ? DelegationCardStates.Stale : DelegationCardStates.Unconfirmed;
-                        card.Detail = "This is a preview, not a saved plan. A fresh review is required; no automatic Save will be repeated.";
+                        var stale = currentRevision != card.ContextRevision;
+                        card.State = stale ? DelegationCardStates.Stale : DelegationCardStates.Unconfirmed;
+                        card.Detail = stale
+                            ? "The specialist conversation changed. A fresh preview is required before approval."
+                            : !planner.CanApprove
+                                ? "This preview contains details the card cannot safely approve. Review the original response; no Save was sent."
+                                : "The specialist returned another preview, not a saved plan. No automatic Save will be repeated.";
                     }
                 }
                 else if (planner.PlanId != null && planner.Tasks.Count > 0 && planner.Tasks.All(task => task.Id != null))

@@ -7,7 +7,7 @@ using Microsoft.Agents.Core.Models;
 
 namespace WorkstreamManager.Services;
 
-internal sealed record PlannerCardTask(string Title, string Details, string? Id, string? Url);
+internal sealed record PlannerCardTask(string Title, string Details, string? Id, string? Url, string Notes = "");
 internal sealed record PlannerCardResult(
     string Title, IReadOnlyList<PlannerCardTask> Tasks, bool IsPreview, bool CanApprove,
     string? PlanId, string? PlanUrl, string PreviewJson);
@@ -54,7 +54,8 @@ internal static class DelegationCardPresentation
             if (taskId != null) throw new FormatException("The plan link points to a task.");
         }
         var knownPlan = new HashSet<string>(["draftMode", "title", "taskListDescription", "link", "buckets", "goals"], StringComparer.Ordinal);
-        var knownTask = new HashSet<string>(["title", "percentComplete", "dueDateTime", "assignments", "priority", "link"], StringComparer.Ordinal);
+        var knownTask = new HashSet<string>(["title", "percentComplete", "dueDateTime", "startDateTime",
+            "dueDate", "startDate", "notes", "description", "assignments", "priority", "link"], StringComparer.Ordinal);
         var canApprove = isPreview && tasks.Count is > 0 and <= 25 && plan.All(field => knownPlan.Contains(field.Key));
         foreach (var name in new[] { "buckets", "goals" })
             if (plan[name] is { } extra && (extra is not JsonArray array || array.Count != 0))
@@ -76,24 +77,33 @@ internal static class DelegationCardPresentation
             }
             canApprove &= task.All(field => knownTask.Contains(field.Key));
             var details = new List<string>();
+            var notes = new List<string>();
             foreach (var field in task.Where(field => field.Key is not ("title" or "link" or "planName")))
             {
                 var valueText = field.Value is JsonValue scalar && scalar.TryGetValue<string>(out var plain)
                     ? plain : field.Value?.ToJsonString() ?? "not set";
+                if (field.Key is "notes" or "description")
+                {
+                    if (field.Value is not JsonValue note || !note.TryGetValue<string>(out var noteText))
+                        throw new FormatException("The Planner task notes are not text.");
+                    notes.Add(noteText);
+                    continue;
+                }
                 details.Add(field.Key switch
                 {
                     "percentComplete" => valueText == "0" ? "Not started" : valueText == "100" ? "Complete" : valueText + "% complete",
                     "priority" => "Priority: " + valueText,
-                    "dueDateTime" => field.Value == null ? "No due date" : "Due: " + valueText,
+                    "dueDateTime" or "dueDate" => field.Value == null ? "No due date" : "Due: " + valueText,
+                    "startDateTime" or "startDate" => field.Value == null ? "No start date" : "Start: " + valueText,
                     "assignments" => field.Value is JsonObject assignments && assignments.Count == 0
                         ? "Unassigned" : "Assignments: " + valueText,
                     _ => field.Key + ": " + valueText
                 });
             }
             if (isPreview && !task.ContainsKey("assignments")) details.Add("Unassigned");
-            if (isPreview && !task.ContainsKey("dueDateTime")) details.Add("No due date");
+            if (isPreview && !task.ContainsKey("dueDateTime") && !task.ContainsKey("dueDate")) details.Add("No due date");
             rows.Add(new PlannerCardTask(taskTitle, string.Join("; ", details), taskId,
-                string.IsNullOrWhiteSpace(taskLink) ? null : taskLink));
+                string.IsNullOrWhiteSpace(taskLink) ? null : taskLink, string.Join("\n\n", notes)));
         }
         return new PlannerCardResult(title, rows, isPreview, canApprove, planId,
             string.IsNullOrWhiteSpace(link) ? null : link,
@@ -203,6 +213,20 @@ internal static class DelegationCardPresentation
                 body.Add(Block(task.Title, weight: "Bolder"));
                 body.Add(Block(task.Details, "Small"));
             }
+            if (planner.Tasks.Any(task => !string.IsNullOrWhiteSpace(task.Notes)))
+            {
+                var evidence = new JsonArray(Block("Task evidence and notes", "Medium", "Bolder"));
+                foreach (var task in planner.Tasks.Where(task => !string.IsNullOrWhiteSpace(task.Notes)))
+                {
+                    evidence.Add(Block(task.Title, weight: "Bolder"));
+                    evidence.Add(Block(task.Notes));
+                }
+                actions.Add(new JsonObject
+                {
+                    ["type"] = "Action.ShowCard", ["title"] = "Evidence and notes",
+                    ["card"] = new JsonObject { ["type"] = "AdaptiveCard", ["version"] = "1.5", ["body"] = evidence }
+                });
+            }
             if (state.State == DelegationCardStates.Review && planner.CanApprove)
             {
                 actions.Add(Submit("Approve and save", "approve", state.RowKey["card-".Length..]));
@@ -215,7 +239,7 @@ internal static class DelegationCardPresentation
         }
         else if (!string.IsNullOrWhiteSpace(state.Answer))
         {
-            body.Add(Block(state.Answer));
+            body.Add(Block(state.Answer.Length <= 600 ? state.Answer : "Response preview:\n" + state.Answer[..597] + "..."));
         }
         if (!string.IsNullOrWhiteSpace(state.Answer))
         {
