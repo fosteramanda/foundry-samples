@@ -22,6 +22,9 @@ internal static class DelegationCardPresentation
     private static readonly Regex PlannerAttribute = new(
         @"\b(?<name>plan|tasks)\s*=\s*(?<quote>['""])(?<json>\{.*?\}|\[.*?\])\k<quote>(?=\s|$)",
         RegexOptions.Singleline | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(150));
+    private static readonly Regex EncodedPlannerTag = new(
+        @"&lt;m-planner-task-list\b.*?&gt;\s*&lt;/m-planner-task-list&gt;",
+        RegexOptions.Singleline | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(150));
     private static readonly Regex PlanPath = new(
         @"^/webui/plan/(?<plan>[A-Za-z0-9_-]{1,128})/view/board(?:/task/(?<task>[A-Za-z0-9_-]{1,128}))?/?$",
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
@@ -73,10 +76,22 @@ internal static class DelegationCardPresentation
             }
             canApprove &= task.All(field => knownTask.Contains(field.Key));
             var details = new List<string>();
-            foreach (var field in task.Where(field => field.Key is not ("title" or "link")))
-                details.Add(field.Key + ": " + (field.Value?.ToJsonString() ?? "not set"));
-            if (!task.ContainsKey("assignments")) details.Add(isPreview ? "Unassigned" : "Assignment not returned");
-            if (!task.ContainsKey("dueDateTime")) details.Add(isPreview ? "No due date" : "Due date not returned");
+            foreach (var field in task.Where(field => field.Key is not ("title" or "link" or "planName")))
+            {
+                var valueText = field.Value is JsonValue scalar && scalar.TryGetValue<string>(out var plain)
+                    ? plain : field.Value?.ToJsonString() ?? "not set";
+                details.Add(field.Key switch
+                {
+                    "percentComplete" => valueText == "0" ? "Not started" : valueText == "100" ? "Complete" : valueText + "% complete",
+                    "priority" => "Priority: " + valueText,
+                    "dueDateTime" => field.Value == null ? "No due date" : "Due: " + valueText,
+                    "assignments" => field.Value is JsonObject assignments && assignments.Count == 0
+                        ? "Unassigned" : "Assignments: " + valueText,
+                    _ => field.Key + ": " + valueText
+                });
+            }
+            if (isPreview && !task.ContainsKey("assignments")) details.Add("Unassigned");
+            if (isPreview && !task.ContainsKey("dueDateTime")) details.Add("No due date");
             rows.Add(new PlannerCardTask(taskTitle, string.Join("; ", details), taskId,
                 string.IsNullOrWhiteSpace(taskLink) ? null : taskLink));
         }
@@ -119,7 +134,7 @@ internal static class DelegationCardPresentation
     }
 
     internal static string WithoutPlannerMarkup(string response) =>
-        PlannerTag.Replace(response, "").Trim();
+        EncodedPlannerTag.Replace(PlannerTag.Replace(response, ""), "").Trim();
 
     internal static (string Id, string Action) ReadAction(object value)
     {
@@ -159,10 +174,21 @@ internal static class DelegationCardPresentation
                 ["type"] = "FactSet",
                 ["facts"] = new JsonArray(
                     new JsonObject { ["title"] = "Working with", ["value"] = Plain(state.AgentName) },
-                    new JsonObject { ["title"] = "Work", ["value"] = Plain(state.Question) })
+                    new JsonObject { ["title"] = "Work", ["value"] = Plain(state.Question.Length <= 200
+                        ? state.Question : state.Question[..197] + "...") })
             });
         body[0]!["id"] = "delegation-" + state.RowKey;
         var actions = new JsonArray();
+        if (state.Question.Length > 200)
+            actions.Add(new JsonObject
+            {
+                ["type"] = "Action.ShowCard", ["title"] = "Work details",
+                ["card"] = new JsonObject
+                {
+                    ["type"] = "AdaptiveCard", ["version"] = "1.5",
+                    ["body"] = new JsonArray(Block(state.Question))
+                }
+            });
         if (!string.IsNullOrWhiteSpace(state.Detail)) body.Add(Block(state.Detail));
         var planner = string.IsNullOrEmpty(state.PreviewJson)
             ? null : JsonSerializer.Deserialize<PlannerCardResult>(state.PreviewJson)

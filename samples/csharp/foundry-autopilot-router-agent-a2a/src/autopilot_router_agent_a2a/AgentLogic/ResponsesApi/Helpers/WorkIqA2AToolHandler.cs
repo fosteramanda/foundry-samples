@@ -665,6 +665,8 @@ internal class WorkIqA2AToolHandler
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(agentId);
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        if (!_nameCache.ContainsKey(agentId))
+            await GetAgentCardAsync(agentId);
 
         // Pure A2A: discovery and invocation both go through the Work IQ A2A gateway.
         //

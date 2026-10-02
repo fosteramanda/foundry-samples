@@ -472,7 +472,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         return new DelegationCardCoordinator(
             _agentMetadata, _delegationCardStore!, _workIqA2ATools,
             turnContext.Activity.Conversation.Id, _cardConversationJson,
-            turnContext.Activity.Recipient?.Name ?? "Delegated work", caller,
+            CardOwnerName(turnContext.Activity), caller,
             async activity =>
             {
                 var receipt = await turnContext.SendActivityAsync(activity, token);
@@ -506,10 +506,15 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         {
             PartitionKey = $"{_agentMetadata.TenantId:D}:{_agentMetadata.UserId:D}",
             OwnerAgentId = _agentMetadata.AgentId.ToString("D"), RequesterId = caller.Id, ManagerId = caller.ManagerId,
-            OwnerName = context.Activity.Recipient?.Name ?? "Delegated work",
+            OwnerName = CardOwnerName(context.Activity),
             ConversationId = conversation.Id, ConversationJson = _cardConversationJson
         });
     }
+
+    private string CardOwnerName(IActivity activity) =>
+        !string.IsNullOrWhiteSpace(activity.Recipient?.Name) ? activity.Recipient.Name
+            : _configuration["AgentDisplayNameAliases"]?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault() ?? "Delegated work";
 
     private async Task ConfigureEmailCardsAsync(ITurnContext context, ChannelAccount? sender)
     {

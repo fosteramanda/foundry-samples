@@ -61,6 +61,31 @@ public class DelegationCardTests
         Assert.Equal("Leaders' plan", DelegationCardPresentation.ReadPlanner(preview)!.Title);
     }
 
+    [Fact]
+    public void ChatFallbackRemovesRawAndHtmlEncodedPlannerMarkup()
+    {
+        var text = "Review is in the card. " + Preview + " Nothing saved yet.";
+        Assert.DoesNotContain("m-planner-task-list", DelegationCardPresentation.WithoutPlannerMarkup(text));
+        Assert.DoesNotContain("m-planner-task-list", DelegationCardPresentation.WithoutPlannerMarkup(
+            System.Net.WebUtility.HtmlEncode(text)));
+    }
+
+    [Fact]
+    public void TaskStatusIsReadableAndTheFullWorkRequestRemainsReachable()
+    {
+        var card = Card();
+        card.State = DelegationCardStates.Saved;
+        card.Answer = Saved;
+        card.Question = new string('q', 400);
+        card.PreviewJson = JsonSerializer.Serialize(DelegationCardPresentation.ReadPlanner(
+            Saved.Replace("\"title\":\"Reviewed task\"", "\"title\":\"Reviewed task\",\"percentComplete\":0,\"priority\":\"Medium\"", StringComparison.Ordinal)));
+        var rendered = DelegationCardPresentation.Build(card);
+        Assert.Contains("Not started", rendered.ToJsonString());
+        Assert.DoesNotContain("percentComplete:", rendered.ToJsonString());
+        Assert.Contains("Work details", rendered.ToJsonString());
+        Assert.Contains(new string('q', 400), rendered.ToJsonString());
+    }
+
     [Theory]
     [InlineData("https://evil.example/webui/plan/PLAN1/view/board")]
     [InlineData("http://planner.cloud.microsoft/webui/plan/PLAN1/view/board")]
