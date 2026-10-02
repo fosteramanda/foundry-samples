@@ -85,7 +85,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             workItemService = new WorkItemService(configuration, new LoggerFactory().CreateLogger<WorkItemService>());
         }
         _workItemTools = new WorkItemToolHandler(agentMetadata, _logger, graphAccessToken, httpClient, workItemService, _reactionService);
-        _workIqA2ATools = new WorkIqA2AToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration);
+        _workIqA2ATools = new WorkIqA2AToolHandler(
+            agentMetadata, tokenHelper, _logger, httpClient, _configuration, conversationState);
         _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
         _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
         _mailboxTools = new MailboxToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
@@ -123,7 +124,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                     Type = ActivityTypes.Message, ChannelId = "msteams",
                     Conversation = new ConversationAccount { Id = job.ConversationId }
                 }, WithStandingAttribution($"<p><strong>{System.Net.WebUtility.HtmlEncode(job.Title)}</strong></p>{html}"), CancellationToken.None),
-                async (id, question) => await _workIqA2ATools.AskForStandingJobAsync(id, question),
+                async (jobId, id, question) => await _workIqA2ATools.AskForStandingJobAsync(jobId, id, question),
                 _accessControl.ResolveStandingJobMemberAsync, _logger,
                 briefs.PublishAsync, briefs.ReconcileAsync, briefs.ReplyAsync);
         }
@@ -328,7 +329,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         // Start a fresh delegation trail for this turn so the cue below reflects only what
         // this turn actually did.
-        _workIqA2ATools.BeginTurn();
+        _workIqA2ATools.BeginTurn(turnContext.Activity.Conversation?.Id is { Length: > 0 } chatId ? "chat:" + chatId : null);
 
         if (_standingTools?.Turn is { } standingTurn
             && !ScheduledChatDelivery.IsScheduledChat(turnContext.Activity))
@@ -638,7 +639,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             // Only the A2A tools, not the full local bundle: the work-item tools depend on
             // SetCurrentActivityContext, which is a Teams concept (it drives the 📌 reaction)
             // and is never set on this path.
-            _workIqA2ATools.BeginTurn();
+            _workIqA2ATools.BeginTurn(turnContext.Activity.Conversation?.Id is { Length: > 0 } mailId ? "mail:" + mailId : null);
 
             var response = await _responsesApiClient.InvokeAsync(
                 prompt,

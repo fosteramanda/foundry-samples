@@ -836,7 +836,7 @@ public class StandingJobTests
                 (job, enabled) => { ScheduleCalls++; return Task.FromResult((ScheduleWorks, "schedule result")); },
                 (to, subject, body) => { MailCalls++; LastSubject = subject; return Task.FromResult((true, "mail accepted")); },
                 (job, html) => Task.FromResult("chat-receipt"),
-                (id, question) => { DelegateCalls++; return Task.FromResult<string?>(SpecialistResponse); },
+                (jobId, id, question) => { DelegateCalls++; return Task.FromResult<string?>(SpecialistResponse); },
                 id => Task.FromResult(id == Manager.Id ? new StandingJobMember(Manager.Id, Manager.Email!)
                     : id == Owner.Id ? new StandingJobMember(Owner.Id, Owner.Email!) : null),
                 NullLogger.Instance,

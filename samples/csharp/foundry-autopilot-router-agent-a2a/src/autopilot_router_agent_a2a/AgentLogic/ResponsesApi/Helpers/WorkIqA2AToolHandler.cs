@@ -4,6 +4,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using Azure;
 using Azure.Core;
 using WorkstreamManager.Models;
 using WorkstreamManager.Services;
@@ -37,7 +39,17 @@ internal class WorkIqA2AToolHandler
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly string _audience;
-    private readonly AgentTokenCredential? _credential;
+    private readonly TokenCredential? _credential;
+    private readonly ConversationStateStore? _conversationState;
+    private readonly AgentMetadata _agentMetadata;
+    private readonly Dictionary<string, string> _turnContexts = new(StringComparer.Ordinal);
+    private string? _conversationScope;
+
+    private sealed class InvocationContext(string? scope, string? contextId)
+    {
+        internal string? Scope { get; } = scope;
+        internal string? ContextId { get; set; } = contextId;
+    }
 
     // Agents that completed a call but returned no text. Work IQ reports these as
     // successful tasks with an empty artifact, which reads like a normal answer to a
@@ -107,10 +119,11 @@ internal class WorkIqA2AToolHandler
     /// instance can outlive a single turn, and a stale trail would attribute the previous
     /// turn's hand-off to this one.
     /// </summary>
-    internal void BeginTurn()
+    internal void BeginTurn(string? conversationScope = null)
     {
         _delegations.Clear();
         _pendingHandoffs.Clear();
+        _conversationScope = conversationScope;
     }
 
     /// <summary>Delegations made during the current turn, in call order.</summary>
@@ -164,10 +177,14 @@ internal class WorkIqA2AToolHandler
         AgentTokenHelper? tokenHelper,
         ILogger logger,
         HttpClient httpClient,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        ConversationStateStore? conversationState = null,
+        TokenCredential? credential = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        _agentMetadata = agentMetadata;
+        _conversationState = conversationState;
 
         var configuredBase = configuration["WorkIqA2ABaseUrl"];
         _baseUrl = (string.IsNullOrWhiteSpace(configuredBase) ? DefaultBaseUrl : configuredBase.Trim()).TrimEnd('/') + "/";
@@ -177,7 +194,7 @@ internal class WorkIqA2AToolHandler
 
         // One credential covers discovery and invocation: both are A2A on the same host and
         // audience (fdcc1f02-…).
-        _credential = tokenHelper is null ? null : new AgentTokenCredential(tokenHelper, agentMetadata);
+        _credential = credential ?? (tokenHelper is null ? null : new AgentTokenCredential(tokenHelper, agentMetadata));
     }
 
     /// <summary>
@@ -230,12 +247,13 @@ internal class WorkIqA2AToolHandler
             {
                 "type": "function",
                 "name": "ask_workiq_agent",
-                "description": "Sends a question to a specific agent over Work IQ A2A and returns its answer. Pass the agent_id from list_workiq_agents. This delegates to another agent, so name that agent in your reply.",
+                "description": "Sends a question to a specific agent over Work IQ A2A and returns its answer. Pass the agent_id from list_workiq_agents. Follow-ups continue that specialist's conversation within this chat, email thread or standing job. Set start_new_conversation only for an explicitly new, unrelated task, never to retry an uncertain write. Name the delegated agent. A reply or preview is not proof of a saved artifact; preserve any real approval requirement.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "agent_id": { "type": "string", "description": "Agent ID exactly as returned by list_workiq_agents" },
-                        "message": { "type": "string", "description": "The question or instruction to send, phrased as you would to a colleague" }
+                        "message": { "type": "string", "description": "The question or instruction to send, phrased as you would to a teammate" },
+                        "start_new_conversation": { "type": "boolean", "description": "Discard only this specialist's saved continuation for the current parent conversation. Defaults to false. Does not cancel or delete any remote task." }
                     },
                     "required": ["agent_id", "message"],
                     "additionalProperties": false
@@ -245,7 +263,10 @@ internal class WorkIqA2AToolHandler
         ];
     }
 
-    internal async Task<string?> TryExecuteAsync(string toolName, string arguments)
+    internal Task<string?> TryExecuteAsync(string toolName, string arguments) =>
+        TryExecuteCoreAsync(toolName, arguments, null);
+
+    private async Task<string?> TryExecuteCoreAsync(string toolName, string arguments, string? scopeOverride)
     {
         if (!IsEnabled)
         {
@@ -270,7 +291,10 @@ internal class WorkIqA2AToolHandler
                     return await GetAgentCardAsync(GetStringArg(args, "agent_id"));
 
                 case "ask_workiq_agent":
-                    return await AskAgentAsync(GetStringArg(args, "agent_id"), GetStringArg(args, "message"));
+                    return await AskAgentAsync(
+                        GetStringArg(args, "agent_id"), GetStringArg(args, "message"),
+                        args.TryGetProperty("start_new_conversation", out var reset) && reset.GetBoolean(),
+                        scopeOverride);
 
                 default:
                     return null;
@@ -290,7 +314,7 @@ internal class WorkIqA2AToolHandler
             ? prop.GetString() ?? string.Empty
             : string.Empty;
 
-    private async Task<HttpRequestMessage> BuildRequestAsync(HttpMethod method, string url)
+    private async Task<HttpRequestMessage> BuildRequestAsync(HttpMethod method, string url, string? rpcMethod = null)
     {
         var token = await _credential!.GetTokenAsync(
             new TokenRequestContext([$"{_audience}/.default"]),
@@ -300,9 +324,7 @@ internal class WorkIqA2AToolHandler
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        // Without an explicit version the gateway serves A2A v0.3, which does not
-        // implement the v1.0 send method and answers -32601 Method not found.
-        request.Headers.TryAddWithoutValidation("A2A-Version", "1.0");
+        request.Headers.TryAddWithoutValidation("A2A-Version", rpcMethod?.Contains('/') == true ? "0.3" : "1.0");
         return request;
     }
 
@@ -593,7 +615,8 @@ internal class WorkIqA2AToolHandler
         }
     }
 
-    private async Task<string> AskAgentAsync(string agentId, string message)
+    private async Task<string> AskAgentAsync(
+        string agentId, string message, bool startNewConversation = false, string? scopeOverride = null)
     {
         if (string.IsNullOrWhiteSpace(agentId))
         {
@@ -620,17 +643,31 @@ internal class WorkIqA2AToolHandler
         // copilot_chat on the Agent 365 server is not an option here and is not a fallback:
         // it reaches no agent at all, and answers as generic Copilot with no attribution
         // field in the payload to reveal it. Removed from this sample entirely.
+        var parentScope = scopeOverride ?? _conversationScope;
+        var scope = !string.IsNullOrWhiteSpace(parentScope)
+            && _agentMetadata.TenantId != Guid.Empty && _agentMetadata.UserId != Guid.Empty
+            ? JsonSerializer.Serialize(new[] { _baseUrl, _agentMetadata.AgentId.ToString("D"), parentScope, agentId })
+            : null;
+        if (scope == null)
+            _logger.LogWarning("A2A delegation has no authenticated conversation scope; downstream context will not be reused.");
+        if (scope != null && startNewConversation)
+        {
+            if (_conversationState != null)
+                await _conversationState.ClearA2AContextAsync(ContextPartition, scope);
+            _turnContexts.Remove(scope);
+        }
+        var priorContext = scope == null ? null : _conversationState != null
+            ? await _conversationState.LoadA2AContextAsync(ContextPartition, scope)
+            : _turnContexts.GetValueOrDefault(scope);
+        if (_conversationState == null && scope != null)
+            _logger.LogWarning("A2A continuation has no shared store; it is available only within this handler.");
+        var context = new InvocationContext(scope, priorContext);
         var pendingBefore = _pendingHandoffs.Count;
-        var answer = await AskViaA2AAsync(agentId, message);
+        var answer = await AskViaA2AAsync(agentId, message, context);
 
-        // Reuse the existing failure convention rather than inventing a second one: every
-        // no-answer path in AskViaA2AAsync returns a message starting "Agent '<id>' …", and
-        // that prefix is already load-bearing there. A real answer never starts that way.
         var outcome = _pendingHandoffs.Count > pendingBefore
             ? DelegationOutcome.Pending
-            : answer.StartsWith("Agent '", StringComparison.Ordinal)
-                ? DelegationOutcome.NoAnswer
-                : DelegationOutcome.Answered;
+            : HasCompletedAnswer(answer) ? DelegationOutcome.Answered : DelegationOutcome.NoAnswer;
 
         _delegations.Add(new DelegationRecord(agentId, ResolveDisplayName(agentId), outcome));
 
@@ -642,13 +679,13 @@ internal class WorkIqA2AToolHandler
     /// the model can pass an id it got from somewhere other than discovery, and showing the
     /// raw id is honest, whereas showing nothing would hide that a hand-off happened.
     /// </summary>
-    internal async Task<string> AskForStandingJobAsync(string agentId, string question)
+    internal async Task<string> AskForStandingJobAsync(string jobId, string agentId, string question)
     {
         if (!_nameCache.ContainsKey(agentId))
             await GetAgentCardAsync(agentId);
         var pendingBefore = _pendingHandoffs.Count;
-        var answer = await TryExecuteAsync("ask_workiq_agent",
-            JsonSerializer.Serialize(new { agent_id = agentId, message = question }));
+        var answer = await TryExecuteCoreAsync("ask_workiq_agent",
+            JsonSerializer.Serialize(new { agent_id = agentId, message = question }), "job:" + jobId);
         var pending = _pendingHandoffs.Skip(pendingBefore).ToArray();
         if (pending.Length > 0)
         {
@@ -671,6 +708,7 @@ internal class WorkIqA2AToolHandler
         });
     }
 
+    // This checks for returned answer content, not a committed business operation.
     internal static bool HasCompletedAnswer(string? answer) =>
         !string.IsNullOrWhiteSpace(answer)
         && !answer.StartsWith("Agent '", StringComparison.Ordinal)
@@ -800,38 +838,28 @@ internal class WorkIqA2AToolHandler
         return (true, text, null);
     }
 
-    private async Task<string> AskViaA2AAsync(string agentId, string message)
+    private async Task<string> AskViaA2AAsync(string agentId, string message, InvocationContext context)
     {
         var url = $"{_baseUrl}{Uri.EscapeDataString(agentId)}/";
 
-        // Two different A2A implementations are reachable from this handler, and they
-        // disagree on both the method name and the role encoding:
-        //
-        //   Work IQ gateway (workiq.svc.cloud.microsoft/a2a)  implements A2A.V0_3
-        //       method "message/send", role "user"            <- JSON string, lowercase
-        //       "SendMessage"          -> -32601 Method not found
-        //       role "ROLE_USER"       -> -32602 could not convert to A2A.V0_3.MessageRole
-        //       role omitted           -> -32602 missing required properties: 'role'
-        //
-        //   Foundry endpoint (…/endpoint/protocols/a2a)       implements A2A v1.0 (protobuf)
-        //       method "SendMessage", role "ROLE_USER"        <- enum name
-        //       "message/send"         -> -32601 / -32602
-        //
-        // Measured 18 Aug 2026 against both gateways. Order matters only for cost: the
-        // first entry is the one Work IQ accepts, and Work IQ is the default base URL.
+        // Negotiate v1 first. A legacy retry is permitted only when the server
+        // rejects the method/shape before accepting the request.
         var attempts = new (string Method, string? Role)[]
         {
-            ("message/send", "user"),
             ("SendMessage", "ROLE_USER"),
+            ("message/send", "user"),
         };
 
         string? lastError = null;
         string? lastTaskId = null;
         foreach (var (method, role) in attempts)
         {
-            var (text, retryable, error) = await SendMessageAsync(url, agentId, message, method, role);
+            var pendingBefore = _pendingHandoffs.Count;
+            var (text, retryable, error) = await SendMessageAsync(url, agentId, message, method, role, context);
             if (!retryable)
             {
+                if (_pendingHandoffs.Count > pendingBefore)
+                    return text;
                 if (!string.IsNullOrWhiteSpace(text) && !text.StartsWith("Agent '", StringComparison.Ordinal))
                 {
                     return text;
@@ -841,7 +869,7 @@ internal class WorkIqA2AToolHandler
                 // synchronous response. Before calling the agent silent, exhaust the two other
                 // channels the A2A protocol can deliver an answer on.
                 lastTaskId = _lastTaskId;
-                var recovered = await TryRecoverAnswerAsync(url, agentId, message, lastTaskId);
+                var recovered = await TryRecoverAnswerAsync(url, agentId, lastTaskId, context);
                 return recovered ?? text;
             }
 
@@ -869,13 +897,14 @@ internal class WorkIqA2AToolHandler
     /// the synchronous response — which is exactly the shape we observed (a completed task
     /// whose "Answer" artifact carried only a sensitivity-label part).
     /// </summary>
-    private async Task<string?> TryRecoverAnswerAsync(string url, string agentId, string message, string? taskId)
+    private async Task<string?> TryRecoverAnswerAsync(
+        string url, string agentId, string? taskId, InvocationContext context)
     {
         if (!string.IsNullOrWhiteSpace(taskId))
         {
             foreach (var method in new[] { "GetTask", "tasks/get" })
             {
-                var text = await TryGetTaskAsync(url, agentId, taskId!, method);
+                var text = await TryGetTaskAsync(url, agentId, taskId!, method, context);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     _logger.LogInformation(
@@ -888,9 +917,11 @@ internal class WorkIqA2AToolHandler
             }
         }
 
-        foreach (var method in new[] { "message/stream", "SendStreamingMessage" })
+        if (string.IsNullOrWhiteSpace(taskId))
+            return null;
+        foreach (var method in new[] { "SubscribeToTask", "tasks/resubscribe" })
         {
-            var text = await TryStreamAsync(url, agentId, message, method);
+            var text = await TrySubscribeAsync(url, agentId, taskId, method, context);
             if (!string.IsNullOrWhiteSpace(text))
             {
                 _logger.LogInformation(
@@ -926,7 +957,8 @@ internal class WorkIqA2AToolHandler
         return null;
     }
 
-    private async Task<string?> TryGetTaskAsync(string url, string agentId, string taskId, string method)
+    private async Task<string?> TryGetTaskAsync(
+        string url, string agentId, string taskId, string method, InvocationContext? context = null)
     {
         try
         {
@@ -938,7 +970,7 @@ internal class WorkIqA2AToolHandler
                 ["params"] = new JsonObject { ["id"] = taskId, ["name"] = $"tasks/{taskId}" },
             };
 
-            using var request = await BuildRequestAsync(HttpMethod.Post, url);
+            using var request = await BuildRequestAsync(HttpMethod.Post, url, method);
             request.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
             using var response = await _httpClient.SendAsync(request);
             var body = await response.Content.ReadAsStringAsync();
@@ -960,6 +992,10 @@ internal class WorkIqA2AToolHandler
             }
 
             var text = ExtractText(root?["result"]);
+            if (context != null)
+                await PreserveContextAsync(root?["result"], context, agentId);
+            if (TaskFailure(root?["result"], agentId) is { } failure)
+                return failure;
             if (string.IsNullOrWhiteSpace(text))
             {
                 _logger.LogInformation(
@@ -979,30 +1015,22 @@ internal class WorkIqA2AToolHandler
     }
 
     /// <summary>
-    /// Sends over the streaming method and accumulates text from the SSE frames. Each frame is
-    /// a JSON-RPC envelope whose result is a message, a task, or an artifact-update event.
+    /// Subscribes to an accepted task without sending the user's request again.
     /// </summary>
-    private async Task<string?> TryStreamAsync(string url, string agentId, string message, string method)
+    private async Task<string?> TrySubscribeAsync(
+        string url, string agentId, string taskId, string method, InvocationContext context)
     {
         try
         {
-            var messageNode = new JsonObject
-            {
-                ["kind"] = "message",
-                ["role"] = "ROLE_USER",
-                ["messageId"] = Guid.NewGuid().ToString(),
-                ["parts"] = new JsonArray(new JsonObject { ["kind"] = "text", ["text"] = message }),
-            };
-
             var payload = new JsonObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = Guid.NewGuid().ToString("N"),
                 ["method"] = method,
-                ["params"] = new JsonObject { ["message"] = messageNode },
+                ["params"] = new JsonObject { ["id"] = taskId, ["name"] = $"tasks/{taskId}" },
             };
 
-            using var request = await BuildRequestAsync(HttpMethod.Post, url);
+            using var request = await BuildRequestAsync(HttpMethod.Post, url, method);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
             request.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
@@ -1047,10 +1075,13 @@ internal class WorkIqA2AToolHandler
                 {
                     continue;
                 }
+                await PreserveContextAsync(result, context, agentId);
+                if (TaskFailure(result, agentId) is { } failure)
+                    return failure;
 
                 // Artifact-update events nest the payload one level deeper than a task does.
                 var text = ExtractText(result)
-                    + ExtractText(result["artifactUpdate"])
+                    + ExtractText(result["artifactUpdate"]?["artifact"])
                     + ExtractText(result["artifact"]);
 
                 if (!string.IsNullOrWhiteSpace(text))
@@ -1084,19 +1115,22 @@ internal class WorkIqA2AToolHandler
         string agentId,
         string message,
         string method,
-        string? role)
+        string? role,
+        InvocationContext context)
     {
+        var legacy = method.Contains('/');
+        var part = new JsonObject { ["text"] = message };
+        if (legacy)
+            part["kind"] = "text";
         var messageNode = new JsonObject
         {
-            ["kind"] = "message",
             ["messageId"] = Guid.NewGuid().ToString(),
-            ["parts"] = new JsonArray(
-                new JsonObject
-                {
-                    ["kind"] = "text",
-                    ["text"] = message,
-                }),
+            ["parts"] = new JsonArray(part),
         };
+        if (legacy)
+            messageNode["kind"] = "message";
+        if (!string.IsNullOrWhiteSpace(context.ContextId))
+            messageNode["contextId"] = context.ContextId;
 
         if (role != null)
         {
@@ -1114,8 +1148,11 @@ internal class WorkIqA2AToolHandler
             },
         };
 
-        using var request = await BuildRequestAsync(HttpMethod.Post, url);
+        using var request = await BuildRequestAsync(HttpMethod.Post, url, method);
         request.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        _logger.LogInformation(
+            "Work IQ A2A send. agentId={AgentId} continued={Continued} contextHash={ContextHash}",
+            agentId, context.ContextId != null, ContextHash(context.ContextId));
 
         using var response = await _httpClient.SendAsync(request);
         var body = await response.Content.ReadAsStringAsync();
@@ -1163,6 +1200,19 @@ internal class WorkIqA2AToolHandler
         }
 
         var text = ExtractText(root?["result"]);
+        try
+        {
+            await PreserveContextAsync(root?["result"], context, agentId);
+        }
+        catch (Exception ex) when (ex is RequestFailedException or InvalidOperationException or JsonException or HttpRequestException)
+        {
+            _logger.LogError(ex, "A2A request was accepted, but its continuation could not be retained for {AgentId}.", agentId);
+            return ("ERROR: The specialist already processed this request, but its conversation continuation could not be retained. " +
+                    "Do not repeat the request: its side effects may already exist. " +
+                    $"Specialist response: {text}", false, null);
+        }
+        if (TaskFailure(root?["result"], agentId) is { } failure)
+            return (failure, false, null);
 
         // Remember the task id even when the answer is empty: the recovery path polls it.
         _lastTaskId = root?["result"]?["task"]?["id"]?.GetValue<string>()
@@ -1225,6 +1275,62 @@ internal class WorkIqA2AToolHandler
 
         _logger.LogInformation("Work IQ A2A agent {AgentId} answered ({Length} chars).", agentId, text.Length);
         return (text, false, null);
+    }
+
+    private string ContextPartition => $"{_agentMetadata.TenantId:D}:{_agentMetadata.UserId:D}";
+
+    private static string? TaskFailure(JsonNode? result, string agentId)
+    {
+        var task = result?["task"] ?? result?["statusUpdate"] ?? result;
+        var state = task?["status"]?["state"]?.GetValue<string>();
+        return state is "TASK_STATE_FAILED" or "TASK_STATE_CANCELED" or "TASK_STATE_REJECTED"
+            or "failed" or "canceled" or "rejected"
+            ? $"ERROR: Agent '{agentId}' returned task state {state}. {ExtractText(task)}"
+            : null;
+    }
+
+    private static string ContextHash(string? value) => value == null
+        ? "(none)"
+        : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..12];
+
+    internal static string? ExtractContextId(JsonNode? result)
+    {
+        if (result is not JsonObject)
+            return null;
+        var contexts = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var node in new[] { result, result["task"], result["message"], result["statusUpdate"], result["artifactUpdate"] })
+        {
+            if (node?["contextId"] is not { } context)
+                continue;
+            if (context is not JsonValue value || !value.TryGetValue<string>(out var id) || string.IsNullOrWhiteSpace(id))
+                throw new JsonException("The A2A response contains an invalid contextId.");
+            contexts.Add(id);
+        }
+        if (contexts.Count > 1)
+            throw new JsonException("The A2A response contains conflicting conversation identifiers.");
+        return contexts.SingleOrDefault();
+    }
+
+    private async Task PreserveContextAsync(JsonNode? result, InvocationContext context, string agentId)
+    {
+        var returned = ExtractContextId(result);
+        if (returned == null)
+        {
+            if (context.ContextId == null)
+                _logger.LogWarning("A2A agent {AgentId} returned no conversation identifier; follow-up continuity is unavailable.", agentId);
+            return;
+        }
+        if (context.ContextId != null && context.ContextId != returned)
+            throw new InvalidOperationException("The specialist returned a different conversation identifier for a continued request.");
+        if (context.Scope != null && context.ContextId != returned)
+        {
+            if (_conversationState != null)
+                await _conversationState.SaveA2AContextAsync(ContextPartition, context.Scope, returned, context.ContextId);
+            _turnContexts[context.Scope] = returned;
+        }
+        context.ContextId = returned;
+        _logger.LogInformation("Work IQ A2A context retained. agentId={AgentId} contextHash={ContextHash}",
+            agentId, ContextHash(returned));
     }
 
     /// <summary>

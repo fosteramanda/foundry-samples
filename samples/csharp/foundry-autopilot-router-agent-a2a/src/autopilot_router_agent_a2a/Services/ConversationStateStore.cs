@@ -3,6 +3,7 @@ namespace WorkstreamManager.Services;
 using Azure;
 using Azure.Data.Tables;
 using Azure.Identity;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -30,6 +31,15 @@ public class ConversationStateEntity : ITableEntity
     public string ConversationId { get; set; } = string.Empty;
 }
 
+internal sealed class A2AConversationStateEntity : ITableEntity
+{
+    public string PartitionKey { get; set; } = string.Empty;
+    public string RowKey { get; set; } = string.Empty;
+    public DateTimeOffset? Timestamp { get; set; }
+    public ETag ETag { get; set; }
+    public string ContextId { get; set; } = string.Empty;
+}
+
 /// <summary>
 /// Durable store for per-conversation Responses API chain pointers.
 ///
@@ -49,6 +59,15 @@ public class ConversationStateStore
 {
     private readonly TableClient? _tableClient;
     private readonly ILogger<ConversationStateStore> _logger;
+    private readonly ConcurrentDictionary<string, string> _localA2AContexts = new(StringComparer.Ordinal);
+    private readonly bool _a2aDurableRequired;
+    private int _warnedAboutLocalA2A;
+
+    internal ConversationStateStore(TableClient? tableClient, ILogger<ConversationStateStore> logger)
+    {
+        _tableClient = tableClient;
+        _logger = logger;
+    }
 
     public ConversationStateStore(IConfiguration configuration, ILogger<ConversationStateStore> logger)
     {
@@ -57,6 +76,7 @@ public class ConversationStateStore
         // Reuse the work-items table account: same lifetime, same per-instance RBAC grant, and
         // one less thing to provision. The table name is separately configurable.
         var tableServiceUri = ResolveTableServiceUri(configuration);
+        _a2aDurableRequired = !string.IsNullOrWhiteSpace(tableServiceUri);
         var tableName = configuration["ConversationStateTableName"] ?? "conversationstate";
 
         if (string.IsNullOrWhiteSpace(tableServiceUri))
@@ -90,6 +110,90 @@ public class ConversationStateStore
 
     /// <summary>True when durable storage is available; false means the local-file fallback is in use.</summary>
     public bool IsDurable => _tableClient != null;
+
+    internal async Task<string?> LoadA2AContextAsync(string partitionKey, string scope)
+    {
+        var rowKey = "a2a-" + HashConversationId(scope);
+        if (_tableClient == null)
+        {
+            WarnAboutLocalA2A();
+            return _localA2AContexts.TryGetValue(partitionKey + "/" + rowKey, out var context) ? context : null;
+        }
+
+        var response = await _tableClient.GetEntityIfExistsAsync<A2AConversationStateEntity>(partitionKey, rowKey);
+        if (!response.HasValue)
+            return null;
+        var entity = response.Value ?? throw new InvalidOperationException("A stored A2A continuation has no entity.");
+        if (string.IsNullOrWhiteSpace(entity.ContextId))
+            throw new InvalidOperationException("A stored A2A continuation has no valid context identifier.");
+        return entity.ContextId;
+    }
+
+    internal async Task SaveA2AContextAsync(
+        string partitionKey, string scope, string contextId, string? expectedContextId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(contextId);
+        var rowKey = "a2a-" + HashConversationId(scope);
+        if (_tableClient == null)
+        {
+            WarnAboutLocalA2A();
+            var key = partitionKey + "/" + rowKey;
+            if (_localA2AContexts.TryGetValue(key, out var existing) && existing == contextId)
+                return;
+            var saved = expectedContextId == null
+                ? _localA2AContexts.TryAdd(key, contextId)
+                : _localA2AContexts.TryUpdate(key, contextId, expectedContextId);
+            if (!saved)
+                throw new InvalidOperationException("Another delegation changed this conversation's continuation.");
+            return;
+        }
+
+        var current = await _tableClient.GetEntityIfExistsAsync<A2AConversationStateEntity>(partitionKey, rowKey);
+        var previous = current.HasValue
+            ? current.Value ?? throw new InvalidOperationException("A stored A2A continuation has no entity.")
+            : null;
+        if (previous?.ContextId == contextId)
+            return;
+        if (previous?.ContextId != expectedContextId)
+            throw new InvalidOperationException("Another delegation changed this conversation's continuation.");
+        var entity = new A2AConversationStateEntity
+        {
+            PartitionKey = partitionKey, RowKey = rowKey, ContextId = contextId
+        };
+        if (previous != null)
+            await _tableClient.UpdateEntityAsync(entity, previous.ETag, TableUpdateMode.Replace);
+        else
+            await _tableClient.AddEntityAsync(entity);
+    }
+
+    internal async Task ClearA2AContextAsync(string partitionKey, string scope)
+    {
+        var rowKey = "a2a-" + HashConversationId(scope);
+        if (_tableClient == null)
+        {
+            WarnAboutLocalA2A();
+            _localA2AContexts.TryRemove(partitionKey + "/" + rowKey, out _);
+            return;
+        }
+
+        var current = await _tableClient.GetEntityIfExistsAsync<A2AConversationStateEntity>(partitionKey, rowKey);
+        if (current.HasValue)
+        {
+            var entity = current.Value ?? throw new InvalidOperationException("A stored A2A continuation has no entity.");
+            await _tableClient.DeleteEntityAsync(partitionKey, rowKey, entity.ETag);
+        }
+    }
+
+    private void WarnAboutLocalA2A()
+    {
+        if (_a2aDurableRequired)
+            throw new InvalidOperationException(
+                "Configured durable A2A conversation storage is unavailable. A fresh downstream request was not substituted.");
+        if (Interlocked.Exchange(ref _warnedAboutLocalA2A, 1) == 0)
+            _logger.LogWarning(
+                "A2A continuation is held only in this store's memory because durable conversation storage is unavailable. " +
+                "It will not survive a restart or work across replicas.");
+    }
 
     internal static string? ResolveTableServiceUri(IConfiguration configuration)
     {
