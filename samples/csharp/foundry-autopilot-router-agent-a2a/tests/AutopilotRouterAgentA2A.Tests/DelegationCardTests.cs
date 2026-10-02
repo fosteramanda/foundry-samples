@@ -313,6 +313,44 @@ public class DelegationCardTests
         Assert.Null(await store.GetRouteAsync("owner", "person-a", "agent-b"));
     }
 
+    [Fact]
+    public void ReceiptLookupRequiresBothExactCorrelationAndTheSendingAgentUser()
+    {
+        var owner = Guid.NewGuid();
+        var marker = "delegation-card-" + Guid.NewGuid().ToString("N");
+        using var messages = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            value = new object[]
+            {
+                new { id = "wrong-owner", from = new { user = new { id = Guid.NewGuid() } },
+                    attachments = new[] { new { contentType = "application/vnd.microsoft.card.adaptive",
+                        content = JsonSerializer.Serialize(new { body = new[] { new { id = marker } } }) } } },
+                new { id = "wrong-card", from = new { user = new { id = owner } },
+                    attachments = new[] { new { contentType = "application/vnd.microsoft.card.adaptive",
+                        content = JsonSerializer.Serialize(new { body = new[] { new { id = "another-card" } } }) } } },
+                new { id = "system-message", from = new { user = (object?)null, application = new { id = owner } },
+                    attachments = Array.Empty<object>() },
+                new { id = "exact-card", from = new { user = new { id = owner } },
+                    attachments = new[] { new { contentType = "application/vnd.microsoft.card.adaptive",
+                        content = JsonSerializer.Serialize(new { body = new[] { new { id = marker } } }) } } }
+            }
+        }));
+        Assert.Equal("exact-card", Assert.Single(DelegationCardReceipt.Find(messages.RootElement, marker, owner)));
+    }
+
+    [Fact]
+    public void CardOnlyActivityAvoidsTheAgenticTextAndAttachmentSplit()
+    {
+        var state = Card();
+        var activity = DelegationCardPresentation.Activity(state);
+        Assert.True(string.IsNullOrEmpty(activity.Text));
+        var attachment = Assert.Single(activity.Attachments);
+        Assert.Equal("delegation-" + state.RowKey, attachment.Name);
+        var card = Assert.IsType<JsonObject>(attachment.Content);
+        Assert.Equal(attachment.Name, card["body"]![0]!["id"]!.GetValue<string>());
+        Assert.False(string.IsNullOrWhiteSpace(card["fallbackText"]!.GetValue<string>()));
+    }
+
     private static object Action(string id, string action) => new { kind = DelegationCardPresentation.ActionKind, id, action };
     private static AgentMetadata Owner() => new() { TenantId = Guid.NewGuid(), UserId = Guid.NewGuid(), AgentId = Guid.NewGuid() };
     private static DelegationCardEntity Card(AgentMetadata? owner = null)
