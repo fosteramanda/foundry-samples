@@ -471,7 +471,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private DelegationCardCoordinator CreateCardCoordinator(
         ITurnContext turnContext, StandingJobCaller caller, CancellationToken token)
     {
-        var conversation = new Microsoft.Agents.Builder.App.Proactive.Conversation(turnContext);
+        var conversation = DelegationCardChannel.Capture(turnContext, _agentMetadata,
+            _configuration["Connections:ServiceConnection:Settings:ClientId"]);
         _cardConversationJson = conversation.ToJson();
         return new DelegationCardCoordinator(
             _agentMetadata, _delegationCardStore!, _workIqA2ATools,

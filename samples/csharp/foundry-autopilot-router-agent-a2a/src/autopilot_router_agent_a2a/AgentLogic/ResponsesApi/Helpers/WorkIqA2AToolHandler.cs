@@ -768,7 +768,8 @@ internal class WorkIqA2AToolHandler
         if (Observer == null) return;
         try { await Observer(exchange); }
         catch (Exception ex) when (ex is RequestFailedException or HttpRequestException or OperationCanceledException
-            or Microsoft.Agents.Core.Errors.ErrorResponseException or InvalidOperationException or FormatException or JsonException)
+            or Microsoft.Agents.Core.Errors.ErrorResponseException or InvalidOperationException or ArgumentException
+            or FormatException or JsonException)
         {
             CardDeliveryFailed = true;
             _logger.LogError(ex, "Native delegation card could not be delivered or updated. operation={OperationId} agent={AgentId}",
