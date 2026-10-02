@@ -141,8 +141,11 @@ internal static class DelegationCardPresentation
         {
             Type = ActivityTypes.Message,
             Id = string.IsNullOrEmpty(state.ActivityId) ? null : state.ActivityId,
-            Text = $"{state.AgentName}: {Status(state.State)}",
-            Attachments = [new Attachment { ContentType = "application/vnd.microsoft.card.adaptive", Content = content }]
+            Attachments = [new Attachment
+            {
+                ContentType = "application/vnd.microsoft.card.adaptive", Content = content,
+                Name = "delegation-" + state.RowKey
+            }]
         };
     }
 
@@ -158,6 +161,7 @@ internal static class DelegationCardPresentation
                     new JsonObject { ["title"] = "Working with", ["value"] = Plain(state.AgentName) },
                     new JsonObject { ["title"] = "Work", ["value"] = Plain(state.Question) })
             });
+        body[0]!["id"] = "delegation-" + state.RowKey;
         var actions = new JsonArray();
         if (!string.IsNullOrWhiteSpace(state.Detail)) body.Add(Block(state.Detail));
         var planner = string.IsNullOrEmpty(state.PreviewJson)

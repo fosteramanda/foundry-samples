@@ -40,6 +40,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly IDelegationCardStore? _delegationCardStore;
     private DelegationCardCoordinator? _delegationCards;
     private string _cardConversationJson = "";
+    private readonly HttpClient _cardHttp;
+    private readonly string? _cardGraphToken;
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -65,6 +67,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _pendingDelegations = pendingDelegations;
 
         var httpClient = transport ?? new HttpClient();
+        _cardHttp = httpClient;
+        _cardGraphToken = graphAccessToken;
         // A single Responses API call can run for a while when the model fans out to MCP tools
         // server-side (e.g. live ADO/Word/Graph queries for a launch-status email). The default
         // HttpClient.Timeout is 100s; complex email/loop-in turns exceeded it and threw
@@ -472,7 +476,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             async activity =>
             {
                 var receipt = await turnContext.SendActivityAsync(activity, token);
-                return receipt.Id;
+                return await DelegationCardReceipt.ResolveAsync(receipt.Id, activity, _cardHttp, _cardGraphToken,
+                    turnContext.Activity.Conversation.Id, _agentMetadata.UserId, token);
             },
             async activity => { await turnContext.UpdateActivityAsync(activity, token); },
             async text => { await turnContext.SendActivityAsync(MessageFactory.Text(text), token); },
@@ -524,7 +529,12 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _delegationCards = new DelegationCardCoordinator(
             _agentMetadata, _delegationCardStore, _workIqA2ATools, route.ConversationId, route.ConversationJson,
             route.OwnerName, caller,
-            async activity => (await DelegationCardChannel.SendAsync(context.Adapter, conversation, activity, CancellationToken.None)).Id,
+            async activity =>
+            {
+                var receipt = await DelegationCardChannel.SendAsync(context.Adapter, conversation, activity, CancellationToken.None);
+                return await DelegationCardReceipt.ResolveAsync(receipt.Id, activity, _cardHttp, _cardGraphToken,
+                    route.ConversationId, _agentMetadata.UserId, CancellationToken.None);
+            },
             activity => DelegationCardChannel.UpdateAsync(context.Adapter, conversation, activity, CancellationToken.None),
             async text => { await DelegationCardChannel.SendAsync(context.Adapter, conversation,
                 (Activity)MessageFactory.Text(text), CancellationToken.None); },
