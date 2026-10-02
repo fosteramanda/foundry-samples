@@ -139,6 +139,28 @@ public class DelegationCardTests
         Assert.False(DelegationCardPresentation.ReadPlanner(raw)!.CanApprove);
     }
 
+    [Fact]
+    public void PlannerDateAliasesAndEvidenceNotesRemainReviewableWithoutInventingMissingDates()
+    {
+        var answer = Preview.Replace("\"title\":\"Reviewed task\"",
+            "\"title\":\"Reviewed task\",\"startDate\":\"2026-10-03\",\"dueDate\":\"2026-10-05\",\"notes\":\"Evidence is retained in full.\"",
+            StringComparison.Ordinal);
+        var preview = DelegationCardPresentation.ReadPlanner(answer)!;
+        Assert.True(preview.CanApprove);
+        Assert.Contains("Start: 2026-10-03", preview.Tasks[0].Details);
+        Assert.Contains("Due: 2026-10-05", preview.Tasks[0].Details);
+        Assert.DoesNotContain("No due date", preview.Tasks[0].Details);
+        Assert.Equal("Evidence is retained in full.", preview.Tasks[0].Notes);
+        var card = Card();
+        card.State = DelegationCardStates.Review;
+        card.Answer = answer;
+        card.PreviewJson = JsonSerializer.Serialize(preview);
+        var rendered = DelegationCardPresentation.Build(card).ToJsonString();
+        Assert.Contains("Evidence and notes", rendered);
+        Assert.Contains("Evidence is retained in full.", rendered);
+        Assert.Contains("Approve and save", rendered);
+    }
+
     [Theory]
     [InlineData("another-chat", "requester", "manager")]
     [InlineData("chat-one", "different-user", "manager")]
