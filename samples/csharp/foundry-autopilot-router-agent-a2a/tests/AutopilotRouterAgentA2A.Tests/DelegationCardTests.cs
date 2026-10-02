@@ -10,6 +10,7 @@ using Microsoft.Agents.Builder.App.Proactive;
 using Microsoft.Agents.Core.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using WorkstreamManager.AgentLogic.ResponsesApi;
 using WorkstreamManager.AgentLogic.ResponsesApi.Helpers;
 using WorkstreamManager.Models;
 using WorkstreamManager.Services;
@@ -28,6 +29,40 @@ public class DelegationCardTests
         tasks='[{"title":"Reviewed task","link":"https://planner.cloud.microsoft/webui/plan/PLAN1/view/board/task/TASK1"}]'></m-planner-task-list>
         """;
     private const string Readback = """{"planId":"PLAN1","planTitle":"Reviewed plan","tasks":[{"id":"TASK1","title":"Reviewed task"}]}""";
+
+    [Fact]
+    public void WorkEmailExecutesBeforeReplyingAndDescribesOnlyTheVerifiedTeamsRoute()
+    {
+        var prompt = ResponsesApiAgentLogicService.BuildEmailWorkPrompt(
+            "owner@example.com", "Release review", "Prepare a Planner preview from the recorded decisions.", true, "");
+        Assert.Contains("carry out the authorized work", prompt);
+        Assert.Contains("Do not merely acknowledge", prompt);
+        Assert.Contains("automatically post native delegation cards", prompt);
+        Assert.Contains("leave Save to the authorized approval action", prompt);
+        Assert.Contains("Prepare a Planner preview from the recorded decisions.", prompt);
+        Assert.DoesNotContain("P_b2f25", prompt);
+    }
+
+    [Fact]
+    public void WorkEmailDoesNotPromiseTeamsDeliveryWithoutARecordedRoute()
+    {
+        var prompt = ResponsesApiAgentLogicService.BuildEmailWorkPrompt(
+            "owner@example.com", "Question", "Hello", false, "");
+        Assert.Contains("No verified Teams route is available", prompt);
+        Assert.DoesNotContain("automatically post native delegation cards", prompt);
+        Assert.Contains("informational email does not require creating work", prompt);
+    }
+
+    [Fact]
+    public void EmailOriginComesFromTheActualParentScopeNotSpecialistText()
+    {
+        var card = Card();
+        card.ParentScope = "mail:actual-thread";
+        Assert.Contains("\"title\":\"Source\",\"value\":\"Email\"", DelegationCardPresentation.Build(card).ToJsonString());
+        card.ParentScope = "chat:actual-chat";
+        card.Question = "An email said something";
+        Assert.DoesNotContain("\"title\":\"Source\",\"value\":\"Email\"", DelegationCardPresentation.Build(card).ToJsonString());
+    }
 
     [Fact]
     public void NativeCardContainsReadablePreviewAndOnlyOpaqueActionReferences()
