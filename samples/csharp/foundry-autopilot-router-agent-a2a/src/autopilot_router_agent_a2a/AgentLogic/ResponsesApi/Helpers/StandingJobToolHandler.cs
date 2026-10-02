@@ -18,7 +18,7 @@ internal sealed class StandingJobToolHandler(
     Func<StandingJob, bool, Task<(bool Ok, string Detail)>> configureSchedule,
     Func<IReadOnlyList<string>, string, string, Task<(bool Accepted, string Detail)>> sendMail,
     Func<StandingJob, string, Task<string>> sendChat,
-    Func<string, string, Task<string?>> askAgent,
+    Func<string, string, string, Task<string?>> askAgent,
     Func<string, Task<StandingJobMember?>> resolveMember,
     ILogger logger,
     Func<StandingJob, int, string, string, Task<StandingJobBrief>>? publishBrief = null,
@@ -538,7 +538,7 @@ internal sealed class StandingJobToolHandler(
         return await coordinator.OnceAsync(job.Id, Turn!.Caller, "delegate", key, question,
             async () =>
             {
-                var answer = await askAgent(agentId, question);
+                var answer = await askAgent(job.Id, agentId, question);
                 if (string.IsNullOrWhiteSpace(answer)) return (false, "No specialist result was returned.");
                 var result = JsonNode.Parse(answer);
                 var outcome = result?["outcome"]?.GetValue<string>();
