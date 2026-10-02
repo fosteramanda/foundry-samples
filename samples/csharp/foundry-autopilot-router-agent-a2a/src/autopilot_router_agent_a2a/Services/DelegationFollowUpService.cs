@@ -99,12 +99,12 @@ public class DelegationFollowUpService(
                 {
                     // Tell the user rather than quietly forgetting. An unanswered question the
                     // user believes is still coming is worse than a clear "it never answered".
-                    await DeliverAsync(
+                    var delivered = await DeliverAsync(
                         item,
                         $"<p><i>\U0001F517 <b>{System.Net.WebUtility.HtmlEncode(item.DisplayName)}</b> never returned an answer " +
                         $"to your earlier question ({System.Net.WebUtility.HtmlEncode(Trim(item.Question))}). " +
-                        "I have stopped waiting for it.</i></p>");
-                    await store.RemoveAsync(item.PartitionKey, item.RowKey);
+                        "I have stopped waiting for it.</i></p>", null, timedOut: true);
+                    if (delivered) await store.RemoveAsync(item.PartitionKey, item.RowKey);
                 }
                 else
                 {
@@ -120,8 +120,8 @@ public class DelegationFollowUpService(
                 $"<p>{answer}</p>" +
                 $"<p><i>\U0001F517 Delegated to: <b>{name}</b></i></p>";
 
-            await DeliverAsync(item, body);
-            await store.RemoveAsync(item.PartitionKey, item.RowKey);
+            if (await DeliverAsync(item, body, answer))
+                await store.RemoveAsync(item.PartitionKey, item.RowKey);
         }
     }
 
@@ -159,7 +159,7 @@ public class DelegationFollowUpService(
         }
     }
 
-    private async Task DeliverAsync(PendingDelegationEntity item, string html)
+    private async Task<bool> DeliverAsync(PendingDelegationEntity item, string html, string? answer, bool timedOut = false)
     {
         try
         {
@@ -175,7 +175,69 @@ public class DelegationFollowUpService(
                     item.AgentId,
                     agent != null,
                     adapter != null);
-                return;
+                return false;
+            }
+
+            var conversationState = scope.ServiceProvider.GetService<ConversationStateStore>();
+            if (configuration.GetValue<bool>("EnableDelegationCards")
+                && !string.IsNullOrWhiteSpace(item.CardId) && conversationState?.Table != null)
+            {
+                var metadata = new AgentMetadata
+                {
+                    TenantId = Guid.Parse(item.OwnerTenantId), UserId = Guid.Parse(item.OwnerUserId),
+                    AgentId = Guid.Parse(item.OwnerAgentId), AgentApplicationId = Guid.Parse(item.OwnerAppId)
+                };
+                var cards = new DelegationCardStore(conversationState.Table);
+                var card = await cards.GetAsync($"{metadata.TenantId:D}:{metadata.UserId:D}", item.CardId);
+                if (card != null && !string.IsNullOrWhiteSpace(card.ActivityId))
+                {
+                    var conversation = DelegationCardChannel.ReadConversation(
+                        card.ConversationJson, card.ConversationId, metadata.TenantId.ToString("D"));
+                    var factory = scope.ServiceProvider.GetRequiredService<
+                        WorkstreamManager.AgentLogic.ResponsesApi.ResponsesApiAgentLogicServiceFactory>();
+                    var logic = await factory.CreateForAgentAsync(metadata);
+                    var delivered = false;
+                    await agent.Proactive.ContinueConversationAsync(adapter, conversation, async (context, _, token) =>
+                    {
+                        if (logic is not WorkstreamManager.AgentLogic.ResponsesApi.ResponsesApiAgentLogicService current
+                            || !await current.CanDeliverDelegationCardAsync(context, token))
+                        {
+                            logger.LogWarning("Pending card delivery is no longer authorized. card={CardId}", item.CardId);
+                            return;
+                        }
+                        var tokenHelper = scope.ServiceProvider.GetRequiredService<AgentTokenHelper>();
+                        using var http = scope.ServiceProvider.GetRequiredService<IHttpClientFactory>().CreateClient();
+                        var router = new WorkIqA2AToolHandler(metadata, tokenHelper, logger, http, configuration,
+                            conversationState, interactions: cards);
+                        var caller = new StandingJobCaller(card.RequesterId, card.ManagerId, null);
+                        var coordinator = new DelegationCardCoordinator(
+                            metadata, cards, router, card.ConversationId, card.ConversationJson, card.OwnerName, caller,
+                            async activity => (await context.SendActivityAsync(activity, token)).Id,
+                            async activity => { await context.UpdateActivityAsync(activity, token); },
+                            async text => { await context.SendActivityAsync(MessageFactory.Text(text), token); },
+                            null, logger);
+                        if (item.CardVerification)
+                            await coordinator.CompleteVerificationAsync(card, answer ?? "", timedOut);
+                        else
+                            await coordinator.CompletePendingAsync(card, answer ?? "", timedOut);
+                        foreach (var next in router.PendingHandoffs.Where(handoff => handoff.CardVerification))
+                        {
+                            var queued = await store.AddAsync(new PendingDelegationEntity
+                            {
+                                PartitionKey = item.PartitionKey, AgentId = next.AgentId, DisplayName = next.DisplayName,
+                                TaskId = next.TaskId, A2AUrl = next.A2AUrl, Question = next.Question,
+                                ProactiveConversationId = item.ProactiveConversationId, CardId = next.CardId ?? item.CardId,
+                                CardVerification = true, ConversationJson = card.ConversationJson,
+                                OwnerUserId = item.OwnerUserId, OwnerAgentId = item.OwnerAgentId,
+                                OwnerAppId = item.OwnerAppId, OwnerTenantId = item.OwnerTenantId
+                            });
+                            if (!queued) throw new InvalidOperationException("The late verification could not be queued; the original handoff remains pending.");
+                        }
+                        delivered = true;
+                    }, cancellationToken: CancellationToken.None);
+                    return delivered;
+                }
+                logger.LogWarning("The pending delegation has no usable card receipt; delivering its actual text result. card={CardId}", item.CardId);
             }
 
             var activity = MessageFactory.Text(html);
@@ -191,6 +253,7 @@ public class DelegationFollowUpService(
                 "Follow-up delivered for agent {AgentId} task {TaskId}.",
                 item.AgentId,
                 item.TaskId);
+            return true;
         }
         catch (Exception ex)
         {
@@ -201,6 +264,7 @@ public class DelegationFollowUpService(
                 "Failed to deliver follow-up for agent {AgentId} task {TaskId}.",
                 item.AgentId,
                 item.TaskId);
+            return false;
         }
     }
 

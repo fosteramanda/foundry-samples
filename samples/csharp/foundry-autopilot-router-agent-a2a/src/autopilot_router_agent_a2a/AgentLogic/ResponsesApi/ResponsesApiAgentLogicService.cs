@@ -37,6 +37,9 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly StandingReviewCoordinator? _standingCoordinator;
     private readonly StandingJobToolHandler? _standingTools;
     private readonly StandingBriefPublisher? _standingBriefs;
+    private readonly IDelegationCardStore? _delegationCardStore;
+    private DelegationCardCoordinator? _delegationCards;
+    private string _cardConversationJson = "";
 
     public ResponsesApiAgentLogicService(
         AgentMetadata agent,
@@ -85,8 +88,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             workItemService = new WorkItemService(configuration, new LoggerFactory().CreateLogger<WorkItemService>());
         }
         _workItemTools = new WorkItemToolHandler(agentMetadata, _logger, graphAccessToken, httpClient, workItemService, _reactionService);
+        if (configuration.GetValue<bool>("EnableDelegationCards") && conversationState?.Table != null)
+            _delegationCardStore = new DelegationCardStore(conversationState.Table);
         _workIqA2ATools = new WorkIqA2AToolHandler(
-            agentMetadata, tokenHelper, _logger, httpClient, _configuration, conversationState);
+            agentMetadata, tokenHelper, _logger, httpClient, _configuration, conversationState,
+            interactions: _delegationCardStore);
         _routineTools = new RoutineToolHandler(agentMetadata, tokenHelper, _logger, httpClient, _configuration, graphAccessToken);
         _responsesApiClient.RoutinesEnabled = _routineTools.IsEnabled;
         _mailboxTools = new MailboxToolHandler(agentMetadata, _logger, httpClient, _configuration, graphAccessToken);
@@ -161,6 +167,9 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                 OwnerUserId = _agentMetadata.UserId.ToString(),
                 OwnerAgentId = _agentMetadata.AgentId.ToString(),
                 OwnerAppId = _agentMetadata.AgentApplicationId.ToString(),
+                CardId = _delegationCards != null ? handoff.CardId ?? "" : "",
+                ConversationJson = _cardConversationJson,
+                CardVerification = handoff.CardVerification,
                 OwnerTenantId = _agentMetadata.TenantId.ToString(),
             });
 
@@ -273,6 +282,28 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             return;
         }
 
+        if (DelegationCardPresentation.IsCardAction(turnContext.Activity.Value))
+        {
+            if (_delegationCardStore == null || turnContext.Activity.ChannelId != "msteams")
+            {
+                _logger.LogWarning("Delegation card action rejected because native cards are unavailable.");
+                await turnContext.SendActivityAsync(MessageFactory.Text(
+                    "Native delegation cards are unavailable. No card action was executed."), cancellationToken);
+                return;
+            }
+            var cardCaller = await _accessControl.ResolveStandingJobCallerAsync(sender, cancellationToken);
+            if (cardCaller == null)
+            {
+                await turnContext.SendActivityAsync(MessageFactory.Text(
+                    "This card action could not be authorized. No action was executed."), cancellationToken);
+                return;
+            }
+            _workIqA2ATools.BeginTurn("chat:" + conversationId);
+            _delegationCards = CreateCardCoordinator(turnContext, cardCaller, cancellationToken);
+            await _delegationCards.HandleActionAsync(turnContext.Activity.Value!);
+            return;
+        }
+
         if (ScheduledChatDelivery.IsScheduledChat(turnContext.Activity)
             && StandingReviewCoordinator.ReferencedJob(rawUserMessage) is { } scheduledJob)
         {
@@ -330,6 +361,22 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // Start a fresh delegation trail for this turn so the cue below reflects only what
         // this turn actually did.
         _workIqA2ATools.BeginTurn(turnContext.Activity.Conversation?.Id is { Length: > 0 } chatId ? "chat:" + chatId : null);
+        if (_delegationCardStore != null && turnContext.Activity.ChannelId == "msteams"
+            && !ScheduledChatDelivery.IsScheduledChat(turnContext.Activity))
+        {
+            var cardCaller = _standingTools?.Turn?.Caller
+                ?? await _accessControl.ResolveStandingJobCallerAsync(sender, cancellationToken);
+            if (cardCaller != null)
+            {
+                _delegationCards = CreateCardCoordinator(turnContext, cardCaller, cancellationToken);
+                await StorePersonalCardRouteAsync(turnContext, cardCaller);
+                _workIqA2ATools.Observer = _delegationCards.ObserveAsync;
+            }
+            else
+            {
+                _logger.LogWarning("Native delegation cards could not resolve an approved caller; preserving the text response.");
+            }
+        }
 
         if (_standingTools?.Turn is { } standingTurn
             && !ScheduledChatDelivery.IsScheduledChat(turnContext.Activity))
@@ -375,6 +422,10 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private async Task SendChatAnswerAsync(ITurnContext turnContext, string response, bool wasMentioned, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(response) || _standingTools?.ChatDelivered == true) return;
+        if (_delegationCards?.HasReadablePlannerCard == true && !_workIqA2ATools.CardDeliveryFailed)
+            response = DelegationCardPresentation.WithoutPlannerMarkup(response);
+        if (_workIqA2ATools.CardDeliveryFailed)
+            response = "<p>The live delegation card could not be updated. The actual response is included here instead.</p>" + response;
         // For Teams group chat / channel we send a regular activity so the groupchat features
         // (@-mention entity + Teams reply blockquote) flow through unchanged. StreamingResponse
         // .QueueTextChunk delivers text only, not activity entities, so it cannot carry mention
@@ -385,7 +436,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // The Message handler only opens a stream (via QueueInformativeUpdateAsync) when that
         // flag is true; if we queued text here while the flag is false there would be no
         // opened stream to render into, so we must fall through to SendActivityAsync instead.
-        var enableStreamingUpdates = _configuration.GetValue<bool>("EnableStreamingUpdates");
+        var enableStreamingUpdates = _configuration.GetValue<bool>("EnableStreamingUpdates")
+            && !_configuration.GetValue<bool>("EnableDelegationCards");
         var outChannelId = turnContext.Activity.ChannelId?.ToString();
         var outConversationType = turnContext.Activity.Conversation?.ConversationType;
         var outIsGroup = turnContext.Activity.Conversation?.IsGroup;
@@ -407,6 +459,83 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             await turnContext.SendActivityAsync(outboundActivity, cancellationToken);
         }
     }
+
+    private DelegationCardCoordinator CreateCardCoordinator(
+        ITurnContext turnContext, StandingJobCaller caller, CancellationToken token)
+    {
+        var conversation = new Microsoft.Agents.Builder.App.Proactive.Conversation(turnContext);
+        _cardConversationJson = conversation.ToJson();
+        return new DelegationCardCoordinator(
+            _agentMetadata, _delegationCardStore!, _workIqA2ATools,
+            turnContext.Activity.Conversation.Id, _cardConversationJson,
+            turnContext.Activity.Recipient?.Name ?? "Delegated work", caller,
+            async activity =>
+            {
+                var receipt = await turnContext.SendActivityAsync(activity, token);
+                return receipt.Id;
+            },
+            async activity => { await turnContext.UpdateActivityAsync(activity, token); },
+            async text => { await turnContext.SendActivityAsync(MessageFactory.Text(text), token); },
+            ValidateCardJobAsync,
+            _logger);
+    }
+
+    private async Task ValidateCardJobAsync(DelegationCardEntity card, StandingJobCaller actor)
+    {
+        if (!card.ParentScope.StartsWith("job:", StringComparison.Ordinal)) return;
+        if (_standingCoordinator == null)
+            throw new InvalidOperationException("The standing job is no longer available.");
+        var job = await _standingCoordinator.GetAsync(card.ParentScope["job:".Length..], actor);
+        if (job.Paused || job.ManagerId != actor.ManagerId
+            || !job.SpecialistAgentIds.Contains(card.AgentId, StringComparer.Ordinal))
+            throw new UnauthorizedAccessException("This job is paused or its specialist permission changed. No Save request was sent.");
+    }
+
+    private async Task StorePersonalCardRouteAsync(ITurnContext context, StandingJobCaller caller)
+    {
+        var conversation = context.Activity.Conversation;
+        if (_delegationCardStore == null || conversation == null || conversation.IsGroup == true
+            || !string.Equals(conversation.ConversationType, "personal", StringComparison.OrdinalIgnoreCase))
+            return;
+        await _delegationCardStore.SaveRouteAsync(new DelegationCardRouteEntity
+        {
+            PartitionKey = $"{_agentMetadata.TenantId:D}:{_agentMetadata.UserId:D}",
+            OwnerAgentId = _agentMetadata.AgentId.ToString("D"), RequesterId = caller.Id, ManagerId = caller.ManagerId,
+            OwnerName = context.Activity.Recipient?.Name ?? "Delegated work",
+            ConversationId = conversation.Id, ConversationJson = _cardConversationJson
+        });
+    }
+
+    private async Task ConfigureEmailCardsAsync(ITurnContext context, ChannelAccount? sender)
+    {
+        if (_delegationCardStore == null) return;
+        var caller = await _accessControl.ResolveStandingJobCallerAsync(sender, CancellationToken.None);
+        if (caller == null) return;
+        var route = await _delegationCardStore.GetRouteAsync(
+            $"{_agentMetadata.TenantId:D}:{_agentMetadata.UserId:D}", caller.Id, _agentMetadata.AgentId.ToString("D"));
+        if (route == null || route.ManagerId != caller.ManagerId || route.RequesterId != caller.Id)
+        {
+            _logger.LogInformation("No current authorized personal Teams route exists for this email sender; preserving email-only delivery.");
+            return;
+        }
+        var conversation = DelegationCardChannel.ReadConversation(
+            route.ConversationJson, route.ConversationId, _agentMetadata.TenantId.ToString("D"));
+        _cardConversationJson = route.ConversationJson;
+        _delegationCards = new DelegationCardCoordinator(
+            _agentMetadata, _delegationCardStore, _workIqA2ATools, route.ConversationId, route.ConversationJson,
+            route.OwnerName, caller,
+            async activity => (await DelegationCardChannel.SendAsync(context.Adapter, conversation, activity, CancellationToken.None)).Id,
+            activity => DelegationCardChannel.UpdateAsync(context.Adapter, conversation, activity, CancellationToken.None),
+            async text => { await DelegationCardChannel.SendAsync(context.Adapter, conversation,
+                (Activity)MessageFactory.Text(text), CancellationToken.None); },
+            ValidateCardJobAsync, _logger);
+        _workIqA2ATools.Observer = _delegationCards.ObserveAsync;
+    }
+
+    internal async Task<bool> CanDeliverDelegationCardAsync(ITurnContext context, CancellationToken token) =>
+        !await _accessControl.TryHandleCrossTenantActivityAsync(context, token)
+        && !await _accessControl.TryHandleRestrictedDirectMessageAsync(context, token)
+        && !await _accessControl.TryHandleRestrictedGroupChatAsync(context, token);
 
     private string WithStandingAttribution(string html)
     {
@@ -613,6 +742,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         try
         {
+            _workIqA2ATools.BeginTurn(turnContext.Activity.Conversation?.Id is { Length: > 0 } mailId ? "mail:" + mailId : null);
+            await ConfigureEmailCardsAsync(turnContext, emailEvent.From ?? turnContext.Activity.From);
             if (await TryHandleStandingMailAsync(turnContext, emailEvent))
                 return;
             // Only the latest authored text is eligible as decision/completion evidence.
@@ -639,8 +770,6 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             // Only the A2A tools, not the full local bundle: the work-item tools depend on
             // SetCurrentActivityContext, which is a Teams concept (it drives the 📌 reaction)
             // and is never set on this path.
-            _workIqA2ATools.BeginTurn(turnContext.Activity.Conversation?.Id is { Length: > 0 } mailId ? "mail:" + mailId : null);
-
             var response = await _responsesApiClient.InvokeAsync(
                 prompt,
                 conversationId,
@@ -655,6 +784,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             {
                 response += delegationCue;
             }
+            if (_delegationCards?.HasReadablePlannerCard == true && !_workIqA2ATools.CardDeliveryFailed)
+                response = "<p>I posted the delegated work and plan review in our Teams conversation.</p>"
+                    + DelegationCardPresentation.WithoutPlannerMarkup(response);
+            if (_workIqA2ATools.CardDeliveryFailed)
+                response = "<p>The Teams delegation card could not be updated. The actual response is included here instead.</p>" + response;
 
             var responseActivity = EmailResponse.CreateEmailResponseActivity(response);
 
