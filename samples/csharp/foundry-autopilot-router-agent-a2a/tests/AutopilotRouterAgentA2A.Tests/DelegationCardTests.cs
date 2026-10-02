@@ -7,6 +7,7 @@ using Azure;
 using Azure.Core;
 using Azure.Data.Tables;
 using Microsoft.Agents.Builder.App.Proactive;
+using Microsoft.Agents.Builder;
 using Microsoft.Agents.Core.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -360,6 +361,34 @@ public class DelegationCardTests
     }
 
     [Fact]
+    public void AnonymousAgenticIngressUsesOnlyTheVerifiedConfiguredApplicationForProactiveRouting()
+    {
+        var owner = Owner();
+        owner.AgentApplicationId = Guid.NewGuid();
+        var activity = new Activity
+        {
+            ChannelId = "msteams", ServiceUrl = "https://example.test/connector",
+            Conversation = new ConversationAccount { Id = "chat-one", TenantId = owner.TenantId.ToString("D") },
+            Recipient = new ChannelAccount
+            {
+                Id = "8:orgid:" + owner.UserId, Role = "agenticUser",
+                AgenticUserId = owner.UserId.ToString("D"), AgenticAppId = owner.AgentId.ToString("D")
+            },
+            From = new ChannelAccount { Id = "requester" }
+        };
+        using var context = new TurnContext(new CardAdapter(), activity);
+        var captured = DelegationCardChannel.Capture(context, owner, owner.AgentApplicationId.ToString("D"));
+        Assert.Equal(owner.AgentApplicationId.ToString("D"), captured.Identity.FindFirst("aud")!.Value);
+        Assert.False(captured.Identity.IsAuthenticated);
+        var restored = DelegationCardChannel.ReadConversation(captured.ToJson(), "chat-one", owner.TenantId.ToString("D"));
+        Assert.Equal(captured.Identity.FindFirst("aud")!.Value, restored.Identity.FindFirst("aud")!.Value);
+        Assert.Throws<InvalidOperationException>(() => DelegationCardChannel.Capture(context, owner, Guid.NewGuid().ToString("D")));
+        Assert.Throws<InvalidOperationException>(() => DelegationCardChannel.Capture(context, owner, null));
+        activity.Recipient.AgenticUserId = Guid.NewGuid().ToString("D");
+        Assert.Throws<UnauthorizedAccessException>(() => DelegationCardChannel.Capture(context, owner, owner.AgentApplicationId.ToString("D")));
+    }
+
+    [Fact]
     public async Task EmailRoutesAreBoundToTheSameRequesterAndCallingInstance()
     {
         var store = new MemoryStore();
@@ -473,6 +502,13 @@ public class DelegationCardTests
             new("test", DateTimeOffset.MaxValue);
         public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken token) =>
             ValueTask.FromResult(GetToken(requestContext, token));
+    }
+
+    private sealed class CardAdapter : ChannelAdapter
+    {
+        public override Task<ResourceResponse[]> SendActivitiesAsync(
+            ITurnContext context, IActivity[] activities, CancellationToken token) =>
+            Task.FromResult(activities.Select(_ => new ResourceResponse("receipt")).ToArray());
     }
 
     private sealed class Wire : HttpMessageHandler
