@@ -10,7 +10,7 @@ namespace WorkstreamManager.Services;
 internal sealed record PlannerCardTask(string Title, string Details, string? Id, string? Url, string Notes = "");
 internal sealed record PlannerCardResult(
     string Title, IReadOnlyList<PlannerCardTask> Tasks, bool IsPreview, bool CanApprove,
-    string? PlanId, string? PlanUrl, string PreviewJson);
+    string? PlanId, string? PlanUrl, string PreviewJson, string PlanDetails = "");
 
 internal static class DelegationCardPresentation
 {
@@ -55,11 +55,51 @@ internal static class DelegationCardPresentation
         }
         var knownPlan = new HashSet<string>(["draftMode", "title", "taskListDescription", "link", "buckets", "goals"], StringComparer.Ordinal);
         var knownTask = new HashSet<string>(["title", "percentComplete", "dueDateTime", "startDateTime",
-            "dueDate", "startDate", "notes", "description", "assignments", "priority", "link"], StringComparer.Ordinal);
+            "dueDate", "startDate", "notes", "description", "assignments", "priority", "link",
+            "bucketName", "goalName"], StringComparer.Ordinal);
         var canApprove = isPreview && tasks.Count is > 0 and <= 25 && plan.All(field => knownPlan.Contains(field.Key));
-        foreach (var name in new[] { "buckets", "goals" })
-            if (plan[name] is { } extra && (extra is not JsonArray array || array.Count != 0))
+        var planDetails = new List<string>();
+        var description = Text(plan, "taskListDescription");
+        if (!string.IsNullOrWhiteSpace(description)) planDetails.Add(description);
+        var buckets = new HashSet<string>(StringComparer.Ordinal);
+        var goals = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var collection in new[] { "buckets", "goals" })
+        {
+            if (plan[collection] == null) continue;
+            if (plan[collection] is not JsonArray items)
+            {
                 canApprove = false;
+                continue;
+            }
+            foreach (var item in items)
+            {
+                string name;
+                if (collection == "buckets")
+                {
+                    if (item is not JsonValue bucket || !bucket.TryGetValue<string>(out var bucketName)
+                        || string.IsNullOrWhiteSpace(bucketName) || bucketName.Length > 2000)
+                        throw new FormatException("A Planner task group is not a valid name.");
+                    name = bucketName;
+                    canApprove &= buckets.Add(name);
+                    planDetails.Add("Task group: " + name);
+                }
+                else
+                {
+                    var goal = item as JsonObject ?? throw new FormatException("A Planner goal is not an object.");
+                    name = Text(goal, "name", true);
+                    var status = Text(goal, "status");
+                    canApprove &= goals.Add(name) && goal.All(field => field.Key is "name" or "status");
+                    var readableStatus = status switch
+                    {
+                        "notStarted" => "Not started",
+                        "inProgress" => "In progress",
+                        "completed" => "Complete",
+                        _ => status
+                    };
+                    planDetails.Add("Goal: " + name + (string.IsNullOrEmpty(status) ? "" : " (Status: " + readableStatus + ")"));
+                }
+            }
+        }
         var rows = new List<PlannerCardTask>();
         foreach (var value in tasks)
         {
@@ -76,6 +116,10 @@ internal static class DelegationCardPresentation
                 canApprove = false;
             }
             canApprove &= task.All(field => knownTask.Contains(field.Key));
+            var bucketName = Text(task, "bucketName");
+            var goalName = Text(task, "goalName");
+            canApprove &= (string.IsNullOrEmpty(bucketName) || buckets.Contains(bucketName))
+                && (string.IsNullOrEmpty(goalName) || goals.Contains(goalName));
             var details = new List<string>();
             var notes = new List<string>();
             foreach (var field in task.Where(field => field.Key is not ("title" or "link" or "planName")))
@@ -97,6 +141,8 @@ internal static class DelegationCardPresentation
                     "startDateTime" or "startDate" => field.Value == null ? "No start date" : "Start: " + valueText,
                     "assignments" => field.Value is JsonObject assignments && assignments.Count == 0
                         ? "Unassigned" : "Assignments: " + valueText,
+                    "bucketName" => string.IsNullOrEmpty(bucketName) ? "No task group" : "Task group: " + bucketName,
+                    "goalName" => string.IsNullOrEmpty(goalName) ? "No goal" : "Goal: " + goalName,
                     _ => field.Key + ": " + valueText
                 });
             }
@@ -107,7 +153,8 @@ internal static class DelegationCardPresentation
         }
         return new PlannerCardResult(title, rows, isPreview, canApprove, planId,
             string.IsNullOrWhiteSpace(link) ? null : link,
-            new JsonObject { ["plan"] = plan.DeepClone(), ["tasks"] = tasks.DeepClone() }.ToJsonString());
+            new JsonObject { ["plan"] = plan.DeepClone(), ["tasks"] = tasks.DeepClone() }.ToJsonString(),
+            string.Join("\n\n", planDetails));
     }
 
     internal static (string Plan, string? Task) ReadPlannerUrl(string value)
@@ -208,6 +255,7 @@ internal static class DelegationCardPresentation
         if (planner != null)
         {
             body.Add(Block(planner.Title, "Medium", "Bolder"));
+            if (!string.IsNullOrWhiteSpace(planner.PlanDetails)) body.Add(Block(planner.PlanDetails));
             foreach (var task in planner.Tasks)
             {
                 body.Add(Block(task.Title, weight: "Bolder"));
