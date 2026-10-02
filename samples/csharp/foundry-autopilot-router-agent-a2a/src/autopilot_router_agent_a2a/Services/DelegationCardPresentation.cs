@@ -178,6 +178,8 @@ internal static class DelegationCardPresentation
                         ? state.Question : state.Question[..197] + "...") })
             });
         body[0]!["id"] = "delegation-" + state.RowKey;
+        if (state.ParentScope.StartsWith("mail:", StringComparison.Ordinal))
+            body[2]!["facts"]!.AsArray().Insert(0, new JsonObject { ["title"] = "Source", ["value"] = "Email" });
         var actions = new JsonArray();
         if (state.Question.Length > 200)
             actions.Add(new JsonObject

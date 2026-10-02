@@ -182,7 +182,7 @@ internal sealed class DelegationCardCoordinator(
         var verified = !timedOut && saved != null && expected != null && VerifyReadback(answer, saved, expected);
         card.State = verified ? DelegationCardStates.Saved : DelegationCardStates.Unconfirmed;
         card.Detail = verified
-            ? "The stored plan and task IDs and titles were read back from a separate specialist conversation."
+            ? "The plan and tasks were saved and checked. Review them here; opening Planner uses your existing plan permissions."
             : "The independent check did not confirm every item. No Save request was repeated.";
         if (!await store.ReplaceAsync(card)) throw new InvalidOperationException("The verification card changed.");
         await UpdateAsync(card);
@@ -223,7 +223,6 @@ internal sealed class DelegationCardCoordinator(
             card.PreviewJson = planner == null ? "" : JsonSerializer.Serialize(planner);
             if (planner != null && outcome == WorkIqA2AToolHandler.DelegationOutcome.Answered)
             {
-                HasReadablePlannerCard = true;
                 if (planner.IsPreview)
                 {
                     var currentRevision = await store.GetRevisionAsync(Partition, card.ContextScope);
@@ -250,7 +249,7 @@ internal sealed class DelegationCardCoordinator(
                     card.State = verification == Verification.Verified ? DelegationCardStates.Saved
                         : verification == Verification.Pending ? DelegationCardStates.Verifying : DelegationCardStates.Unconfirmed;
                     card.Detail = verification == Verification.Verified
-                        ? "The stored plan and task IDs and titles were read back from a separate specialist conversation."
+                        ? "The plan and tasks were saved and checked. Review them here; opening Planner uses your existing plan permissions."
                         : verification == Verification.Pending
                             ? "The specialist returned plan links. An independent read is still checking the stored items; this is not yet a saved-result confirmation."
                             : "The specialist returned plan links, but an independent read did not confirm every reviewed item. Inspect the returned plan before treating it as complete.";
@@ -270,6 +269,7 @@ internal sealed class DelegationCardCoordinator(
         if (!await store.ReplaceAsync(card))
             throw new InvalidOperationException("The delegation card changed before its result was stored.");
         await UpdateAsync(card);
+        HasReadablePlannerCard |= !string.IsNullOrEmpty(card.PreviewJson);
     }
 
     private async Task<Verification> VerifySavedAsync(
