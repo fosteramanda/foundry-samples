@@ -110,6 +110,7 @@ public class ConversationStateStore
 
     /// <summary>True when durable storage is available; false means the local-file fallback is in use.</summary>
     public bool IsDurable => _tableClient != null;
+    internal TableClient? Table => _tableClient;
 
     internal async Task<string?> LoadA2AContextAsync(string partitionKey, string scope)
     {

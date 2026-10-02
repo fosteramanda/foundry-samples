@@ -39,6 +39,9 @@ public class PendingDelegationEntity : ITableEntity
 
     /// <summary>Id returned by Proactive.StoreConversationAsync — where to deliver the answer.</summary>
     public string ProactiveConversationId { get; set; } = string.Empty;
+    public string CardId { get; set; } = string.Empty;
+    public string ConversationJson { get; set; } = string.Empty;
+    public bool CardVerification { get; set; }
 
     public DateTimeOffset CreatedUtc { get; set; }
 

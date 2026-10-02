@@ -54,6 +54,11 @@ public class A365AgentApplication : AgentApplication
             var agent = await GetAgentFromRecipient(turnContext.Activity);
             var agentService = await _factory.CreateAsync(agent, turnContext, UserAuthorization);
             await agentService.HandleEmailNotificationAsync(turnContext, turnState, agentNotificationActivity);
+            if (agentService.HasPendingDelegations)
+            {
+                var reference = await Proactive.StoreConversationAsync(turnContext, cancellationToken);
+                await agentService.PersistPendingDelegationsAsync(reference);
+            }
         });
 
         // Handle Word notifications
@@ -175,7 +180,8 @@ public class A365AgentApplication : AgentApplication
                 // is delivered as a single SendActivityAsync, when true the streaming pipeline
                 // surfaces a "Working on your request..." typing indicator that resolves to the
                 // streamed text.
-                var enableStreamingUpdates = _configuration.GetValue<bool>("EnableStreamingUpdates");
+                var enableStreamingUpdates = _configuration.GetValue<bool>("EnableStreamingUpdates")
+                    && !_configuration.GetValue<bool>("EnableDelegationCards");
                 if (!isTeamsGroupOrChannel && enableStreamingUpdates)
                 {
                     await turnContext.StreamingResponse.QueueInformativeUpdateAsync(

@@ -44,6 +44,14 @@ internal class WorkIqA2AToolHandler
     private readonly AgentMetadata _agentMetadata;
     private readonly Dictionary<string, string> _turnContexts = new(StringComparer.Ordinal);
     private string? _conversationScope;
+    private readonly IDelegationCardStore? _interactions;
+    internal Func<DelegationExchange, Task>? Observer { get; set; }
+    internal bool CardDeliveryFailed { get; private set; }
+
+    internal sealed record DelegationExchange(
+        string Id, string AgentId, string DisplayName, string Question, string ParentScope,
+        string ContextScope, string? ContextId, string Revision, bool Starting,
+        DelegationOutcome Outcome, string Answer, string? TaskId = null);
 
     private sealed class InvocationContext(string? scope, string? contextId)
     {
@@ -107,7 +115,9 @@ internal class WorkIqA2AToolHandler
         string DisplayName,
         string TaskId,
         string A2AUrl,
-        string Question);
+        string Question,
+        string? CardId = null,
+        bool CardVerification = false);
 
     private readonly List<PendingHandoff> _pendingHandoffs = new();
 
@@ -124,6 +134,7 @@ internal class WorkIqA2AToolHandler
         _delegations.Clear();
         _pendingHandoffs.Clear();
         _conversationScope = conversationScope;
+        CardDeliveryFailed = false;
     }
 
     /// <summary>Delegations made during the current turn, in call order.</summary>
@@ -179,12 +190,14 @@ internal class WorkIqA2AToolHandler
         HttpClient httpClient,
         IConfiguration configuration,
         ConversationStateStore? conversationState = null,
-        TokenCredential? credential = null)
+        TokenCredential? credential = null,
+        IDelegationCardStore? interactions = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _agentMetadata = agentMetadata;
         _conversationState = conversationState;
+        _interactions = interactions?.IsAvailable == true ? interactions : null;
 
         var configuredBase = configuration["WorkIqA2ABaseUrl"];
         _baseUrl = (string.IsNullOrWhiteSpace(configuredBase) ? DefaultBaseUrl : configuredBase.Trim()).TrimEnd('/') + "/";
@@ -617,15 +630,41 @@ internal class WorkIqA2AToolHandler
 
     private async Task<string> AskAgentAsync(
         string agentId, string message, bool startNewConversation = false, string? scopeOverride = null)
+        => (await ExecuteDelegationAsync(agentId, message, startNewConversation, scopeOverride)).Answer;
+
+    internal Task<DelegationExchange> AskBoundAsync(DelegationCardEntity card, string message)
     {
-        if (string.IsNullOrWhiteSpace(agentId))
-        {
-            return "agent_id is required. Call list_workiq_agents first to get one.";
-        }
-        if (string.IsNullOrWhiteSpace(message))
-        {
-            return "message is required.";
-        }
+        if (card.PartitionKey != ContextPartition || card.OwnerAgentId != _agentMetadata.AgentId.ToString("D")
+            || card.ContextScope != ScopeFor(card.ParentScope, card.AgentId))
+            throw new UnauthorizedAccessException("The saved delegation does not belong to this agent instance.");
+        return ExecuteDelegationAsync(card.AgentId, message, false, card.ParentScope,
+            card.ContextId, card.ContextRevision, false, card.RowKey["card-".Length..]);
+    }
+
+    internal async Task<DelegationExchange> AskVerificationAsync(DelegationCardEntity card, string question)
+    {
+        var firstPending = _pendingHandoffs.Count;
+        var result = await ExecuteDelegationAsync(card.AgentId, question, true,
+            "card-verification:" + card.RowKey, notify: false);
+        for (var index = firstPending; index < _pendingHandoffs.Count; index++)
+            _pendingHandoffs[index] = _pendingHandoffs[index] with
+            {
+                CardId = card.RowKey["card-".Length..], CardVerification = true
+            };
+        return result;
+    }
+
+    private string? ScopeFor(string? parentScope, string agentId) =>
+        !string.IsNullOrWhiteSpace(parentScope) && _agentMetadata.TenantId != Guid.Empty && _agentMetadata.UserId != Guid.Empty
+            ? JsonSerializer.Serialize(new[] { _baseUrl, _agentMetadata.AgentId.ToString("D"), parentScope, agentId })
+            : null;
+
+    private async Task<DelegationExchange> ExecuteDelegationAsync(
+        string agentId, string message, bool startNewConversation, string? scopeOverride,
+        string? expectedContext = null, string? expectedRevision = null, bool notify = true, string? operationId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(agentId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
 
         // Pure A2A: discovery and invocation both go through the Work IQ A2A gateway.
         //
@@ -644,34 +683,95 @@ internal class WorkIqA2AToolHandler
         // it reaches no agent at all, and answers as generic Copilot with no attribution
         // field in the payload to reveal it. Removed from this sample entirely.
         var parentScope = scopeOverride ?? _conversationScope;
-        var scope = !string.IsNullOrWhiteSpace(parentScope)
-            && _agentMetadata.TenantId != Guid.Empty && _agentMetadata.UserId != Guid.Empty
-            ? JsonSerializer.Serialize(new[] { _baseUrl, _agentMetadata.AgentId.ToString("D"), parentScope, agentId })
-            : null;
+        var scope = ScopeFor(parentScope, agentId);
         if (scope == null)
             _logger.LogWarning("A2A delegation has no authenticated conversation scope; downstream context will not be reused.");
-        if (scope != null && startNewConversation)
+        DelegationScopeLease? lease = null;
+        var callId = operationId ?? Guid.NewGuid().ToString("N");
+        DelegationExchange? exchange = null;
+        var sent = false;
+        try
         {
-            if (_conversationState != null)
-                await _conversationState.ClearA2AContextAsync(ContextPartition, scope);
-            _turnContexts.Remove(scope);
+            if (_interactions != null && scope != null)
+                lease = await _interactions.AcquireScopeAsync(ContextPartition, scope, expectedRevision);
+            else if (expectedRevision != null)
+                throw new InvalidOperationException("Durable approval coordination is unavailable. No Save request was sent.");
+            if (scope != null && startNewConversation)
+            {
+                if (_conversationState != null)
+                    await _conversationState.ClearA2AContextAsync(ContextPartition, scope);
+                _turnContexts.Remove(scope);
+            }
+            var priorContext = scope == null ? null : _conversationState != null
+                ? await _conversationState.LoadA2AContextAsync(ContextPartition, scope)
+                : _turnContexts.GetValueOrDefault(scope);
+            if (expectedContext != null && priorContext != expectedContext)
+                throw new InvalidOperationException("The specialist conversation changed. No Save request was sent.");
+            if (_conversationState == null && scope != null)
+                _logger.LogWarning("A2A continuation has no shared store; it is available only within this handler.");
+            var context = new InvocationContext(scope, priorContext);
+            exchange = new DelegationExchange(callId, agentId, ResolveDisplayName(agentId), message,
+                parentScope ?? "", scope ?? "", priorContext, lease?.Revision ?? "", true,
+                DelegationOutcome.Pending, "");
+            if (notify) await NotifyAsync(exchange);
+            var pendingBefore = _pendingHandoffs.Count;
+            sent = true;
+            var answer = await AskViaA2AAsync(agentId, message, context);
+            var outcome = _pendingHandoffs.Count > pendingBefore
+                ? DelegationOutcome.Pending
+                : HasCompletedAnswer(answer) ? DelegationOutcome.Answered : DelegationOutcome.NoAnswer;
+            for (var i = pendingBefore; i < _pendingHandoffs.Count; i++)
+                _pendingHandoffs[i] = _pendingHandoffs[i] with { CardId = callId };
+            exchange = exchange with
+            {
+                Starting = false, Answer = answer, Outcome = outcome, ContextId = context.ContextId,
+                TaskId = _pendingHandoffs.Skip(pendingBefore).FirstOrDefault()?.TaskId
+            };
         }
-        var priorContext = scope == null ? null : _conversationState != null
-            ? await _conversationState.LoadA2AContextAsync(ContextPartition, scope)
-            : _turnContexts.GetValueOrDefault(scope);
-        if (_conversationState == null && scope != null)
-            _logger.LogWarning("A2A continuation has no shared store; it is available only within this handler.");
-        var context = new InvocationContext(scope, priorContext);
-        var pendingBefore = _pendingHandoffs.Count;
-        var answer = await AskViaA2AAsync(agentId, message, context);
+        catch (Exception ex) when (sent && ex is HttpRequestException or OperationCanceledException or RequestFailedException or InvalidOperationException)
+        {
+            _logger.LogError(ex, "Delegation outcome is uncertain after sending to {AgentId}; the operation must not be repeated.", agentId);
+            exchange = exchange! with
+            {
+                Starting = false, Outcome = DelegationOutcome.NoAnswer,
+                Answer = "ERROR: The specialist request may already have run. Do not repeat this operation automatically. " + ex.Message
+            };
+        }
+        finally
+        {
+            if (lease != null)
+            {
+                try { await _interactions!.ReleaseScopeAsync(lease); }
+                catch (Exception ex) when (ex is RequestFailedException or InvalidOperationException)
+                {
+                    _logger.LogError(ex, "Could not release delegation coordination for {AgentId}.", agentId);
+                    if (sent && exchange != null)
+                        exchange = exchange with
+                        {
+                            Starting = false, Outcome = DelegationOutcome.NoAnswer,
+                            Answer = "ERROR: The specialist request was sent but its completion coordination failed. Do not repeat it. " + exchange.Answer
+                        };
+                    else throw;
+                }
+            }
+        }
+        if (exchange == null) throw new InvalidOperationException("The delegation produced no receipt.");
+        _delegations.Add(new DelegationRecord(agentId, ResolveDisplayName(agentId), exchange.Outcome));
+        if (notify) await NotifyAsync(exchange);
+        return exchange;
+    }
 
-        var outcome = _pendingHandoffs.Count > pendingBefore
-            ? DelegationOutcome.Pending
-            : HasCompletedAnswer(answer) ? DelegationOutcome.Answered : DelegationOutcome.NoAnswer;
-
-        _delegations.Add(new DelegationRecord(agentId, ResolveDisplayName(agentId), outcome));
-
-        return answer;
+    private async Task NotifyAsync(DelegationExchange exchange)
+    {
+        if (Observer == null) return;
+        try { await Observer(exchange); }
+        catch (Exception ex) when (ex is RequestFailedException or HttpRequestException or OperationCanceledException
+            or Microsoft.Agents.Core.Errors.ErrorResponseException or InvalidOperationException or FormatException or JsonException)
+        {
+            CardDeliveryFailed = true;
+            _logger.LogError(ex, "Native delegation card could not be delivered or updated. operation={OperationId} agent={AgentId}",
+                exchange.Id, exchange.AgentId);
+        }
     }
 
     /// <summary>
