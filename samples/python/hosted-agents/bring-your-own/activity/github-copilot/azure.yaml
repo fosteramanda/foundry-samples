@@ -17,7 +17,7 @@ services:
         sku:
           name: GlobalStandard
           capacity: 20
-  github-copilot-activity:
+  amandaf-lr-icons:
     host: azure.ai.agent
     metadata:
       tags:
@@ -34,14 +34,13 @@ services:
     uses:
       - ai-project
     kind: hosted
-    name: github-copilot-activity
-    displayName: GitHub Copilot (Python, Activity)
+    name: amandaf-lr-icons
+    displayName: Long-running test (Python, Activity)
     description: >
-      A simple personal assistant on the Activity protocol. Chats through the
-      GitHub Copilot SDK (which runs its own model + tool-calling loop) and
-      exposes a few custom tools: a to-do list and reading files shared in the
-      chat. Hosted by azure-ai-agentserver-activity and surfaced in Microsoft
-      Teams via the M365 Agents SDK.
+      Test build of the GitHub Copilot activity sample. Adds a long-running job
+      tool (run_long_job_step) that works in about 30-second steps for several
+      minutes, to test how Teams and Microsoft 365 Copilot show replies that
+      take longer than two minutes, plus custom app icons.
     protocols:
       - protocol: activity
         version: 2.0.0

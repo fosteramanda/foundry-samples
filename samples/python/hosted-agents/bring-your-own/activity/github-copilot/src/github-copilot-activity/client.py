@@ -43,6 +43,12 @@ _SYSTEM_MESSAGE = (
     "file. Then call the deliver_file tool with the file's path to send it. "
     "Never say you have created or attached a file unless you actually created "
     "it and called deliver_file in this turn. You cannot generate images. "
+    "When the user asks for a long-running task, a long job, or a test that "
+    "runs for several minutes, run it with run_long_job_step: pick a short job "
+    "name and a number of steps (default 8, about four minutes; if the user "
+    "gives a duration in minutes, use two steps per minute), call the tool for "
+    "step 1, then step 2, and so on until every step is done, without stopping "
+    "to ask, then summarize the steps. "
     "Prefer short, friendly replies. If you are unsure, ask a brief "
     "clarifying question."
 )
@@ -137,6 +143,7 @@ _TOOL_LABELS = {
     "add_task": "Adding your task…",
     "list_tasks": "Looking up your tasks…",
     "complete_task": "Marking the task done…",
+    "run_long_job_step": "Working on the long-running job…",
     # built-in file tools the model uses to read shared files
     "view": "Reading the file…",
     "read_file": "Reading the file…",
