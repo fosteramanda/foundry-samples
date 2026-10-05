@@ -68,8 +68,12 @@ hosted agent.
 
 ## Known issue
 
-With the default content filter (`Microsoft.DefaultV2`) on `gpt-5-mini`, some turns
-end with "I'm sorry, but I cannot assist with that request." That text comes from the
-Copilot runtime when the deployment's content filter blocks the model's output
-(finish reason `content_filter`). The agent logs a warning when it happens. Direct
-calls to the same deployment without the Copilot SDK were not blocked in testing.
+With the default content filter (`Microsoft.DefaultV2`), research about Kyoto
+(for example "Research and plan a 5-day trip to Kyoto in April with costs.") is often
+blocked: the filter rates plain questions about Kyoto attractions such as
+Kiyomizu-dera, Fushimi Inari, and tea ceremonies as sexual content (medium to high
+severity). When the model's output is blocked, the Copilot runtime replies "I'm sorry,
+but I cannot assist with that request." and the agent logs a warning; a blocked tool
+call can also stream junk input until the 4-minute model-call limit stops it. Use
+another topic to test; "Research and plan a 5-day trip to Lisbon in April with
+costs." ran for about 7 minutes and returned a cited report.
