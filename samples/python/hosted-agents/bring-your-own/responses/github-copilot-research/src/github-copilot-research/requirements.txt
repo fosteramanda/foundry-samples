@@ -1,0 +1,24 @@
+# Responses-protocol host for Foundry hosted agents. Pulls in
+# azure-ai-agentserver-core transitively. No Activity or Microsoft 365 Agents SDK
+# packages: Foundry adds the Activity protocol when the agent is published.
+azure-ai-agentserver-responses==2.2.0
+
+# GitHub Copilot SDK: runs the assistant model + tool-calling loop. Imports as
+# the top-level ``copilot`` package.
+github-copilot-sdk>=0.2.0
+
+# Pydantic: parameter models for the custom Copilot SDK tools.
+pydantic>=2.0.0
+
+# HTTP client: download shared files that arrive as URLs instead of inline data.
+httpx>=0.27.0
+
+# Azure identity: Managed Identity bearer token for the Foundry model provider.
+azure-identity>=1.17.0
+
+# OpenAI client: calls the Foundry project's Responses endpoint with the
+# built-in web_search tool for the search_web research tool.
+openai>=1.68.0
+
+# debugpy enables local debugging of this agent with the Foundry Toolkit VS Code extension.
+debugpy

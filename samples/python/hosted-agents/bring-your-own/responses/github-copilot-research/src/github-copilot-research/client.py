@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
-"""GitHub Copilot SDK harness for the agent.
+"""GitHub Copilot SDK harness for the agent (shared with the Activity build).
 
+The Responses front end (main.py) drives turns through ``ask_stream``.
 """
 
 from __future__ import annotations
@@ -25,34 +26,29 @@ import tools
 logger = logging.getLogger("github-copilot.client")
 
 # The Copilot SDK ships a coding-assistant system prompt by default. Replace it
-# with a Teams-assistant persona so the model uses our to-do / file tools
-# instead of behaving like a code agent.
+# with an assistant persona so the model uses our to-do / search tools instead
+# of behaving like a code agent. Same persona as the Activity build, except this
+# agent speaks only the Responses protocol, which has no way to send a file, so
+# reports go in the reply.
 _SYSTEM_MESSAGE = (
     "You are a warm, concise personal assistant inside Microsoft Teams "
     "and Microsoft 365 Copilot. "
     "You help the user manage a simple to-do list, read files they have "
-    "shared in the chat, and create documents for them. When the user asks "
-    "you to DO something (add a task, mark it done, read a shared file, write "
-    "or generate a document), you MUST use the matching tool rather than only "
-    "describing how. "
-    "To create or generate a file for the user, create it yourself using your "
-    "shell and python tools in your workspace: write the text directly for "
-    "text formats (.txt, .md, .csv, .json, .html, code), or for .docx, .pptx, "
-    "and .pdf install the library you need at runtime (for example "
-    "`pip install python-docx python-pptx reportlab`) and use it to build the "
-    "file. Then call the deliver_file tool with the file's path to send it. "
-    "Never say you have created or attached a file unless you actually created "
-    "it and called deliver_file in this turn. You cannot generate images. "
+    "shared in the chat, and research topics for them. When the user asks "
+    "you to DO something (add a task, list tasks, mark one done, read a shared "
+    "file), you MUST use the matching tool rather than only describing how. "
+    "You reply with text only: you cannot send files or images to the user, "
+    "so never say you created, attached, or delivered a file. Put documents, "
+    "reports, and tables directly in your reply as Markdown. "
     "When the user asks you to research something, plan something (a trip, an "
     "event, a launch), compare options, or write a report that needs current "
     "facts, do real research before answering: break the request into 5 to 8 "
     "specific questions, call search_web once per question (one at a time), "
-    "then write a well-structured Word report (.docx via python-docx) with a "
-    "short summary, sections for your findings, and a Sources section listing "
-    "the URLs search_web returned. Deliver it with deliver_file, then reply "
-    "with 3 to 5 bullet takeaways and the top sources. Don't ask clarifying "
-    "questions first: make reasonable assumptions and state them in the "
-    "report. Cite only URLs that search_web returned; never invent sources. "
+    "then reply with a well-structured Markdown report: a short summary, "
+    "sections for your findings, and a Sources section listing the URLs "
+    "search_web returned. Don't ask clarifying questions first: make "
+    "reasonable assumptions and state them in the report. Cite only URLs that "
+    "search_web returned; never invent sources. "
     "Prefer short, friendly replies. If you are unsure, ask a brief "
     "clarifying question."
 )
@@ -409,3 +405,13 @@ async def ask_stream(conversation_id: str, text: str, files: list[dict[str, str]
             yield ("progress", "Still working on it…")
         if not outcome["got_text"]:
             yield ("final", "Sorry, that took too long and I had to stop. Please try again.")
+
+
+async def abort_turn(conversation_id: str) -> None:
+    """Stop the conversation's in-flight turn (the caller cancelled the response)."""
+    entry = _sessions.get(conversation_id)
+    if entry is not None:
+        try:
+            await asyncio.wait_for(entry[0].abort(), timeout=10)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
