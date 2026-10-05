@@ -42,16 +42,56 @@ class DeliverFileParams(BaseModel):
                                   "the user for download.")
 
 
-class LongJobStepParams(BaseModel):
-    job_name: str = Field(description="Short name of the long-running job, e.g. 'quarterly report'.")
-    step: int = Field(description="The step to run now, starting at 1.")
-    total_steps: int = Field(description="Total number of steps in the job (2-20).")
+class SearchWebParams(BaseModel):
+    query: str = Field(description="One specific research question or search query.")
 
 
-# Long-running test job: each step does about LONG_JOB_STEP_SECONDS of work.
-# Steps stay well under the client's 90-second idle timeout so every step
-# produces a fresh progress update, while the whole job runs for minutes.
-_LONG_JOB_STEP_SECONDS = int(os.environ.get("LONG_JOB_STEP_SECONDS", "30"))
+# Real web research: Foundry's built-in web_search tool (Grounding with Bing),
+# called through the project's OpenAI-compatible Responses endpoint with the
+# hosted agent's managed identity. Returns grounded text plus source URLs.
+# Searches run on their own deployment (gpt-4o by default) so they don't eat
+# the chat model's rate limit; tested 4/4 cited answers with this prompt shape.
+_PROJECT_ENDPOINT = os.environ.get("FOUNDRY_PROJECT_ENDPOINT", "").rstrip("/")
+_SEARCH_MODEL = os.environ.get("SEARCH_MODEL_DEPLOYMENT_NAME", "gpt-4o")
+_search_client = None
+
+
+def _get_search_client():
+    global _search_client
+    if _search_client is None:
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+        from openai import OpenAI
+        token_provider = get_bearer_token_provider(DefaultAzureCredential(), "https://ai.azure.com/.default")
+        # Retries back off on 429s, pacing a burst of searches under the
+        # deployment's tokens-per-minute limit.
+        _search_client = OpenAI(base_url=f"{_PROJECT_ENDPOINT}/openai/v1/", api_key=token_provider,
+                                max_retries=6)
+    return _search_client
+
+
+def _search_web_sync(query: str) -> str:
+    response = _get_search_client().responses.create(
+        model=_SEARCH_MODEL,
+        tools=[{"type": "web_search"}],
+        tool_choice="required",
+        instructions=("You are a research assistant. Use web search to answer with "
+                      "specific, current facts and cite sources."),
+        input=query,
+    )
+    sources: list[str] = []
+    for item in response.output:
+        if getattr(item, "type", "") != "message":
+            continue
+        for part in getattr(item, "content", None) or []:
+            for ann in getattr(part, "annotations", None) or []:
+                if getattr(ann, "type", "") == "url_citation":
+                    entry = f"- {getattr(ann, 'title', '') or 'Source'}: {ann.url}"
+                    if entry not in sources:
+                        sources.append(entry)
+    text = (response.output_text or "").strip()[:4000]
+    if not sources:
+        return text + "\n\n(No web sources were returned for this query; do not cite it.)"
+    return text + "\n\nSources:\n" + "\n".join(sources[:10])
 
 
 class _NoParams(BaseModel):
@@ -192,19 +232,19 @@ def build_tools(conversation_id: str) -> list[Tool]:
         queue_ui(conversation_id, {"type": "file", "path": path})
         return f"I've prepared **{os.path.basename(path)}** and will offer it for download."
 
-    async def _long_job_step(params: LongJobStepParams, _inv: Any) -> str:
-        # Async on purpose: the Copilot SDK awaits tool handlers on the agent's
-        # event loop, so a blocking sleep would freeze Teams streaming updates.
+    async def _search_web(params: SearchWebParams, _inv: Any) -> str:
+        # Off the event loop: the Copilot SDK awaits tool handlers on the
+        # agent's loop, and a blocking HTTP call would freeze Teams updates.
         import asyncio
-        total = max(2, min(int(params.total_steps or 2), 20))
-        step = max(1, min(int(params.step or 1), total))
-        logger.info("long job '%s' step %d/%d starting", params.job_name, step, total)
-        await asyncio.sleep(_LONG_JOB_STEP_SECONDS)
-        if step < total:
-            return (f"Step {step} of {total} of '{params.job_name}' finished. "
-                    f"Call run_long_job_step again with step={step + 1}.")
-        return (f"All {total} steps of '{params.job_name}' finished. "
-                "Now give the user a short summary of what each step did.")
+        query = (params.query or "").strip()
+        if not query:
+            return "Provide a specific search query."
+        logger.info("search_web: %s", query)
+        try:
+            return await asyncio.to_thread(_search_web_sync, query)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("search_web failed: %s", exc, exc_info=True)
+            return f"Web search failed ({type(exc).__name__}). Try a different query."
 
     return [
         define_tool("add_task", description="Add a task / to-do item.",
@@ -228,12 +268,9 @@ def build_tools(conversation_id: str) -> list[Tool]:
                                 "file and call this tool — never claim you attached "
                                 "a file without doing so. Do not generate images.",
                     handler=_deliver_file, params_type=DeliverFileParams),
-        define_tool("run_long_job_step",
-                    description="Run one step of a long-running job. Use this when "
-                                "the user asks for a long-running task, a long job, "
-                                "or a test that takes several minutes. Call it once "
-                                "per step, in order, starting at step 1, until every "
-                                "step is done. Each step takes about "
-                                f"{_LONG_JOB_STEP_SECONDS} seconds.",
-                    handler=_long_job_step, params_type=LongJobStepParams),
+        define_tool("search_web",
+                    description="Search the public web for current, cited facts. "
+                                "Use one specific question per call. Returns an "
+                                "answer plus source URLs; cite only those URLs.",
+                    handler=_search_web, params_type=SearchWebParams),
     ]

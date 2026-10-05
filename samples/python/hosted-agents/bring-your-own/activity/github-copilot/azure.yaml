@@ -17,6 +17,14 @@ services:
         sku:
           name: GlobalStandard
           capacity: 20
+      - name: gpt-4o
+        model:
+          format: OpenAI
+          name: gpt-4o
+          version: '2024-08-06'
+        sku:
+          name: GlobalStandard
+          capacity: 50
   amandaf-lr-icons:
     host: azure.ai.agent
     metadata:
@@ -35,12 +43,13 @@ services:
       - ai-project
     kind: hosted
     name: amandaf-lr-icons
-    displayName: Long-running test (Python, Activity)
+    displayName: Research test (Python, Activity)
     description: >
-      Test build of the GitHub Copilot activity sample. Adds a long-running job
-      tool (run_long_job_step) that works in about 30-second steps for several
-      minutes, to test how Teams and Microsoft 365 Copilot show replies that
-      take longer than two minutes, plus custom app icons.
+      Test build of the GitHub Copilot activity sample. Adds real web research
+      (search_web, Foundry's built-in web_search tool) and research instructions
+      so a request runs for several minutes and ends with a cited Word report,
+      to test how Teams and Microsoft 365 Copilot show replies that take longer
+      than two minutes, plus custom app icons.
     protocols:
       - protocol: activity
         version: 2.0.0
@@ -51,6 +60,7 @@ services:
         - type: BotServiceRbac
     env:
       AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-5-mini}
+      SEARCH_MODEL_DEPLOYMENT_NAME: ${SEARCH_MODEL_DEPLOYMENT_NAME=gpt-4o}
     container:
       resources:
         cpu: '1'

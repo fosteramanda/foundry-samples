@@ -43,18 +43,26 @@ _SYSTEM_MESSAGE = (
     "file. Then call the deliver_file tool with the file's path to send it. "
     "Never say you have created or attached a file unless you actually created "
     "it and called deliver_file in this turn. You cannot generate images. "
-    "When the user asks for a long-running task, a long job, or a test that "
-    "runs for several minutes, run it with run_long_job_step: pick a short job "
-    "name and a number of steps (default 8, about four minutes; if the user "
-    "gives a duration in minutes, use two steps per minute), call the tool for "
-    "step 1, then step 2, and so on until every step is done, without stopping "
-    "to ask, then summarize the steps. "
+    "When the user asks you to research something, plan something (a trip, an "
+    "event, a launch), compare options, or write a report that needs current "
+    "facts, do real research before answering: break the request into 5 to 8 "
+    "specific questions, call search_web once per question (one at a time), "
+    "then write a well-structured Word report (.docx via python-docx) with a "
+    "short summary, sections for your findings, and a Sources section listing "
+    "the URLs search_web returned. Deliver it with deliver_file, then reply "
+    "with 3 to 5 bullet takeaways and the top sources. Don't ask clarifying "
+    "questions first: make reasonable assumptions and state them in the "
+    "report. Cite only URLs that search_web returned; never invent sources. "
     "Prefer short, friendly replies. If you are unsure, ask a brief "
     "clarifying question."
 )
 
 _ENDPOINT = os.environ.get("FOUNDRY_PROJECT_ENDPOINT", "")
 _MODEL = os.environ.get("AZURE_AI_MODEL_DEPLOYMENT_NAME", "")
+# Longest quiet gap allowed between session events before the turn is abandoned.
+# Research turns can sit silent for minutes (package installs, building a
+# report), so this build allows 10 minutes instead of the sample's 90 seconds.
+_IDLE_TIMEOUT_SECONDS = int(os.environ.get("TURN_IDLE_TIMEOUT_SECONDS", "600"))
 
 _credential = DefaultAzureCredential()
 _client: CopilotClient | None = None
@@ -143,7 +151,7 @@ _TOOL_LABELS = {
     "add_task": "Adding your task…",
     "list_tasks": "Looking up your tasks…",
     "complete_task": "Marking the task done…",
-    "run_long_job_step": "Working on the long-running job…",
+    "search_web": "Searching the web…",
     # built-in file tools the model uses to read shared files
     "view": "Reading the file…",
     "read_file": "Reading the file…",
@@ -213,7 +221,7 @@ async def ask_stream(conversation_id: str, text: str, files: list[dict[str, str]
         try:
             await session.send(text, attachments=attachments or None)  # dispatch the turn
             while True:
-                ev = await asyncio.wait_for(queue.get(), timeout=90)
+                ev = await asyncio.wait_for(queue.get(), timeout=_IDLE_TIMEOUT_SECONDS)
                 etype = ev.type
                 data = ev.data
                 if etype == SessionEventType.TOOL_EXECUTION_START:
