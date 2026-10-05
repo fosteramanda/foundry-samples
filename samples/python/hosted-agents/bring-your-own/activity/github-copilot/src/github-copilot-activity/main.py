@@ -12,6 +12,7 @@ delivery (e.g. Microsoft Teams).
 """
 
 import logging
+import time
 from os import environ
 
 _LOG_LEVEL = environ.get("LOG_LEVEL", "INFO").upper()
@@ -123,6 +124,8 @@ async def on_message(context, _state):
         return
 
     # Streaming path: forward progress + text chunks, then finalize.
+    started = time.monotonic()
+    logger.info("turn started | conversation=%s | chars=%d | files=%d", conversation_id[-12:], len(prompt), len(shared_files))
     try:
         async for kind, chunk in copilot_client.ask_stream(conversation_id, prompt, shared_files):
             if kind == "progress":
@@ -143,6 +146,7 @@ async def on_message(context, _state):
             await stream.end_stream()
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Could not end stream: %s", exc)
+        logger.info("turn ended | conversation=%s | seconds=%d", conversation_id[-12:], int(time.monotonic() - started))
 
 
 @app.activity("invoke")
