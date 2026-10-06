@@ -39,7 +39,10 @@ param modelName string = 'gpt-5-chat'
 @description('Version of the model to deploy')
 param modelVersion string = '2025-10-03'
 
-@description('GlobalStandard capacity (1000 TPM per unit) for the model deployment')
+@description('Deployment SKU for the model, e.g. GlobalStandard or DataZoneStandard, whichever has quota in the subscription')
+param modelSku string = 'GlobalStandard'
+
+@description('Model capacity (1000 TPM per unit) for the model deployment')
 param modelCapacity int = 100
 
 @description('Enable monitoring via Application Insights and Log Analytics')
@@ -92,6 +95,7 @@ module project 'modules/project.bicep' = {
     containerRegistrySku: containerRegistrySku
     modelName: modelName
     modelVersion: modelVersion
+    modelSku: modelSku
     modelCapacity: modelCapacity
     enableMonitoring: enableMonitoring
     logAnalyticsName: logAnalyticsName

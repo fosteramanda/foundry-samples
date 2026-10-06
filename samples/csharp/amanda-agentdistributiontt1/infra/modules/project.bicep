@@ -18,7 +18,10 @@ param publicNetworkAccess string = 'Enabled'
 param modelName string
 param modelVersion string
 
-@description('GlobalStandard capacity (1000 TPM per unit). 1 throttles tool-calling agents; 100 gives headroom.')
+@description('Deployment SKU for the model, e.g. GlobalStandard or DataZoneStandard, whichever has quota in the subscription.')
+param modelSku string = 'GlobalStandard'
+
+@description('Model capacity (1000 TPM per unit). 1 throttles tool-calling agents; 100 gives headroom.')
 param modelCapacity int = 100
 
 @description('Enable monitoring via Application Insights and Log Analytics')
@@ -126,7 +129,7 @@ resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
   name: modelName
   parent: account
   sku: {
-    name: 'GlobalStandard'
+    name: modelSku
     capacity: modelCapacity
   }
   properties: {

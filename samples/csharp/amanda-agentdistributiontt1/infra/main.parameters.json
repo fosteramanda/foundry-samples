@@ -20,6 +20,9 @@
     "modelVersion": {
       "value": "${MODEL_VERSION}"
     },
+    "modelSku": {
+      "value": "${MODEL_SKU=GlobalStandard}"
+    },
     "modelCapacity": {
       "value": "${MODEL_CAPACITY=100}"
     }
