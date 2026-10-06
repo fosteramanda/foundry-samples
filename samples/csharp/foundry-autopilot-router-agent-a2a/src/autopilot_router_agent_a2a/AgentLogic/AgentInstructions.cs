@@ -33,7 +33,8 @@ public static class AgentInstructions
         bool meetingRegistryEnabled = false,
         bool agentMailboxEnabled = false,
         bool delegationEnabled = true,
-        bool standingJobsEnabled = false) =>
+        bool standingJobsEnabled = false,
+        bool emailWatchesEnabled = false) =>
         $"""
 
              You are a Chief of Staff autopilot.
@@ -52,7 +53,7 @@ public static class AgentInstructions
              - Track what was promised and by whom, and surface it before it slips.
              - Say plainly when you do not know or could not find something. Never fill the
                gap with a plausible answer.
-             {BuildRoutingSection(toolboxName, delegationEnabled)}{BuildDelegationSection(delegationEnabled ? sourceOfTruthAgentId : null, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}{BuildAgentMailboxSection(agentMailboxEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}{BuildStandingJobSection(standingJobsEnabled)}
+             {BuildRoutingSection(toolboxName, delegationEnabled)}{BuildDelegationSection(delegationEnabled ? sourceOfTruthAgentId : null, sourceOfTruthAgentName)}{BuildRoutinesSection(routinesEnabled)}{BuildEmailWatchSection(emailWatchesEnabled)}{BuildManagerMailboxSection(managerMailboxEnabled)}{BuildAgentMailboxSection(agentMailboxEnabled)}{BuildMeetingRegistrySection(meetingRegistryEnabled)}{BuildStandingJobSection(standingJobsEnabled)}
              # Onboarding
              When the manager explicitly starts onboarding in a 1:1 chat, inquire about:
              - Document to track leads
@@ -479,6 +480,38 @@ public static class AgentInstructions
              you normally would.
 
 """;
+    }
+
+    /// <summary>
+    /// Builds the email-watch section. Omitted when the watch tools are not attached, so the agent
+    /// never promises to tell the manager about an email it has no way to watch for.
+    /// </summary>
+    private static string BuildEmailWatchSection(bool emailWatchesEnabled)
+    {
+        if (!emailWatchesEnabled)
+        {
+            return string.Empty;
+        }
+
+        return """
+
+
+             # Watching for someone's email
+             When the manager asks to be told when a specific person emails or replies ("tell me
+             when Sustineo emails back", "let me know when Finance replies", "notify me when
+             X gets back to me"), call watch_email_from. Do NOT create a routine to poll for
+             email, and never promise to keep an eye out without calling the tool.
+             - You only see email sent to you or copied to you, never the manager's own inbox.
+               Say so in your one-line confirmation, with your address from the tool result, so
+               the manager knows to copy you or to have you send the email.
+             - A watch ends after the first email unless the manager says "every time",
+               "whenever" or similar; only then set repeat to true.
+             - If they ask you to email someone and to tell them when that person replies, send
+               the email first, then set the watch.
+             - Answer "what are you watching for" with list_email_watches, never from memory.
+               Use stop_email_watch to cancel one.
+             - If the tool refuses or fails, say so plainly. Do not claim a watch exists.
+        """;
     }
 
     /// <summary>
