@@ -25,6 +25,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     private readonly WorkItemToolHandler _workItemTools;
     private readonly WorkIqA2AToolHandler _workIqA2ATools;
     private readonly RoutineToolHandler _routineTools;
+    private readonly EmailWatchToolHandler _emailWatchTools;
     private readonly MailboxToolHandler _mailboxTools;
     private readonly MeetingRegistryToolHandler? _meetingRegistryTools;
     private readonly TeamsActivityHelper _teamsHelper;
@@ -118,6 +119,16 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         _teamsHelper = new TeamsActivityHelper(_logger);
         _accessControl = new AccessControlService(agentMetadata, _logger, _configuration, graphAccessToken,
             httpClient, _teamsHelper, _workItemTools, allowListTable);
+        _emailWatchTools = new EmailWatchToolHandler(
+            conversationState?.Table != null ? new EmailWatchStore(conversationState.Table) : null,
+            agentMetadata, _configuration, _logger, httpClient, graphAccessToken,
+            _accessControl.ResolveStandingJobMemberAsync,
+            (chatId, html) => _scheduledChatDelivery.SendAsync(new Activity
+            {
+                Type = ActivityTypes.Message, ChannelId = "msteams",
+                Conversation = new ConversationAccount { Id = chatId }
+            }, html, CancellationToken.None));
+        _responsesApiClient.EmailWatchesEnabled = _emailWatchTools.IsEnabled;
         _addressedToAgentGate = new AddressedToAgentGate(_logger, _configuration, _responsesApiClient, _teamsHelper, httpClient, graphAccessToken);
         if (standingJobs?.IsAvailable == true && agent.UserId != Guid.Empty && agent.TenantId != Guid.Empty)
         {
@@ -197,6 +208,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var tools = new List<JsonNode>(_workItemTools.GetToolDefinitions());
         tools.AddRange(_workIqA2ATools.GetToolDefinitions());
         tools.AddRange(_routineTools.GetToolDefinitions());
+        tools.AddRange(_emailWatchTools.GetToolDefinitions());
         tools.AddRange(_mailboxTools.GetToolDefinitions());
         if (_meetingRegistryTools != null)
         {
@@ -216,6 +228,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
            ?? await _workItemTools.TryExecuteAsync(toolName, arguments)
            ?? await _workIqA2ATools.TryExecuteAsync(toolName, arguments)
            ?? await _routineTools.TryExecuteAsync(toolName, arguments)
+           ?? await _emailWatchTools.TryExecuteAsync(toolName, arguments)
            ?? await _mailboxTools.TryExecuteAsync(toolName, arguments)
            ?? (_meetingRegistryTools != null
                 ? await _meetingRegistryTools.TryExecuteAsync(toolName, arguments)
@@ -358,6 +371,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         // A routine created this turn must post into THIS conversation when it fires, so the
         // routine tools need the activity that addresses it.
         _routineTools.SetCurrentActivityContext(turnContext.Activity);
+        _emailWatchTools.SetTurn(turnContext.Activity,
+            () => _accessControl.ResolveStandingJobCallerAsync(sender, cancellationToken));
         if (_standingTools != null)
             _standingTools.Turn = await PrepareStandingTurnAsync(turnContext.Activity, turnContext.Activity.From,
                 "chat", rawUserMessage, $"chat:{conversationId}", cancellationToken);
@@ -727,6 +742,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     {
         _standingTools?.BeginTurn();
         _logger.LogInformation("Processing email notification (Responses API) - NotificationType: {NotificationType}", emailEvent.NotificationType);
+        await NotifyEmailWatchesAsync(turnContext.Activity, emailEvent);
         if (!await _accessControl.IsNotificationSenderApprovedAsync(emailEvent.From ?? turnContext.Activity.From))
         {
             return;
@@ -831,6 +847,23 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             {
                 _logger.LogError(sendEx, "Failed to send fallback email reply. ConversationId={ConversationId}", conversationId);
             }
+        }
+    }
+
+    private async Task NotifyEmailWatchesAsync(IActivity activity, AgentNotificationActivity emailEvent)
+    {
+        try
+        {
+            await _emailWatchTools.NotifyAsync(
+                emailEvent.EmailNotification?.Id,
+                emailEvent.From?.Id,
+                GetEmailSubject(activity),
+                HtmlToPlainText(emailEvent.Text ?? string.Empty));
+        }
+        catch (Exception ex)
+        {
+            // A watch notice is an extra; it must never stop the ordinary email handling below.
+            _logger.LogError(ex, "Email watch check failed; continuing with normal email handling.");
         }
     }
 

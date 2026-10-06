@@ -68,6 +68,13 @@ internal class ResponsesApiClient
     /// </summary>
     internal bool MeetingRegistryEnabled { get; set; }
 
+    /// <summary>
+    /// Whether the email-watch tools are attached this turn. Set from the handler's real state,
+    /// which needs durable storage and a Graph token, so the prompt never offers a notice the
+    /// agent cannot save or post.
+    /// </summary>
+    internal bool EmailWatchesEnabled { get; set; }
+
     internal ResponsesApiClient(
         AgentMetadata agentMetadata,
         ILogger logger,
@@ -108,7 +115,8 @@ internal class ResponsesApiClient
             MeetingRegistryEnabled && HasLocalTool("track_meeting"),
             AgentMailboxEnabled && HasLocalTool("send_email_as_agent"),
             HasLocalTool("ask_workiq_agent"),
-            HasLocalTool("get_standing_job"));
+            HasLocalTool("get_standing_job"),
+            EmailWatchesEnabled && HasLocalTool("watch_email_from"));
     }
 
     internal Task<string> InvokeAsync(
