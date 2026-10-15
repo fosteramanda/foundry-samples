@@ -57,6 +57,10 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-09-01' = {
 resource project 'Microsoft.CognitiveServices/accounts/projects@2026-03-01' = {
   parent: account
   name: projectName
+  // The model deployment also updates the account; creating both at once fails with RequestConflict.
+  dependsOn: [
+    modelDeployment
+  ]
   location: location
   kind: 'AIServices'
   tags: tags
