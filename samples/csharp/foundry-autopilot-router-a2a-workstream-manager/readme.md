@@ -142,6 +142,8 @@ The toolbox proxy resolves each tool's credential server-side. For connections w
 
    Inheritable scopes added **after** an instance was hired may not flow to it — re-approve in MAC if prompted, and if the existing instance still can't get tokens for the new audiences, hire a fresh instance. (Test-first is reasonable: deploy without these, read the exact error, then add what it names.)
 
+   **Declare every audience in `requiredResourceAccess` too.** An inheritable scope only reaches an agent identity when the blueprint also requests it in `requiredResourceAccess` ([add-blueprint-required-resource-access.ps1](./scripts/add-blueprint-required-resource-access.ps1)). Approving the published agent in the admin center also *removes* every blueprint grant whose resource the blueprint does not request, so undeclared Agent Tools, Graph, Foundry and Azure DevOps grants disappear at approval. `create-blueprintsp-oauth2-grants.ps1` now declares each one. If an agent was approved before this was in place, rerun that script after approval to restore the grants.
+
 ### Granting access — happens AFTER the instance is hired
 
 Everything above is blueprint/project setup that happens **before** any agent instance exists. The access grant is different — it can only happen at the **end** of the chain, because the identity it targets doesn't exist until then:

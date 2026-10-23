@@ -298,6 +298,14 @@ Write-Host "Declaring Microsoft Graph in blueprint requiredResourceAccess..."
     -ResourceAppId $graphAppId `
     -Scopes $graphReactionScopes
 
+# Approving the published agent removes every blueprint grant whose resource the
+# blueprint does not request, so the Microsoft 365 MCP servers must be declared too.
+Write-Host "Declaring Agent Tools (Microsoft 365 MCP servers) in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $prodMCPAppId `
+    -Scopes (($mcpOauthGrant | ConvertFrom-Json).scope -split '\s+')
+
 # -----------------------------------------------------------------------------
 # Toolbox (Azure DevOps MCP) capability scopes.
 #

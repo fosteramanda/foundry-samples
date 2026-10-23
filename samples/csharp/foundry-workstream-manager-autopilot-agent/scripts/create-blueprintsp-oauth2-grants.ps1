@@ -288,6 +288,22 @@ Write-Host "Ensuring blueprint inheritable Microsoft Graph scopes for reactions.
     -ResourceAppId $graphAppId `
     -Scopes $graphReactionScopes
 
+# Inheritable alone does not inherit: the permission must ALSO be declared in
+# requiredResourceAccess for static consent to flow to agent identities. Undeclared
+# resources are also dropped when an admin approves the published agent: that
+# consent removes every blueprint grant whose resource the blueprint does not request.
+Write-Host "Declaring Microsoft Graph in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $graphAppId `
+    -Scopes $graphReactionScopes
+
+Write-Host "Declaring Agent Tools (Microsoft 365 MCP servers) in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $prodMCPAppId `
+    -Scopes (($mcpOauthGrant | ConvertFrom-Json).scope -split '\s+')
+
 # -----------------------------------------------------------------------------
 # Toolbox (Azure DevOps MCP) capability scopes.
 #
@@ -325,5 +341,22 @@ Write-Host "Ensuring blueprint inheritable Azure DevOps MCP scope (toolbox ident
     -ResourceAppId $adoMcpAppId `
     -Scopes "user_impersonation"
 
+# Declare both toolbox audiences in requiredResourceAccess. Without this, the
+# inheritable declarations above never take effect and the agent identity fails
+# with AADSTS65001 when minting the toolbox bearer.
+Write-Host "Declaring Foundry data plane in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $foundryDataPlaneAppId `
+    -Scopes "user_impersonation"
+
+# The ADO MCP resource exposes "Ado.Mcp.Tools" (plus granular per-area scopes); it
+# does NOT expose "user_impersonation".
+Write-Host "Declaring Azure DevOps MCP in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $adoMcpAppId `
+    -Scopes "Ado.Mcp.Tools"
+
 Write-Host "Per-agent Microsoft Graph oauth grant is intentionally not applied."
-Write-Host "This environment relies on blueprint grant + inheritablePermissions."
+Write-Host "This environment relies on blueprint grant + inheritablePermissions + requiredResourceAccess."
