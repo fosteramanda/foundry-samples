@@ -295,6 +295,22 @@ Write-Host "Ensuring blueprint inheritable Microsoft Graph scopes for reactions.
     -ResourceAppId $graphAppId `
     -Scopes $graphReactionScopes
 
+# Inheritable alone does not inherit: the permission must ALSO be declared in
+# requiredResourceAccess for static consent to flow to agent identities. Undeclared
+# resources are also dropped when an admin approves the published agent: that
+# consent removes every blueprint grant whose resource the blueprint does not request.
+Write-Host "Declaring Microsoft Graph in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $graphAppId `
+    -Scopes $graphReactionScopes
+
+Write-Host "Declaring Agent Tools (Microsoft 365 MCP servers) in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $prodMCPAppId `
+    -Scopes (($mcpOauthGrant | ConvertFrom-Json).scope -split '\s+')
+
 # -----------------------------------------------------------------------------
 # Toolbox (Azure DevOps MCP) capability scopes.
 #
@@ -332,5 +348,70 @@ Write-Host "Ensuring blueprint inheritable Azure DevOps MCP scope (toolbox ident
     -ResourceAppId $adoMcpAppId `
     -Scopes "user_impersonation"
 
+# Declare both toolbox audiences in requiredResourceAccess. Without this, the
+# inheritable declarations above never take effect and the agent identity fails
+# with AADSTS65001 when minting the toolbox bearer.
+Write-Host "Declaring Foundry data plane in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $foundryDataPlaneAppId `
+    -Scopes "user_impersonation"
+
+# The ADO MCP resource exposes "Ado.Mcp.Tools" (plus granular per-area scopes); it
+# does NOT expose "user_impersonation".
+Write-Host "Declaring Azure DevOps MCP in blueprint requiredResourceAccess..."
+& "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+    -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+    -ResourceAppId $adoMcpAppId `
+    -Scopes "Ado.Mcp.Tools"
+
+# -----------------------------------------------------------------------------
+# Work IQ (toolbox tool `workiq`, https://workiq.svc.cloud.microsoft/mcp).
+#
+# The toolbox's Work IQ connection is UserEntraToken with audience
+# fdcc1f02-fc51-4226-8753-f668596af7f7 (the app ID, not api://workiq...). The proxy
+# exchanges the agent-user token toward that audience, so the blueprint needs the
+# same three things as every other audience: an admin-consented grant, an
+# inheritable scope and a requiredResourceAccess declaration. This gives the
+# agent workiq___list_agents and workiq___ask, which it uses to find other agents
+# and hand work to them.
+# -----------------------------------------------------------------------------
+$workIqAppId = "fdcc1f02-fc51-4226-8753-f668596af7f7"
+$workIqScopes = @("WorkIQAgent.Ask", "WorkIQAgent.Ask.Selected")
+$workIqSP = az ad sp show --id $workIqAppId --query id -o tsv 2>$null
+if ([string]::IsNullOrWhiteSpace($workIqSP)) {
+    Write-Warning "Work IQ service principal ($workIqAppId) is not in this tenant; skipping Work IQ consent. See https://learn.microsoft.com/microsoft-365/copilot/extensibility/work-iq/enable-work-iq"
+}
+else {
+    $graphHeaders = @{
+        "Content-Type"  = "application/json"
+        "Accept"        = "application/json"
+        "Authorization" = "Bearer $graphToken"
+    }
+    $filter = "clientId eq '$blueprintSP' and resourceId eq '$workIqSP' and consentType eq 'AllPrincipals'"
+    $existingWorkIq = (Invoke-RestMethod -Uri ("https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=" + [uri]::EscapeDataString($filter)) -Headers $graphHeaders).value | Select-Object -First 1
+    if ($existingWorkIq) {
+        $merged = @(@($existingWorkIq.scope -split '\s+' | Where-Object { $_ }) + $workIqScopes | Select-Object -Unique)
+        Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($existingWorkIq.id)" -Method Patch `
+            -Headers $graphHeaders -Body (@{ scope = ($merged -join ' ') } | ConvertTo-Json) | Out-Null
+        Write-Host "Work IQ oauth grant updated: $($merged -join ' ')"
+    }
+    else {
+        $workIqGrant = @{ clientId = $blueprintSP; consentType = "AllPrincipals"; principalId = $null; resourceId = $workIqSP; scope = ($workIqScopes -join ' ') } | ConvertTo-Json
+        Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" -Method Post -Headers $graphHeaders -Body $workIqGrant | Out-Null
+        Write-Host "Work IQ oauth grant created: $($workIqScopes -join ' ')"
+    }
+
+    & "$PSScriptRoot/add-blueprint-inheritable-scopes.ps1" `
+        -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+        -ResourceAppId $workIqAppId `
+        -Scopes $workIqScopes
+
+    & "$PSScriptRoot/add-blueprint-required-resource-access.ps1" `
+        -BlueprintAppId $env:AGENT_IDENTITY_BLUEPRINT_ID `
+        -ResourceAppId $workIqAppId `
+        -Scopes $workIqScopes
+}
+
 Write-Host "Per-agent Microsoft Graph oauth grant is intentionally not applied."
-Write-Host "This environment relies on blueprint grant + inheritablePermissions."
+Write-Host "This environment relies on blueprint grant + inheritablePermissions + requiredResourceAccess."

@@ -149,6 +149,10 @@ The toolbox proxy resolves each tool's credential server-side. For connections w
 
    Inheritable scopes added **after** an instance was hired may not flow to it — re-approve in MAC if prompted, and if the existing instance still can't get tokens for the new audiences, hire a fresh instance. (Test-first is reasonable: deploy without these, read the exact error, then add what it names.)
 
+   **Declare every audience in `requiredResourceAccess` too.** An inheritable scope only reaches an agent identity when the blueprint also requests it in `requiredResourceAccess` ([add-blueprint-required-resource-access.ps1](./scripts/add-blueprint-required-resource-access.ps1)). Approving the published agent in the admin center also *removes* every blueprint grant whose resource the blueprint does not request, so undeclared Agent Tools, Graph, Foundry and Azure DevOps grants disappear at approval. `create-blueprintsp-oauth2-grants.ps1` now declares each one. If an agent was approved before this was in place, rerun that script after approval to restore the grants.
+
+5. **Work IQ in the toolbox (agent discovery and hand-off).** The `workiq___list_agents` and `workiq___ask` tools come from a Work IQ MCP tool in the toolbox. Create a project connection named `workiq`: category `RemoteTool`, target `https://workiq.svc.cloud.microsoft/mcp`, auth `UserEntraToken`, audience `fdcc1f02-fc51-4226-8753-f668596af7f7`. Use the app ID GUID; the `api://workiq.svc.cloud.microsoft` form fails with "Audience for incoming token is incorrect". Then add an `mcp` tool with `server_label: workiq` and `project_connection_id: workiq` to the toolbox. The server label sets the `workiq___` prefix the instructions use. The grants script consents `WorkIQAgent.Ask` and `WorkIQAgent.Ask.Selected` for the blueprint when the Work IQ service principal exists in the tenant.
+
 ### Granting access — happens AFTER the instance is hired
 
 Everything above is blueprint/project setup that happens **before** any agent instance exists. The access grant is different — it can only happen at the **end** of the chain, because the identity it targets doesn't exist until then:
